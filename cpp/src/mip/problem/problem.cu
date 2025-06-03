@@ -1023,13 +1023,79 @@ void problem_t<i_t, f_t>::fix_given_variables(problem_t<i_t, f_t>& original_prob
                                               const rmm::device_uvector<i_t>& variables_to_fix,
                                               const raft::handle_t* handle_ptr)
 {
-  i_t TPB = 64;
-  fix_given_variables_kernel<i_t, f_t><<<n_constraints, TPB, 0, handle_ptr->get_stream()>>>(
-    original_problem.view(),
-    view(),
-    raft::device_span<f_t>{assignment.data(), assignment.size()},
-    raft::device_span<i_t>{const_cast<i_t*>(variables_to_fix.data()), variables_to_fix.size()});
+  rmm::device_uvector<f_t> reduction_in_rhs(n_constraints, handle_ptr->get_stream());
+  thrust::fill(
+    handle_ptr->get_thrust_policy(), reduction_in_rhs.begin(), reduction_in_rhs.end(), 0);
+  rmm::device_uvector<i_t> variable_fix_mask(original_problem.n_variables,
+                                             handle_ptr->get_stream());
+  thrust::fill(
+    handle_ptr->get_thrust_policy(), variable_fix_mask.begin(), variable_fix_mask.end(), 0);
+  thrust::for_each(handle_ptr->get_thrust_policy(),
+                   variables_to_fix.begin(),
+                   variables_to_fix.end(),
+                   [variable_fix_mask = make_span(variable_fix_mask)] __device__(i_t x) {
+                     variable_fix_mask[x] = 1;
+                   });
+  const i_t num_segments = original_problem.n_constraints;
+  f_t initial_value{0.};
+
+  auto input_transform_it = thrust::make_transform_iterator(
+    thrust::make_counting_iterator(0),
+    [coefficients      = make_span(original_problem.coefficients),
+     variables         = make_span(original_problem.variables),
+     variable_fix_mask = make_span(variable_fix_mask),
+     assignment        = make_span(assignment),
+     int_tol = original_problem.tolerances.integrality_tolerance] __device__(i_t idx) -> f_t {
+      i_t var_idx = variables[idx];
+      if (variable_fix_mask[var_idx]) {
+        f_t reduction = coefficients[idx] * floor(assignment[var_idx] + int_tol);
+        return reduction;
+      } else {
+        return 0.;
+      }
+    });
+  // Determine temporary device storage requirements
+  void* d_temp_storage      = nullptr;
+  size_t temp_storage_bytes = 0;
+  cub::DeviceSegmentedReduce::Reduce(d_temp_storage,
+                                     temp_storage_bytes,
+                                     input_transform_it,
+                                     reduction_in_rhs.data(),
+                                     num_segments,
+                                     original_problem.offsets.data(),
+                                     original_problem.offsets.data() + 1,
+                                     cuda::std::plus<>{},
+                                     initial_value,
+                                     handle_ptr->get_stream());
+
+  rmm::device_uvector<std::uint8_t> temp_storage(temp_storage_bytes, handle_ptr->get_stream());
+  d_temp_storage = thrust::raw_pointer_cast(temp_storage.data());
+
+  // Run reduction
+  cub::DeviceSegmentedReduce::Reduce(d_temp_storage,
+                                     temp_storage_bytes,
+                                     input_transform_it,
+                                     reduction_in_rhs.data(),
+                                     num_segments,
+                                     original_problem.offsets.data(),
+                                     original_problem.offsets.data() + 1,
+                                     cuda::std::plus<>{},
+                                     initial_value,
+                                     handle_ptr->get_stream());
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
+  thrust::for_each(
+    handle_ptr->get_thrust_policy(),
+    thrust::make_counting_iterator(0),
+    thrust::make_counting_iterator(0) + n_constraints,
+    [lower_bounds          = make_span(constraint_lower_bounds),
+     upper_bounds          = make_span(constraint_upper_bounds),
+     original_lower_bounds = make_span(original_problem.constraint_lower_bounds),
+     original_upper_bounds = make_span(original_problem.constraint_upper_bounds),
+     reduction_in_rhs      = make_span(reduction_in_rhs)] __device__(i_t cstr_idx) {
+      lower_bounds[cstr_idx] = original_lower_bounds[cstr_idx] - reduction_in_rhs[cstr_idx];
+      upper_bounds[cstr_idx] = original_upper_bounds[cstr_idx] - reduction_in_rhs[cstr_idx];
+    });
+  handle_ptr->sync_stream();
 }
 
 template <typename i_t, typename f_t>
