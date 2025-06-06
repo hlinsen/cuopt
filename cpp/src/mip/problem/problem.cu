@@ -901,6 +901,42 @@ typename problem_t<i_t, f_t>::view_t problem_t<i_t, f_t>::view()
   return v;
 }
 
+template <typename i_t, typename f_t>
+typename problem_t<i_t, f_t>::host_view_t problem_t<i_t, f_t>::to_host()
+{
+  problem_t<i_t, f_t>::host_view_t h;
+  h.tolerances     = tolerances;
+  h.n_variables    = n_variables;
+  h.n_integer_vars = n_integer_vars;
+  h.n_constraints  = n_constraints;
+  h.nnz            = nnz;
+
+  h.reverse_coefficients = cuopt::host_copy(reverse_coefficients);
+  h.reverse_constraints  = cuopt::host_copy(reverse_constraints);
+  h.reverse_offsets      = cuopt::host_copy(reverse_offsets);
+
+  h.coefficients              = cuopt::host_copy(coefficients);
+  h.variables                 = cuopt::host_copy(variables);
+  h.offsets                   = cuopt::host_copy(offsets);
+  h.objective_coefficients    = cuopt::host_copy(objective_coefficients);
+  h.variable_lower_bounds     = cuopt::host_copy(variable_lower_bounds);
+  h.variable_upper_bounds     = cuopt::host_copy(variable_upper_bounds);
+  h.constraint_lower_bounds   = cuopt::host_copy(constraint_lower_bounds);
+  h.constraint_upper_bounds   = cuopt::host_copy(constraint_upper_bounds);
+  h.variable_types            = cuopt::host_copy(variable_types);
+  h.is_binary_variable        = cuopt::host_copy(is_binary_variable);
+  h.integer_indices           = cuopt::host_copy(integer_indices);
+  h.binary_indices            = cuopt::host_copy(binary_indices);
+  h.nonbinary_indices         = cuopt::host_copy(nonbinary_indices);
+  h.related_variables         = cuopt::host_copy(related_variables);
+  h.related_variables_offsets = cuopt::host_copy(related_variables_offsets);
+
+  h.objective_offset         = presolve_data.objective_offset;
+  h.objective_scaling_factor = presolve_data.objective_scaling_factor;
+
+  return h;
+}
+
 // TODO think about overallocating
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::resize_variables(size_t size)

@@ -192,6 +192,38 @@ class problem_t {
 
   view_t view();
 
+  struct host_view_t {
+    typename mip_solver_settings_t<i_t, f_t>::tolerances_t tolerances;
+    i_t n_variables;
+    i_t n_integer_vars;
+    i_t n_constraints;
+    i_t nnz;
+
+    std::vector<f_t> reverse_coefficients;
+    std::vector<i_t> reverse_constraints;
+    std::vector<i_t> reverse_offsets;
+
+    std::vector<f_t> coefficients;
+    std::vector<i_t> variables;
+    std::vector<i_t> offsets;
+    std::vector<f_t> objective_coefficients;
+    std::vector<f_t> variable_lower_bounds;
+    std::vector<f_t> variable_upper_bounds;
+    std::vector<f_t> constraint_lower_bounds;
+    std::vector<f_t> constraint_upper_bounds;
+    std::vector<var_t> variable_types;
+    std::vector<i_t> is_binary_variable;
+    std::vector<i_t> integer_indices;
+    std::vector<i_t> binary_indices;
+    std::vector<i_t> nonbinary_indices;
+    std::vector<i_t> related_variables;
+    std::vector<i_t> related_variables_offsets;
+    f_t objective_offset;
+    f_t objective_scaling_factor;
+  };
+
+  host_view_t to_host();
+
   const optimization_problem_t<i_t, f_t>* original_problem_ptr;
   const raft::handle_t* handle_ptr;
 

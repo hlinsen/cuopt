@@ -48,3 +48,6 @@ ConfigureTest(FEASIBILITY_JUMP_TEST
 ConfigureTest(MIP_TERMINATION_STATUS_TEST
     ${CMAKE_CURRENT_SOURCE_DIR}/termination_test.cu
 )
+ConfigureTest(PRESOLVE_TEST
+    ${CMAKE_CURRENT_SOURCE_DIR}/presolve_test.cu
+)
