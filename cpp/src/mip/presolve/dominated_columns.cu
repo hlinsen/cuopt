@@ -124,18 +124,15 @@ bool dominated_columns_t<i_t, f_t>::dominates(
     auto row1   = host_problem.reverse_constraints[col1_offset + i];
     auto coeff1 = host_problem.reverse_coefficients[col1_offset + i];
 
-    // Find matching row in col2
-    bool found = false;
+    auto coeff2 = 0;
     for (int j = 0; j < col2_nnz; ++j) {
       auto row2 = host_problem.reverse_constraints[col2_offset + j];
       if (row1 == row2) {
-        auto coeff2 = host_problem.reverse_coefficients[col2_offset + j];
-        if (coeff1 > coeff2) { return false; }
-        found = true;
+        coeff2 = host_problem.reverse_coefficients[col2_offset + j];
         break;
       }
     }
-    if (!found) { return false; }
+    if (coeff1 > coeff2) { return false; }
   }
 
   // Check variable types (iii)
