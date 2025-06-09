@@ -17,16 +17,12 @@
 
 #include "mip_utils.cuh"
 
-#include <gtest/gtest.h>
 #include <raft/core/handle.hpp>
 
 #include <limits>
 #include <vector>
 
 namespace cuopt::linear_programming::test {
-
-using namespace cuopt::linear_programming;
-using namespace cuopt::linear_programming::detail;
 
 cuopt::mps_parser::mps_data_model_t<int, double> create_example_1_problem()
 {
@@ -153,8 +149,7 @@ TEST(presolve, test_dominated_columns)
   EXPECT_EQ(solution.get_termination_status(), mip_termination_status_t::FeasibleFound);
 
   // Get the solution
-  auto solution        = solution.get_solution();
-  auto solution_values = solution.get_solution();
+  auto solution_values = cuopt::host_copy(solution.get_solution());
 
   // Verify solution values
   std::vector<double> expected_values = {4.0, 0, 3.5, 1.0, 1.0, 0};

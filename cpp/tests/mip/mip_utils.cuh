@@ -21,6 +21,8 @@
 #include <mip/problem/problem.cuh>
 #include <utilities/copy_helpers.hpp>
 
+#include <gtest/gtest.h>
+
 namespace cuopt::linear_programming::test {
 
 void test_variable_bounds(

@@ -33,11 +33,11 @@ struct dominated_columns_t {
    * @brief Identify implied free and infinite bounds
    *
    */
-  void identify_candidate_variables(bound_presolve_t<i_t, f_t>& bounds_presolve,
-                                    std::vector<i_t> const& variables);
-  void compute_signatures(problem_t<i_t, f_t>::host_view_t& host_problem);
+  void identify_candidate_variables(typename problem_t<i_t, f_t>::host_view_t& host_problem,
+                                    bound_presolve_t<i_t, f_t>& bounds_presolve);
+  void compute_signatures(typename problem_t<i_t, f_t>::host_view_t& host_problem);
   std::unordered_map<i_t, std::pair<i_t, i_t>> find_shortest_rows(
-    problem_t<i_t, f_t>::host_view_t& host_problem);
+    typename problem_t<i_t, f_t>::host_view_t& host_problem);
   bool dominates(i_t col1, i_t col2, i_t row);
   void set_bounds(i_t col1, i_t col2);
   void presolve(bound_presolve_t<i_t, f_t>& bounds_presolve);

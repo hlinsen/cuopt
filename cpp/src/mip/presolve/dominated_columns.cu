@@ -29,9 +29,10 @@ dominated_columns_t<i_t, f_t>::dominated_columns_t(problem_t<i_t, f_t>& problem_
 
 template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::identify_candidate_variables(
-  bound_presolve_t<i_t, f_t>& bounds_presolve, std::vector<i_t> const& variables)
+  typename problem_t<i_t, f_t>::host_view_t& host_problem,
+  bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
-  bounds_presolve.solve(problem,
+  bounds_presolve.solve(host_problem,
                         cuopt::make_span(problem.variable_lower_bounds),
                         cuopt::make_span(problem.variable_upper_bounds));
   auto lb_bars = cuopt::host_copy(bounds_presolve.upd.lb, stream);
@@ -40,21 +41,21 @@ void dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   for (int i = 0; i < problem.n_variables; ++i) {
     f_t lb_bar      = lb_bars[i];
     f_t ub_bar      = ub_bars[i];
-    f_t lb_original = problem.variable_lower_bounds[i];
-    f_t ub_original = problem.variable_upper_bounds[i];
+    f_t lb_original = host_problem.variable_lower_bounds[i];
+    f_t ub_original = host_problem.variable_upper_bounds[i];
     // strenghtened bounds are included in original bounds means free
     // One of the bounds is infinite we can apply theorem 1.
     if (lb_bar >= lb_original && ub_bar <= ub_original &&
         (lb_bar == -std::numeric_limits<f_t>::infinity() ||
          ub_bar == std::numeric_limits<f_t>::infinity())) {
-      candidates.push_back(variables[i]);
+      candidates.push_back(host_problem.variables[i]);
     }
   }
 }
 
 template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::compute_signatures(
-  problem_t<i_t, f_t>::host_view_t& host_problem)
+  typename problem_t<i_t, f_t>::host_view_t& host_problem)
 {
   for (int i = 0; i < problem.n_constraints; ++i) {
     auto row_offset = host_problem.offsets[i];
@@ -69,7 +70,7 @@ void dominated_columns_t<i_t, f_t>::compute_signatures(
 
 template <typename i_t, typename f_t>
 std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find_shortest_rows(
-  problem_t<i_t, f_t>::host_view_t& host_problem)
+  typename problem_t<i_t, f_t>::host_view_t& host_problem)
 {
   std::unordered_map<i_t, std::pair<i_t, i_t>> shortest_rows;
   for (int i = 0; i < candidates.size(); ++i) {
@@ -87,7 +88,8 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
         // check for positive coef
         if (coefficient >= 0) {
           auto [min_row_size, row_id] = shortest_rows[col];
-          shortest_rows[col] = row_size < min_row_size ? {row_size, row} : shortest_rows[col];
+          shortest_rows[col] =
+            row_size < min_row_size ? std::make_pair(row_size, row) : shortest_rows[col];
         }
       }
 
@@ -96,7 +98,8 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
         // check for nnz coef
         if (coefficient != 0) {
           auto [min_row_size, row_id] = shortest_rows[col];
-          shortest_rows[col] = row_size < min_row_size ? {row_size, row} : shortest_rows[col];
+          shortest_rows[col] =
+            row_size < min_row_size ? std::make_pair(row_size, row) : shortest_rows[col];
         }
       }
     }
@@ -120,10 +123,12 @@ template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
   auto host_problem = problem.to_host();
-  identify_candidate_variables(bounds_presolve, host_problem.variables);
-  compute_signatures();
-  auto shortest_rows = find_shortest_rows();
-  for (auto const& [cand, row] : shortest_rows) {
+  identify_candidate_variables(host_problem, bounds_presolve);
+  compute_signatures(host_problem);
+  auto shortest_rows = find_shortest_rows(host_problem);
+  for (const auto& pair : shortest_rows) {
+    auto cand       = pair.first;
+    auto row        = pair.second;
     auto row_offset = host_problem.offsets[row];
     auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
     for (int j = 0; j < nnz_in_row; ++j) {
@@ -134,4 +139,4 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
 }
 }  // namespace cuopt::linear_programming::detail
 
-template class cuopt::linear_programming::detail::dominated_columns_t<int double>;
+template struct cuopt::linear_programming::detail::dominated_columns_t<int, double>;
