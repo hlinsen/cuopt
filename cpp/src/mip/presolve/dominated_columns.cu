@@ -103,16 +103,68 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
 }
 
 template <typename i_t, typename f_t>
-bool dominated_columns_t<i_t, f_t>::dominates(i_t col1, i_t col2, i_t row)
+bool dominated_columns_t<i_t, f_t>::dominates(
+  typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t col1, i_t col2, i_t row)
 {
   if (!(signatures[col1][row] && signatures[col2][row])) { return false; }
-  // compare column vectors
+
+  // Get column vectors for comparison
+  auto col1_offset = host_problem.reverse_offsets[col1];
+  auto col1_nnz    = host_problem.reverse_offsets[col1 + 1] - col1_offset;
+  auto col2_offset = host_problem.reverse_offsets[col2];
+  auto col2_nnz    = host_problem.reverse_offsets[col2 + 1] - col2_offset;
+
+  // Check objective coefficients (i)
+  if (host_problem.objective_coefficients[col1] > host_problem.objective_coefficients[col2]) {
+    return false;
+  }
+
+  // Check constraint coefficients (ii)
+  for (int i = 0; i < col1_nnz; ++i) {
+    auto row1   = host_problem.reverse_constraints[col1_offset + i];
+    auto coeff1 = host_problem.reverse_coefficients[col1_offset + i];
+
+    // Find matching row in col2
+    bool found = false;
+    for (int j = 0; j < col2_nnz; ++j) {
+      auto row2 = host_problem.reverse_constraints[col2_offset + j];
+      if (row1 == row2) {
+        auto coeff2 = host_problem.reverse_coefficients[col2_offset + j];
+        if (coeff1 > coeff2) { return false; }
+        found = true;
+        break;
+      }
+    }
+    if (!found) { return false; }
+  }
+
+  // Check variable types (iii)
+  bool col1_is_int = host_problem.variable_types[col1] == var_t::INTEGER;
+  bool col2_is_int = host_problem.variable_types[col2] == var_t::INTEGER;
+  if (!(col1_is_int || !col2_is_int)) { return false; }
+
   return true;
 }
 
 template <typename i_t, typename f_t>
-void dominated_columns_t<i_t, f_t>::set_bounds(i_t col1, i_t col2)
+void dominated_columns_t<i_t, f_t>::update_variable_bounds(
+  typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t col1, i_t col2)
 {
+  // Get bounds for both variables
+  f_t l1 = host_problem.variable_lower_bounds[col1];
+  f_t u1 = host_problem.variable_upper_bounds[col1];
+  f_t l2 = host_problem.variable_lower_bounds[col2];
+  f_t u2 = host_problem.variable_upper_bounds[col2];
+
+  if (u1 == std::numeric_limits<f_t>::infinity()) {
+    // case i: xk can be set to lk
+    host_problem.variable_upper_bounds[col2] = l2;
+    host_problem.variable_lower_bounds[col1] = l2;
+  } else if (l2 == -std::numeric_limits<f_t>::infinity()) {
+    // case iii: xk can be set to uk
+    host_problem.variable_lower_bounds[col1] = u2;
+    host_problem.variable_upper_bounds[col2] = u2;
+  }
 }
 
 template <typename i_t, typename f_t>
@@ -126,12 +178,16 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     auto const& [row_size, row] = pair;
     auto row_offset             = host_problem.offsets[row];
     auto nnz_in_row             = host_problem.offsets[row + 1] - row_offset;
+    // All the variables in this row are the candidates to be dominated by cand
     for (int j = 0; j < nnz_in_row; ++j) {
       auto col = host_problem.variables[row_offset + j];
-      if (dominates(cand, col, row)) { set_bounds(cand, col); }
+      if (dominates(host_problem, cand, col, row)) {
+        update_variable_bounds(host_problem, cand, col);
+      }
     }
   }
 }
+
 }  // namespace cuopt::linear_programming::detail
 
 template struct cuopt::linear_programming::detail::dominated_columns_t<int, double>;
