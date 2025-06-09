@@ -153,7 +153,7 @@ TEST(presolve, test_dominated_columns)
 
   // Verify solution values
   std::vector<double> expected_values = {4.0, 0, 3.5, 1.0, 1.0, 0};
-  for (int i = 0; i < solution_values.size(); i++) {
+  for (size_t i = 0; i < solution_values.size(); i++) {
     EXPECT_NEAR(solution_values[i], expected_values[i], 1e-6);
   }
 

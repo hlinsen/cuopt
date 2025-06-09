@@ -23,7 +23,7 @@ namespace cuopt::linear_programming::detail {
 
 template <typename i_t, typename f_t>
 dominated_columns_t<i_t, f_t>::dominated_columns_t(problem_t<i_t, f_t>& problem_)
-  : problem(problem), stream(problem.handle_ptr->get_stream())
+  : problem(problem_), stream(problem.handle_ptr->get_stream())
 {
 }
 
@@ -32,7 +32,7 @@ void dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   typename problem_t<i_t, f_t>::host_view_t& host_problem,
   bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
-  bounds_presolve.solve(host_problem,
+  bounds_presolve.solve(problem,
                         cuopt::make_span(problem.variable_lower_bounds),
                         cuopt::make_span(problem.variable_upper_bounds));
   auto lb_bars = cuopt::host_copy(bounds_presolve.upd.lb, stream);
@@ -73,34 +73,29 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
   typename problem_t<i_t, f_t>::host_view_t& host_problem)
 {
   std::unordered_map<i_t, std::pair<i_t, i_t>> shortest_rows;
-  for (int i = 0; i < candidates.size(); ++i) {
+  for (size_t i = 0; i < candidates.size(); ++i) {
     auto col           = candidates[i];
     auto col_offset    = host_problem.reverse_offsets[col];
     auto nnz_in_col    = host_problem.reverse_offsets[col + 1] - col_offset;
     shortest_rows[col] = {std::numeric_limits<i_t>::max(), -1};
     for (int j = 0; j < nnz_in_col; ++j) {
-      auto row         = host_problem.reverse_indices[col_offset + j];
+      auto row         = host_problem.reverse_constraints[col_offset + j];
       auto row_size    = host_problem.offsets[row + 1] - host_problem.offsets[row];
       auto coefficient = host_problem.reverse_coefficients[col_offset + j];
       // Check for LesserThanOrEqual
-      if ((host_problem.constraint_lb[row] == -std::numeric_limits<f_t>::max() &&
-           host_problem.constraint_ub[row] != std::numeric_limits<f_t>::max())) {
-        // check for positive coef
-        if (coefficient >= 0) {
+      if ((host_problem.constraint_lower_bounds[row] == -std::numeric_limits<f_t>::max() &&
+           host_problem.constraint_upper_bounds[row] != std::numeric_limits<f_t>::max())) {
+        if (coefficient > 0) {
           auto [min_row_size, row_id] = shortest_rows[col];
-          shortest_rows[col] =
-            row_size < min_row_size ? std::make_pair(row_size, row) : shortest_rows[col];
+          if (row_size < min_row_size) { shortest_rows[col] = std::make_pair(row_size, row); }
         }
       }
 
       // Check for equality
-      if (is_integer_equal(host_problem.constraint_lb[row], host_problem.constraint_ub[row])) {
-        // check for nnz coef
-        if (coefficient != 0) {
-          auto [min_row_size, row_id] = shortest_rows[col];
-          shortest_rows[col] =
-            row_size < min_row_size ? std::make_pair(row_size, row) : shortest_rows[col];
-        }
+      if (problem.integer_equal(host_problem.constraint_lower_bounds[row],
+                                host_problem.constraint_upper_bounds[row])) {
+        auto [min_row_size, row_id] = shortest_rows[col];
+        if (row_size < min_row_size) { shortest_rows[col] = std::make_pair(row_size, row); }
       }
     }
   }
@@ -112,6 +107,7 @@ bool dominated_columns_t<i_t, f_t>::dominates(i_t col1, i_t col2, i_t row)
 {
   if (!(signatures[col1][row] && signatures[col2][row])) { return false; }
   // compare column vectors
+  return true;
 }
 
 template <typename i_t, typename f_t>
@@ -126,11 +122,10 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   identify_candidate_variables(host_problem, bounds_presolve);
   compute_signatures(host_problem);
   auto shortest_rows = find_shortest_rows(host_problem);
-  for (const auto& pair : shortest_rows) {
-    auto cand       = pair.first;
-    auto row        = pair.second;
-    auto row_offset = host_problem.offsets[row];
-    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
+  for (const auto& [cand, pair] : shortest_rows) {
+    auto const& [row_size, row] = pair;
+    auto row_offset             = host_problem.offsets[row];
+    auto nnz_in_row             = host_problem.offsets[row + 1] - row_offset;
     for (int j = 0; j < nnz_in_row; ++j) {
       auto col = host_problem.variables[row_offset + j];
       if (dominates(cand, col, row)) { set_bounds(cand, col); }
