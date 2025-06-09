@@ -24,6 +24,12 @@
 
 namespace cuopt::linear_programming::detail {
 
+enum class domination_order_t {
+  REGULAR,
+  NEGATED_XJ,
+  NEGATED_XK,
+};
+
 auto constexpr signature_size = 32;
 template <typename i_t, typename f_t>
 struct dominated_columns_t {
@@ -39,12 +45,14 @@ struct dominated_columns_t {
   std::unordered_map<i_t, std::pair<i_t, i_t>> find_shortest_rows(
     typename problem_t<i_t, f_t>::host_view_t& host_problem);
   bool dominates(typename problem_t<i_t, f_t>::host_view_t& host_problem,
-                 i_t col1,
-                 i_t col2,
-                 i_t row);
+                 i_t xj,
+                 i_t xk,
+                 i_t row,
+                 domination_order_t order);
   void update_variable_bounds(typename problem_t<i_t, f_t>::host_view_t& host_problem,
-                              i_t col1,
-                              i_t col2);
+                              i_t xj,
+                              i_t xk,
+                              domination_order_t order);
   void presolve(bound_presolve_t<i_t, f_t>& bounds_presolve);
 
   problem_t<i_t, f_t>& problem;

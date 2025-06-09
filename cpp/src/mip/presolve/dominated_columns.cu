@@ -37,7 +37,6 @@ void dominated_columns_t<i_t, f_t>::identify_candidate_variables(
                         cuopt::make_span(problem.variable_upper_bounds));
   auto lb_bars = cuopt::host_copy(bounds_presolve.upd.lb, stream);
   auto ub_bars = cuopt::host_copy(bounds_presolve.upd.ub, stream);
-  // candidates.resize(problem.n_variables);
   for (int i = 0; i < problem.n_variables; ++i) {
     f_t lb_bar      = lb_bars[i];
     f_t ub_bar      = ub_bars[i];
@@ -104,63 +103,86 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
 
 template <typename i_t, typename f_t>
 bool dominated_columns_t<i_t, f_t>::dominates(
-  typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t col1, i_t col2, i_t row)
+  typename problem_t<i_t, f_t>::host_view_t& host_problem,
+  i_t xj,
+  i_t xk,
+  i_t row,
+  domination_order_t order)
 {
-  if (!(signatures[col1][row] && signatures[col2][row])) { return false; }
+  if (!(signatures[xj][row] && signatures[xk][row])) { return false; }
 
   // Get column vectors for comparison
-  auto col1_offset = host_problem.reverse_offsets[col1];
-  auto col1_nnz    = host_problem.reverse_offsets[col1 + 1] - col1_offset;
-  auto col2_offset = host_problem.reverse_offsets[col2];
-  auto col2_nnz    = host_problem.reverse_offsets[col2 + 1] - col2_offset;
+  auto xj_offset = host_problem.reverse_offsets[xj];
+  auto xj_nnz    = host_problem.reverse_offsets[xj + 1] - xj_offset;
+  auto xk_offset = host_problem.reverse_offsets[xk];
+  auto xk_nnz    = host_problem.reverse_offsets[xk + 1] - xk_offset;
 
+  auto cj = host_problem.objective_coefficients[xj];
+  if (order == domination_order_t::NEGATED_XJ) { cj = -cj; }
+  auto ck = host_problem.objective_coefficients[xk];
+  if (order == domination_order_t::NEGATED_XK) { ck = -ck; }
   // Check objective coefficients (i)
-  if (host_problem.objective_coefficients[col1] > host_problem.objective_coefficients[col2]) {
-    return false;
-  }
+  if (cj > ck) { return false; }
 
   // Check constraint coefficients (ii)
-  for (int i = 0; i < col1_nnz; ++i) {
-    auto row1   = host_problem.reverse_constraints[col1_offset + i];
-    auto coeff1 = host_problem.reverse_coefficients[col1_offset + i];
-
+  for (int i = 0; i < xj_nnz; ++i) {
+    auto row1   = host_problem.reverse_constraints[xj_offset + i];
+    auto coeff1 = host_problem.reverse_coefficients[xj_offset + i];
     auto coeff2 = 0;
-    for (int j = 0; j < col2_nnz; ++j) {
-      auto row2 = host_problem.reverse_constraints[col2_offset + j];
+    if (order == domination_order_t::NEGATED_XJ) { coeff1 = -coeff1; }
+
+    for (int j = 0; j < xk_nnz; ++j) {
+      auto row2 = host_problem.reverse_constraints[xk_offset + j];
       if (row1 == row2) {
-        coeff2 = host_problem.reverse_coefficients[col2_offset + j];
+        coeff2 = host_problem.reverse_coefficients[xk_offset + j];
         break;
       }
     }
+
+    if (order == domination_order_t::NEGATED_XK) { coeff2 = -coeff2; }
     if (coeff1 > coeff2) { return false; }
   }
 
   // Check variable types (iii)
-  bool col1_is_int = host_problem.variable_types[col1] == var_t::INTEGER;
-  bool col2_is_int = host_problem.variable_types[col2] == var_t::INTEGER;
-  if (!(col1_is_int || !col2_is_int)) { return false; }
+  bool xj_is_int = host_problem.variable_types[xj] == var_t::INTEGER;
+  bool xk_is_int = host_problem.variable_types[xk] == var_t::INTEGER;
+  if (!xj_is_int || xk_is_int) { return false; }
 
   return true;
 }
 
 template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::update_variable_bounds(
-  typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t col1, i_t col2)
+  typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t xj, i_t xk, domination_order_t order)
 {
   // Get bounds for both variables
-  f_t l1 = host_problem.variable_lower_bounds[col1];
-  f_t u1 = host_problem.variable_upper_bounds[col1];
-  f_t l2 = host_problem.variable_lower_bounds[col2];
-  f_t u2 = host_problem.variable_upper_bounds[col2];
+  f_t lj = host_problem.variable_lower_bounds[xj];
+  f_t uj = host_problem.variable_upper_bounds[xj];
+  f_t lk = host_problem.variable_lower_bounds[xk];
+  f_t uk = host_problem.variable_upper_bounds[xk];
 
-  if (u1 == std::numeric_limits<f_t>::infinity()) {
-    // case i: xk can be set to lk
-    host_problem.variable_upper_bounds[col2] = l2;
-    host_problem.variable_lower_bounds[col1] = l2;
-  } else if (l2 == -std::numeric_limits<f_t>::infinity()) {
-    // case iii: xk can be set to uk
-    host_problem.variable_lower_bounds[col1] = u2;
-    host_problem.variable_upper_bounds[col2] = u2;
+  if (order == domination_order_t::REGULAR) {
+    if (uj == std::numeric_limits<f_t>::infinity()) {
+      // case i: xk can be set to lk
+      host_problem.variable_upper_bounds[xk] = lk;
+      host_problem.variable_lower_bounds[xj] = lk;
+    } else if (lk == -std::numeric_limits<f_t>::infinity()) {
+      // case iii: xk can be set to uk
+      host_problem.variable_lower_bounds[xj] = uk;
+      host_problem.variable_upper_bounds[xk] = uk;
+    }
+  } else if (order == domination_order_t::NEGATED_XK) {
+    if (uj == std::numeric_limits<f_t>::infinity()) {
+      // case ii: xk can be set to uk
+      host_problem.variable_upper_bounds[xk] = uk;
+      host_problem.variable_lower_bounds[xj] = uk;
+    }
+  } else if (order == domination_order_t::NEGATED_XJ) {
+    if (lk == -std::numeric_limits<f_t>::infinity()) {
+      // case iv: xj can be set to lj
+      host_problem.variable_lower_bounds[xj] = lj;
+      host_problem.variable_upper_bounds[xk] = lj;
+    }
   }
 }
 
@@ -171,18 +193,34 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   identify_candidate_variables(host_problem, bounds_presolve);
   compute_signatures(host_problem);
   auto shortest_rows = find_shortest_rows(host_problem);
-  for (const auto& [cand, pair] : shortest_rows) {
+  for (const auto& [xj, pair] : shortest_rows) {
     auto const& [row_size, row] = pair;
     auto row_offset             = host_problem.offsets[row];
     auto nnz_in_row             = host_problem.offsets[row + 1] - row_offset;
-    // All the variables in this row are the candidates to be dominated by cand
+    // All the variables in this row are the candidates to be dominated by xj
     for (int j = 0; j < nnz_in_row; ++j) {
-      auto col = host_problem.variables[row_offset + j];
-      if (dominates(host_problem, cand, col, row)) {
-        update_variable_bounds(host_problem, cand, col);
+      auto xk = host_problem.variables[row_offset + j];
+      if (dominates(host_problem, xj, xk, row, domination_order_t::REGULAR)) {
+        update_variable_bounds(host_problem, xj, xk, domination_order_t::REGULAR);
+      }
+      if (dominates(host_problem, xj, xk, row, domination_order_t::NEGATED_XJ)) {
+        update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XJ);
+      }
+      if (dominates(host_problem, xj, xk, row, domination_order_t::NEGATED_XK)) {
+        update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XK);
       }
     }
   }
+
+  // Update the problem with the new bounds
+  raft::copy(problem.variable_lower_bounds.data(),
+             host_problem.variable_lower_bounds.data(),
+             problem.n_variables,
+             stream);
+  raft::copy(problem.variable_upper_bounds.data(),
+             host_problem.variable_upper_bounds.data(),
+             problem.n_variables,
+             stream);
 }
 
 }  // namespace cuopt::linear_programming::detail
