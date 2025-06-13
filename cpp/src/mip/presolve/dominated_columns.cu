@@ -43,11 +43,13 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
     f_t ub_bar      = ub_bars[i];
     f_t lb_original = lb[i];
     f_t ub_original = ub[i];
+    std::cout << "Variable " << i << " has bounds " << lb_original << " " << ub_original
+              << " and strengthened bounds " << lb_bar << " " << ub_bar << std::endl;
     // strenghtened bounds are included in original bounds means free
     // It is equivalent to setting the bounds to infinity
     if (lb_bar >= lb_original && ub_bar <= ub_original) {
-      host_problem.variable_lower_bounds[i] = -std::numeric_limits<f_t>::infinity();
-      host_problem.variable_upper_bounds[i] = std::numeric_limits<f_t>::infinity();
+      // host_problem.variable_lower_bounds[i] = -std::numeric_limits<f_t>::infinity();
+      // host_problem.variable_upper_bounds[i] = std::numeric_limits<f_t>::infinity();
       std::cout << "Implied free variable: " << i << std::endl;
       candidates.push_back(i);
     }
@@ -68,13 +70,13 @@ void dominated_columns_t<i_t, f_t>::compute_signatures(
   // std::cout << "Computing signatures" << std::endl;
   signatures.resize(problem.n_variables);
   for (int i = 0; i < problem.n_constraints; ++i) {
-    std::cout << "Computing signature for constraint " << i << std::endl;
+    // std::cout << "Computing signature for constraint " << i << std::endl;
     auto row_offset = host_problem.offsets[i];
     auto nnz_in_row = host_problem.offsets[i + 1] - row_offset;
-    std::cout << "NNZ in row " << i << " is " << nnz_in_row << std::endl;
+    // std::cout << "NNZ in row " << i << " is " << nnz_in_row << std::endl;
     for (int j = 0; j < nnz_in_row; ++j) {
       auto col = host_problem.variables[row_offset + j];
-      std::cout << "Setting signature for variable " << col << std::endl;
+      // std::cout << "Setting signature for variable " << col << std::endl;
       signatures[col].set(i % signature_size);
     }
   }
@@ -87,20 +89,24 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
 {
   // std::cout << "Finding shortest rows" << std::endl;
   std::unordered_map<i_t, std::pair<i_t, i_t>> shortest_rows;
+  auto original_lower_bounds =
+    cuopt::host_copy(problem.original_problem_ptr->get_constraint_lower_bounds(), stream);
+  auto original_upper_bounds =
+    cuopt::host_copy(problem.original_problem_ptr->get_constraint_upper_bounds(), stream);
   for (auto col : candidates) {
-    auto col_offset    = host_problem.reverse_offsets[col];
-    auto nnz_in_col    = host_problem.reverse_offsets[col + 1] - col_offset;
+    auto col_offset = host_problem.reverse_offsets[col];
+    auto nnz_in_col = host_problem.reverse_offsets[col + 1] - col_offset;
+    std::cout << "col: " << col << " has " << nnz_in_col << " non-zeros" << std::endl;
     shortest_rows[col] = {std::numeric_limits<i_t>::max(), -1};
     for (int j = 0; j < nnz_in_col; ++j) {
       auto row         = host_problem.reverse_constraints[col_offset + j];
       auto row_size    = host_problem.offsets[row + 1] - host_problem.offsets[row];
       auto coefficient = host_problem.reverse_coefficients[col_offset + j];
-      // std::cout << "constraint: " << row << ", lower: " <<
-      // host_problem.constraint_lower_bounds[row]
-      //           << ", upper: " << host_problem.constraint_upper_bounds[row] << std::endl;
+      std::cout << "constraint: " << row << ", lower: " << original_lower_bounds[row]
+                << ", upper: " << original_upper_bounds[row] << std::endl;
       // Check for LesserThanOrEqual
-      if ((host_problem.constraint_lower_bounds[row] == -std::numeric_limits<f_t>::infinity() &&
-           host_problem.constraint_upper_bounds[row] != std::numeric_limits<f_t>::infinity())) {
+      if ((original_lower_bounds[row] == -std::numeric_limits<f_t>::infinity() &&
+           original_upper_bounds[row] != std::numeric_limits<f_t>::infinity())) {
         if (coefficient > 0) {
           auto [min_row_size, row_id] = shortest_rows[col];
           if (row_size < min_row_size) { shortest_rows[col] = std::make_pair(row_size, row); }
@@ -108,8 +114,7 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
       }
 
       // Check for equality
-      if (problem.integer_equal(host_problem.constraint_lower_bounds[row],
-                                host_problem.constraint_upper_bounds[row])) {
+      if (problem.integer_equal(original_lower_bounds[row], original_upper_bounds[row])) {
         auto [min_row_size, row_id] = shortest_rows[col];
         if (row_size < min_row_size) { shortest_rows[col] = std::make_pair(row_size, row); }
       }
@@ -124,17 +129,17 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t xj, i_t xk, domination_order_t order)
 {
   // Signature is valid if any bit set in xj is also set in xk
-  std::cout << "Signature " << xj << " is " << signatures[xj] << std::endl;
-  std::cout << "Signature " << xk << " is " << signatures[xk] << std::endl;
+  // std::cout << "Signature " << xj << " is " << signatures[xj] << std::endl;
+  // std::cout << "Signature " << xk << " is " << signatures[xk] << std::endl;
   if ((signatures[xj] & signatures[xk]) != signatures[xj]) { return false; }
-  std::cout << "Signature " << xj << " and " << xk << " is true" << std::endl;
+  // std::cout << "Signature " << xj << " and " << xk << " is true" << std::endl;
 
   // Check variable types (iii)
   bool xj_is_int   = host_problem.variable_types[xj] == var_t::INTEGER;
   bool xk_is_int   = host_problem.variable_types[xk] == var_t::INTEGER;
   auto valid_types = xj_is_int && xk_is_int;
   if (!valid_types) { return false; }
-  std::cout << "Variable types " << xj << " and " << xk << " is true" << std::endl;
+  // std::cout << "Variable types " << xj << " and " << xk << " is true" << std::endl;
 
   auto cj = host_problem.objective_coefficients[xj];
   if (order == domination_order_t::NEGATED_XJ) { cj = -cj; }
@@ -142,8 +147,8 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   if (order == domination_order_t::NEGATED_XK) { ck = -ck; }
   // Check objective coefficients (i)
   if (cj > ck) { return false; }
-  std::cout << "Objective coefficients " << xj << " and " << xk << " is true" << std::endl;
-  std::cout << "cj: " << cj << ", ck: " << ck << std::endl;
+  // std::cout << "Objective coefficients " << xj << " and " << xk << " is true" << std::endl;
+  // std::cout << "cj: " << cj << ", ck: " << ck << std::endl;
 
   // Check constraint coefficients (ii)
   auto xj_offset = host_problem.reverse_offsets[xj];
