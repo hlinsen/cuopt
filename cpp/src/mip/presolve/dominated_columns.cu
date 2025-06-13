@@ -28,52 +28,66 @@ dominated_columns_t<i_t, f_t>::dominated_columns_t(problem_t<i_t, f_t>& problem_
 }
 
 template <typename i_t, typename f_t>
-void dominated_columns_t<i_t, f_t>::identify_candidate_variables(
+std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   typename problem_t<i_t, f_t>::host_view_t& host_problem,
   bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
-  bounds_presolve.solve(problem,
-                        cuopt::make_span(problem.variable_lower_bounds),
-                        cuopt::make_span(problem.variable_upper_bounds));
+  // std::cout << "Identifying candidate variables" << std::endl;
   auto lb_bars = cuopt::host_copy(bounds_presolve.upd.lb, stream);
   auto ub_bars = cuopt::host_copy(bounds_presolve.upd.ub, stream);
+  auto lb      = cuopt::host_copy(problem.variable_lower_bounds, stream);
+  auto ub      = cuopt::host_copy(problem.variable_upper_bounds, stream);
+  std::vector<i_t> candidates;
   for (int i = 0; i < problem.n_variables; ++i) {
     f_t lb_bar      = lb_bars[i];
     f_t ub_bar      = ub_bars[i];
-    f_t lb_original = host_problem.variable_lower_bounds[i];
-    f_t ub_original = host_problem.variable_upper_bounds[i];
+    f_t lb_original = lb[i];
+    f_t ub_original = ub[i];
     // strenghtened bounds are included in original bounds means free
+    // It is equivalent to setting the bounds to infinity
+    if (lb_bar >= lb_original && ub_bar <= ub_original) {
+      host_problem.variable_lower_bounds[i] = -std::numeric_limits<f_t>::infinity();
+      host_problem.variable_upper_bounds[i] = std::numeric_limits<f_t>::infinity();
+      std::cout << "Implied free variable: " << i << std::endl;
+      candidates.push_back(i);
+    }
     // One of the bounds is infinite we can apply theorem 1.
-    if (lb_bar >= lb_original && ub_bar <= ub_original &&
-        (lb_bar == -std::numeric_limits<f_t>::infinity() ||
-         ub_bar == std::numeric_limits<f_t>::infinity())) {
-      candidates.push_back(host_problem.variables[i]);
+    else if (lb_bar == -std::numeric_limits<f_t>::infinity() ||
+             ub_bar == std::numeric_limits<f_t>::infinity()) {
+      candidates.push_back(i);
     }
   }
+  // std::cout << "Candidate variables identified" << std::endl;
+  return candidates;
 }
 
 template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::compute_signatures(
   typename problem_t<i_t, f_t>::host_view_t& host_problem)
 {
+  // std::cout << "Computing signatures" << std::endl;
+  signatures.resize(problem.n_variables);
   for (int i = 0; i < problem.n_constraints; ++i) {
+    // std::cout << "Computing signature for constraint " << i << std::endl;
     auto row_offset = host_problem.offsets[i];
     auto nnz_in_row = host_problem.offsets[i + 1] - row_offset;
-
+    // std::cout << "NNZ in row " << i << " is " << nnz_in_row << std::endl;
     for (int j = 0; j < nnz_in_row; ++j) {
       auto col = host_problem.variables[row_offset + j];
-      signatures[col].set(i % signature_size);
+      // std::cout << "Setting signature for variable " << col << std::endl;
+      signatures[col].set(j % signature_size);
     }
   }
+  // std::cout << "Signatures computed" << std::endl;
 }
 
 template <typename i_t, typename f_t>
 std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find_shortest_rows(
-  typename problem_t<i_t, f_t>::host_view_t& host_problem)
+  typename problem_t<i_t, f_t>::host_view_t& host_problem, std::vector<i_t> const& candidates)
 {
+  // std::cout << "Finding shortest rows" << std::endl;
   std::unordered_map<i_t, std::pair<i_t, i_t>> shortest_rows;
-  for (size_t i = 0; i < candidates.size(); ++i) {
-    auto col           = candidates[i];
+  for (auto col : candidates) {
     auto col_offset    = host_problem.reverse_offsets[col];
     auto nnz_in_col    = host_problem.reverse_offsets[col + 1] - col_offset;
     shortest_rows[col] = {std::numeric_limits<i_t>::max(), -1};
@@ -81,9 +95,11 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
       auto row         = host_problem.reverse_constraints[col_offset + j];
       auto row_size    = host_problem.offsets[row + 1] - host_problem.offsets[row];
       auto coefficient = host_problem.reverse_coefficients[col_offset + j];
+      std::cout << "constraint: " << row << ", lower: " << host_problem.constraint_lower_bounds[row]
+                << ", upper: " << host_problem.constraint_upper_bounds[row] << std::endl;
       // Check for LesserThanOrEqual
-      if ((host_problem.constraint_lower_bounds[row] == -std::numeric_limits<f_t>::max() &&
-           host_problem.constraint_upper_bounds[row] != std::numeric_limits<f_t>::max())) {
+      if ((host_problem.constraint_lower_bounds[row] == -std::numeric_limits<f_t>::infinity() &&
+           host_problem.constraint_upper_bounds[row] != std::numeric_limits<f_t>::infinity())) {
         if (coefficient > 0) {
           auto [min_row_size, row_id] = shortest_rows[col];
           if (row_size < min_row_size) { shortest_rows[col] = std::make_pair(row_size, row); }
@@ -98,24 +114,24 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
       }
     }
   }
+  // std::cout << "Shortest rows found" << std::endl;
   return shortest_rows;
 }
 
 template <typename i_t, typename f_t>
 bool dominated_columns_t<i_t, f_t>::dominates(
-  typename problem_t<i_t, f_t>::host_view_t& host_problem,
-  i_t xj,
-  i_t xk,
-  i_t row,
-  domination_order_t order)
+  typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t xj, i_t xk, domination_order_t order)
 {
-  if (!(signatures[xj][row] && signatures[xk][row])) { return false; }
+  // Signature is valid if any bit set in xj is also set in xk
+  if ((signatures[xj] & signatures[xk]) != signatures[xj]) { return false; }
+  std::cout << "Signature " << xj << " and " << xk << " is true" << std::endl;
 
-  // Get column vectors for comparison
-  auto xj_offset = host_problem.reverse_offsets[xj];
-  auto xj_nnz    = host_problem.reverse_offsets[xj + 1] - xj_offset;
-  auto xk_offset = host_problem.reverse_offsets[xk];
-  auto xk_nnz    = host_problem.reverse_offsets[xk + 1] - xk_offset;
+  // Check variable types (iii)
+  bool xj_is_int   = host_problem.variable_types[xj] == var_t::INTEGER;
+  bool xk_is_int   = host_problem.variable_types[xk] == var_t::INTEGER;
+  auto valid_types = xj_is_int && xk_is_int;
+  if (!valid_types) { return false; }
+  std::cout << "Variable types " << xj << " and " << xk << " is true" << std::endl;
 
   auto cj = host_problem.objective_coefficients[xj];
   if (order == domination_order_t::NEGATED_XJ) { cj = -cj; }
@@ -123,30 +139,48 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   if (order == domination_order_t::NEGATED_XK) { ck = -ck; }
   // Check objective coefficients (i)
   if (cj > ck) { return false; }
+  std::cout << "Objective coefficients " << xj << " and " << xk << " is true" << std::endl;
+  std::cout << "cj: " << cj << ", ck: " << ck << std::endl;
 
   // Check constraint coefficients (ii)
+  auto xj_offset = host_problem.reverse_offsets[xj];
+  auto xj_nnz    = host_problem.reverse_offsets[xj + 1] - xj_offset;
+  auto xk_offset = host_problem.reverse_offsets[xk];
+  auto xk_nnz    = host_problem.reverse_offsets[xk + 1] - xk_offset;
+  std::cout << "var: " << xj << "\n";
   for (int i = 0; i < xj_nnz; ++i) {
-    auto row1   = host_problem.reverse_constraints[xj_offset + i];
-    auto coeff1 = host_problem.reverse_coefficients[xj_offset + i];
-    auto coeff2 = 0;
-    if (order == domination_order_t::NEGATED_XJ) { coeff1 = -coeff1; }
+    std::cout << "cst: " << host_problem.reverse_constraints[xj_offset + i]
+              << ", coeff: " << host_problem.reverse_coefficients[xj_offset + i] << std::endl;
+  }
+  std::cout << "var: " << xk << "\n";
+  for (int i = 0; i < xk_nnz; ++i) {
+    std::cout << "cst: " << host_problem.reverse_constraints[xk_offset + i]
+              << ", coeff: " << host_problem.reverse_coefficients[xk_offset + i] << std::endl;
+  }
+  for (int i = 0; i < xj_nnz; ++i) {
+    auto row1  = host_problem.reverse_constraints[xj_offset + i];
+    f_t coeff1 = host_problem.reverse_coefficients[xj_offset + i];
+    std::cout << "cst: " << row1 << ", coeff: " << coeff1 << std::endl;
+    f_t coeff2 = 0;
 
     for (int j = 0; j < xk_nnz; ++j) {
       auto row2 = host_problem.reverse_constraints[xk_offset + j];
+      std::cout << "cst: " << row2
+                << ", coeff: " << host_problem.reverse_coefficients[xk_offset + j] << std::endl;
       if (row1 == row2) {
         coeff2 = host_problem.reverse_coefficients[xk_offset + j];
+        std::cout << xk << " found in row " << row2 << " with coefficient " << coeff2 << std::endl;
         break;
       }
     }
-
+    if (order == domination_order_t::NEGATED_XJ) { coeff1 = -coeff1; }
     if (order == domination_order_t::NEGATED_XK) { coeff2 = -coeff2; }
+    std::cout << "constraint: " << row1 << ", coeff1: " << coeff1 << ", coeff2: " << coeff2
+              << std::endl;
     if (coeff1 > coeff2) { return false; }
   }
 
-  // Check variable types (iii)
-  bool xj_is_int = host_problem.variable_types[xj] == var_t::INTEGER;
-  bool xk_is_int = host_problem.variable_types[xk] == var_t::INTEGER;
-  if (!xj_is_int || xk_is_int) { return false; }
+  std::cout << "Constraint coefficients " << xj << " and " << xk << " is true" << std::endl;
 
   return true;
 }
@@ -190,9 +224,35 @@ template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
   auto host_problem = problem.to_host();
-  identify_candidate_variables(host_problem, bounds_presolve);
+  std::cout << "Constraints and coefficients:" << std::endl;
+  for (i_t row = 0; row < host_problem.n_constraints; ++row) {
+    std::cout << "Row " << row << ": ";
+    auto row_offset = host_problem.offsets[row];
+    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
+    for (i_t j = 0; j < nnz_in_row; ++j) {
+      auto var   = host_problem.variables[row_offset + j];
+      auto coeff = host_problem.coefficients[row_offset + j];
+      std::cout << coeff << "x" << var << " ";
+    }
+    std::cout << std::endl;
+  }
+
+  cuopt::print("variables", host_problem.variables);
+
+  // cuopt::print("original_variables", problem.original_problem_ptr->get_variable_names());
+  cuopt::print("original_variable_lower_bounds",
+               problem.original_problem_ptr->get_variable_lower_bounds());
+  cuopt::print("original_variable_upper_bounds",
+               problem.original_problem_ptr->get_variable_upper_bounds());
+
+  cuopt::print("variable_lower_bounds", problem.variable_lower_bounds);
+  cuopt::print("variable_upper_bounds", problem.variable_upper_bounds);
+  auto candidates = identify_candidate_variables(host_problem, bounds_presolve);
+  cuopt::print("candidates", candidates);
+  if (candidates.empty()) { return; }
   compute_signatures(host_problem);
-  auto shortest_rows = find_shortest_rows(host_problem);
+  auto shortest_rows = find_shortest_rows(host_problem, candidates);
+  std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
   for (const auto& [xj, pair] : shortest_rows) {
     auto const& [row_size, row] = pair;
     auto row_offset             = host_problem.offsets[row];
@@ -200,15 +260,19 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     // All the variables in this row are the candidates to be dominated by xj
     for (int j = 0; j < nnz_in_row; ++j) {
       auto xk = host_problem.variables[row_offset + j];
-      if (dominates(host_problem, xj, xk, row, domination_order_t::REGULAR)) {
+      std::cout << "Check if " << xj << " dominates " << xk << std::endl;
+      if (dominates(host_problem, xj, xk, domination_order_t::REGULAR)) {
+        std::cout << xj << " dominates " << xk << std::endl;
         update_variable_bounds(host_problem, xj, xk, domination_order_t::REGULAR);
       }
-      if (dominates(host_problem, xj, xk, row, domination_order_t::NEGATED_XJ)) {
-        update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XJ);
-      }
-      if (dominates(host_problem, xj, xk, row, domination_order_t::NEGATED_XK)) {
-        update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XK);
-      }
+      // if (dominates(host_problem, xj, xk, row, domination_order_t::NEGATED_XJ)) {
+      //   std::cout << xj << " dominates " << xk << std::endl;
+      //   update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XJ);
+      // }
+      // if (dominates(host_problem, xj, xk, row, domination_order_t::NEGATED_XK)) {
+      //   std::cout << xj << " dominates " << xk << std::endl;
+      //   update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XK);
+      // }
     }
   }
 
@@ -221,6 +285,8 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
              host_problem.variable_upper_bounds.data(),
              problem.n_variables,
              stream);
+  cuopt::print("variable_lower_bounds", problem.variable_lower_bounds);
+  cuopt::print("variable_upper_bounds", problem.variable_upper_bounds);
 }
 
 }  // namespace cuopt::linear_programming::detail

@@ -19,6 +19,7 @@
 #include <mip/problem/problem_helpers.cuh>
 #include "diversity_manager.cuh"
 
+#include <mip/presolve/dominated_columns.cuh>
 #include <mip/presolve/probing_cache.cuh>
 #include <mip/presolve/trivial_presolve.cuh>
 
@@ -238,24 +239,28 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
 {
   CUOPT_LOG_INFO("Running presolve!");
   timer_t presolve_timer(time_limit);
-  auto term_crit = ls.constraint_prop.bounds_update.solve(*problem_ptr);
-  if (ls.constraint_prop.bounds_update.infeas_constraints_count > 0) {
-    stats.presolve_time = timer.elapsed_time();
-    return false;
-  }
-  if (termination_criterion_t::NO_UPDATE != term_crit) {
-    ls.constraint_prop.bounds_update.set_updated_bounds(*problem_ptr);
-    trivial_presolve(*problem_ptr);
-    if (!problem_ptr->empty) { check_bounds_sanity(*problem_ptr); }
-  }
-  if (!problem_ptr->empty) {
-    // do the resizing no-matter what, bounds presolve might not change the bounds but initial
-    // trivial presolve might have
-    ls.constraint_prop.bounds_update.resize(*problem_ptr);
-    ls.constraint_prop.conditional_bounds_update.update_constraint_bounds(
-      *problem_ptr, ls.constraint_prop.bounds_update);
-    check_bounds_sanity(*problem_ptr);
-  }
+  // auto term_crit = ls.constraint_prop.bounds_update.solve(*problem_ptr);
+  // if (ls.constraint_prop.bounds_update.infeas_constraints_count > 0) {
+  //   stats.presolve_time = timer.elapsed_time();
+  //   return false;
+  // }
+  // if (termination_criterion_t::NO_UPDATE != term_crit) {
+  //   ls.constraint_prop.bounds_update.set_updated_bounds(*problem_ptr);
+  //   trivial_presolve(*problem_ptr);
+  //   if (!problem_ptr->empty) { check_bounds_sanity(*problem_ptr); }
+  // }
+  // if (!problem_ptr->empty) {
+  //   // do the resizing no-matter what, bounds presolve might not change the bounds but initial
+  //   // trivial presolve might have
+  //   ls.constraint_prop.bounds_update.resize(*problem_ptr);
+  //   ls.constraint_prop.conditional_bounds_update.update_constraint_bounds(
+  //     *problem_ptr, ls.constraint_prop.bounds_update);
+  //   check_bounds_sanity(*problem_ptr);
+  // }
+  dominated_columns_t<i_t, f_t> dominated_columns(*problem_ptr);
+  std::cout << "Running dominated columns presolve" << std::endl;
+  dominated_columns.presolve(ls.constraint_prop.bounds_update);
+  std::cout << "Dominated columns presolve done" << std::endl;
   stats.presolve_time = presolve_timer.elapsed_time();
   return true;
 }

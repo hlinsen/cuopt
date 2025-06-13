@@ -180,6 +180,12 @@ void print(std::string_view const name, rmm::device_uvector<T> const& container)
 }
 
 template <typename T>
+void print(std::string_view const name, std::vector<T> const& container)
+{
+  raft::print_host_vector(name.data(), container.data(), container.size(), std::cout);
+}
+
+template <typename T>
 raft::device_span<T> make_span(rmm::device_uvector<T>& container,
                                typename rmm::device_uvector<T>::size_type beg,
                                typename rmm::device_uvector<T>::size_type end)

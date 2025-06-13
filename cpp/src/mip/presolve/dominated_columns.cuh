@@ -39,15 +39,15 @@ struct dominated_columns_t {
    * @brief Identify implied free and infinite bounds
    *
    */
-  void identify_candidate_variables(typename problem_t<i_t, f_t>::host_view_t& host_problem,
-                                    bound_presolve_t<i_t, f_t>& bounds_presolve);
+  std::vector<i_t> identify_candidate_variables(
+    typename problem_t<i_t, f_t>::host_view_t& host_problem,
+    bound_presolve_t<i_t, f_t>& bounds_presolve);
   void compute_signatures(typename problem_t<i_t, f_t>::host_view_t& host_problem);
   std::unordered_map<i_t, std::pair<i_t, i_t>> find_shortest_rows(
-    typename problem_t<i_t, f_t>::host_view_t& host_problem);
+    typename problem_t<i_t, f_t>::host_view_t& host_problem, std::vector<i_t> const& candidates);
   bool dominates(typename problem_t<i_t, f_t>::host_view_t& host_problem,
                  i_t xj,
                  i_t xk,
-                 i_t row,
                  domination_order_t order);
   void update_variable_bounds(typename problem_t<i_t, f_t>::host_view_t& host_problem,
                               i_t xj,
@@ -60,7 +60,6 @@ struct dominated_columns_t {
   std::vector<f_t> out_lb;
 
   std::vector<f_t> out_ub;
-  std::vector<i_t> candidates;
   rmm::cuda_stream_view stream;
 };
 
