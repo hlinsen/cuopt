@@ -68,14 +68,14 @@ void dominated_columns_t<i_t, f_t>::compute_signatures(
   // std::cout << "Computing signatures" << std::endl;
   signatures.resize(problem.n_variables);
   for (int i = 0; i < problem.n_constraints; ++i) {
-    // std::cout << "Computing signature for constraint " << i << std::endl;
+    std::cout << "Computing signature for constraint " << i << std::endl;
     auto row_offset = host_problem.offsets[i];
     auto nnz_in_row = host_problem.offsets[i + 1] - row_offset;
-    // std::cout << "NNZ in row " << i << " is " << nnz_in_row << std::endl;
+    std::cout << "NNZ in row " << i << " is " << nnz_in_row << std::endl;
     for (int j = 0; j < nnz_in_row; ++j) {
       auto col = host_problem.variables[row_offset + j];
-      // std::cout << "Setting signature for variable " << col << std::endl;
-      signatures[col].set(j % signature_size);
+      std::cout << "Setting signature for variable " << col << std::endl;
+      signatures[col].set(i % signature_size);
     }
   }
   // std::cout << "Signatures computed" << std::endl;
@@ -95,8 +95,9 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
       auto row         = host_problem.reverse_constraints[col_offset + j];
       auto row_size    = host_problem.offsets[row + 1] - host_problem.offsets[row];
       auto coefficient = host_problem.reverse_coefficients[col_offset + j];
-      std::cout << "constraint: " << row << ", lower: " << host_problem.constraint_lower_bounds[row]
-                << ", upper: " << host_problem.constraint_upper_bounds[row] << std::endl;
+      // std::cout << "constraint: " << row << ", lower: " <<
+      // host_problem.constraint_lower_bounds[row]
+      //           << ", upper: " << host_problem.constraint_upper_bounds[row] << std::endl;
       // Check for LesserThanOrEqual
       if ((host_problem.constraint_lower_bounds[row] == -std::numeric_limits<f_t>::infinity() &&
            host_problem.constraint_upper_bounds[row] != std::numeric_limits<f_t>::infinity())) {
@@ -123,6 +124,8 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t xj, i_t xk, domination_order_t order)
 {
   // Signature is valid if any bit set in xj is also set in xk
+  std::cout << "Signature " << xj << " is " << signatures[xj] << std::endl;
+  std::cout << "Signature " << xk << " is " << signatures[xk] << std::endl;
   if ((signatures[xj] & signatures[xk]) != signatures[xj]) { return false; }
   std::cout << "Signature " << xj << " and " << xk << " is true" << std::endl;
 
@@ -172,7 +175,7 @@ bool dominated_columns_t<i_t, f_t>::dominates(
     if (coeff1 > coeff2) { return false; }
   }
 
-  std::cout << "Constraint coefficients " << xj << " and " << xk << " is true" << std::endl;
+  // std::cout << "Constraint coefficients " << xj << " and " << xk << " is true" << std::endl;
 
   return true;
 }
@@ -245,8 +248,10 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
   for (const auto& [xj, pair] : shortest_rows) {
     auto const& [row_size, row] = pair;
-    auto row_offset             = host_problem.offsets[row];
-    auto nnz_in_row             = host_problem.offsets[row + 1] - row_offset;
+    std::cout << "For variable " << xj << " the shortest row is " << row << " with size "
+              << row_size << std::endl;
+    auto row_offset = host_problem.offsets[row];
+    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
     // All the variables in this row are the candidates to be dominated by xj
     for (int j = 0; j < nnz_in_row; ++j) {
       auto xk = host_problem.variables[row_offset + j];
