@@ -146,7 +146,7 @@ TEST(presolve, test_dominated_columns)
   mip_solution_t<int, double> solution = solve_mip(&handle_, mps_problem, settings);
 
   // Check if solution was found
-  EXPECT_EQ(solution.get_termination_status(), mip_termination_status_t::FeasibleFound);
+  EXPECT_EQ(solution.get_termination_status(), mip_termination_status_t::Optimal);
 
   // Get the solution
   auto solution_values = cuopt::host_copy(solution.get_solution());

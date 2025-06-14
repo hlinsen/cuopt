@@ -43,14 +43,14 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
     f_t ub_bar      = ub_bars[i];
     f_t lb_original = lb[i];
     f_t ub_original = ub[i];
-    std::cout << "Variable " << i << " has bounds " << lb_original << " " << ub_original
-              << " and strengthened bounds " << lb_bar << " " << ub_bar << std::endl;
+    // std::cout << "Variable " << i << " has bounds " << lb_original << " " << ub_original
+    //           << " and strengthened bounds " << lb_bar << " " << ub_bar << std::endl;
     // strenghtened bounds are included in original bounds means free
     // It is equivalent to setting the bounds to infinity
     if (lb_bar >= lb_original && ub_bar <= ub_original) {
       // host_problem.variable_lower_bounds[i] = -std::numeric_limits<f_t>::infinity();
       // host_problem.variable_upper_bounds[i] = std::numeric_limits<f_t>::infinity();
-      std::cout << "Implied free variable: " << i << std::endl;
+      // std::cout << "Implied free variable: " << i << std::endl;
       candidates.push_back(i);
     }
     // One of the bounds is infinite we can apply theorem 1.
@@ -96,25 +96,17 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
   for (auto col : candidates) {
     auto col_offset = host_problem.reverse_offsets[col];
     auto nnz_in_col = host_problem.reverse_offsets[col + 1] - col_offset;
-    std::cout << "col: " << col << " has " << nnz_in_col << " non-zeros" << std::endl;
+    // std::cout << "col: " << col << " has " << nnz_in_col << " non-zeros" << std::endl;
     shortest_rows[col] = {std::numeric_limits<i_t>::max(), -1};
     for (int j = 0; j < nnz_in_col; ++j) {
-      auto row         = host_problem.reverse_constraints[col_offset + j];
-      auto row_size    = host_problem.offsets[row + 1] - host_problem.offsets[row];
-      auto coefficient = host_problem.reverse_coefficients[col_offset + j];
-      std::cout << "constraint: " << row << ", lower: " << original_lower_bounds[row]
-                << ", upper: " << original_upper_bounds[row] << std::endl;
-      // Check for LesserThanOrEqual
+      auto row      = host_problem.reverse_constraints[col_offset + j];
+      auto row_size = host_problem.offsets[row + 1] - host_problem.offsets[row];
+      // std::cout << "constraint: " << row << ", lower: " << original_lower_bounds[row]
+      //           << ", upper: " << original_upper_bounds[row] << std::endl;
+      // Check for LesserThanOrEqual or Equality
       if ((original_lower_bounds[row] == -std::numeric_limits<f_t>::infinity() &&
-           original_upper_bounds[row] != std::numeric_limits<f_t>::infinity())) {
-        if (coefficient > 0) {
-          auto [min_row_size, row_id] = shortest_rows[col];
-          if (row_size < min_row_size) { shortest_rows[col] = std::make_pair(row_size, row); }
-        }
-      }
-
-      // Check for equality
-      if (problem.integer_equal(original_lower_bounds[row], original_upper_bounds[row])) {
+           original_upper_bounds[row] != std::numeric_limits<f_t>::infinity()) ||
+          problem.integer_equal(original_lower_bounds[row], original_upper_bounds[row])) {
         auto [min_row_size, row_id] = shortest_rows[col];
         if (row_size < min_row_size) { shortest_rows[col] = std::make_pair(row_size, row); }
       }
@@ -224,17 +216,17 @@ template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
   auto host_problem = problem.to_host();
-  std::cout << "Constraints and coefficients:" << std::endl;
+  // std::cout << "Constraints and coefficients:" << std::endl;
   for (i_t row = 0; row < host_problem.n_constraints; ++row) {
-    std::cout << "Row " << row << ": ";
+    // std::cout << "Row " << row << ": ";
     auto row_offset = host_problem.offsets[row];
     auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
     for (i_t j = 0; j < nnz_in_row; ++j) {
       auto var   = host_problem.variables[row_offset + j];
       auto coeff = host_problem.coefficients[row_offset + j];
-      std::cout << coeff << "x" << var << " ";
+      //   std::cout << coeff << "x" << var << " ";
     }
-    std::cout << std::endl;
+    // std::cout << std::endl;
   }
 
   // cuopt::print("original_variables", problem.original_problem_ptr->get_variable_names());
@@ -261,19 +253,19 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     for (int j = 0; j < nnz_in_row; ++j) {
       auto xk = host_problem.variables[row_offset + j];
       if (xj == xk) { continue; }
-      std::cout << "Check if " << xj << " dominates " << xk << std::endl;
+      // std::cout << "Check if " << xj << " dominates " << xk << std::endl;
       if (dominates(host_problem, xj, xk, domination_order_t::REGULAR)) {
         std::cout << xj << " dominates " << xk << std::endl;
         update_variable_bounds(host_problem, xj, xk, domination_order_t::REGULAR);
       }
-      // if (dominates(host_problem, xj, xk, row, domination_order_t::NEGATED_XJ)) {
-      //   std::cout << xj << " dominates " << xk << std::endl;
-      //   update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XJ);
-      // }
-      // if (dominates(host_problem, xj, xk, row, domination_order_t::NEGATED_XK)) {
-      //   std::cout << xj << " dominates " << xk << std::endl;
-      //   update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XK);
-      // }
+      if (dominates(host_problem, xj, xk, domination_order_t::NEGATED_XJ)) {
+        std::cout << "-" << xj << " dominates " << xk << std::endl;
+        update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XJ);
+      }
+      if (dominates(host_problem, xj, xk, domination_order_t::NEGATED_XK)) {
+        std::cout << xj << " dominates -" << xk << std::endl;
+        update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XK);
+      }
     }
   }
 
