@@ -17,7 +17,9 @@
 
 #include "dominated_columns.cuh"
 
+#include <cmath>
 #include <utilities/copy_helpers.hpp>
+#include "trivial_presolve.cuh"
 
 namespace cuopt::linear_programming::detail {
 
@@ -39,6 +41,9 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   auto ub      = cuopt::host_copy(problem.variable_upper_bounds, stream);
   std::vector<i_t> candidates;
   for (int i = 0; i < problem.n_variables; ++i) {
+    // Skip variables that have already been inferred
+    if (is_variable_inferred(i)) { continue; }
+
     f_t lb_bar      = lb_bars[i];
     f_t ub_bar      = ub_bars[i];
     f_t lb_original = lb[i];
@@ -120,6 +125,9 @@ template <typename i_t, typename f_t>
 bool dominated_columns_t<i_t, f_t>::dominates(
   typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t xj, i_t xk, domination_order_t order)
 {
+  // Skip if either variable has already been inferred
+  if (is_variable_inferred(xj) || is_variable_inferred(xk)) { return false; }
+
   // Signature is valid if any bit set in xj is also set in xk
   // std::cout << "Signature " << xj << " is " << signatures[xj] << std::endl;
   // std::cout << "Signature " << xk << " is " << signatures[xk] << std::endl;
@@ -190,24 +198,20 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   if (order == domination_order_t::REGULAR) {
     if (uj == std::numeric_limits<f_t>::infinity()) {
       // case i: xk can be set to lk
-      host_problem.variable_upper_bounds[xk] = lk;
-      host_problem.variable_lower_bounds[xj] = lk;
+      problem.presolve_data.inferred_variables[xk] = lk;
     } else if (lk == -std::numeric_limits<f_t>::infinity()) {
-      // case iii: xk can be set to uk
-      host_problem.variable_lower_bounds[xj] = uk;
-      host_problem.variable_upper_bounds[xk] = uk;
+      // case iii: xj can be set to uk
+      problem.presolve_data.inferred_variables[xj] = uk;
     }
   } else if (order == domination_order_t::NEGATED_XK) {
     if (uj == std::numeric_limits<f_t>::infinity()) {
       // case ii: xk can be set to uk
-      host_problem.variable_upper_bounds[xk] = uk;
-      host_problem.variable_lower_bounds[xj] = uk;
+      problem.presolve_data.inferred_variables[xk] = uk;
     }
   } else if (order == domination_order_t::NEGATED_XJ) {
     if (lk == -std::numeric_limits<f_t>::infinity()) {
       // case iv: xj can be set to lj
-      host_problem.variable_lower_bounds[xj] = lj;
-      host_problem.variable_upper_bounds[xk] = lj;
+      problem.presolve_data.inferred_variables[xj] = lj;
     }
   }
 }
@@ -230,23 +234,27 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   }
 
   // cuopt::print("original_variables", problem.original_problem_ptr->get_variable_names());
-  cuopt::print("original_variable_lower_bounds",
-               problem.original_problem_ptr->get_variable_lower_bounds());
-  cuopt::print("original_variable_upper_bounds",
-               problem.original_problem_ptr->get_variable_upper_bounds());
+  // cuopt::print("original_variable_lower_bounds",
+  //              problem.original_problem_ptr->get_variable_lower_bounds());
+  // cuopt::print("original_variable_upper_bounds",
+  //              problem.original_problem_ptr->get_variable_upper_bounds());
 
-  cuopt::print("variable_lower_bounds", problem.variable_lower_bounds);
-  cuopt::print("variable_upper_bounds", problem.variable_upper_bounds);
+  // cuopt::print("variable_lower_bounds", problem.variable_lower_bounds);
+  // cuopt::print("variable_upper_bounds", problem.variable_upper_bounds);
   auto candidates = identify_candidate_variables(host_problem, bounds_presolve);
-  cuopt::print("candidates", candidates);
+  // cuopt::print("candidates", candidates);
   if (candidates.empty()) { return; }
   compute_signatures(host_problem);
   auto shortest_rows = find_shortest_rows(host_problem, candidates);
-  std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
+  // std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
+
+  // Track variables that have been fixed by domination
+  std::vector<i_t> dominated_vars;
+
   for (const auto& [xj, pair] : shortest_rows) {
     auto const& [row_size, row] = pair;
-    std::cout << "For variable " << xj << " the shortest row is " << row << " with size "
-              << row_size << std::endl;
+    // std::cout << "For variable " << xj << " the shortest row is " << row << " with size "
+    //           << row_size << std::endl;
     auto row_offset = host_problem.offsets[row];
     auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
     // All the variables in this row are the candidates to be dominated by xj
@@ -254,32 +262,24 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
       auto xk = host_problem.variables[row_offset + j];
       if (xj == xk) { continue; }
       // std::cout << "Check if " << xj << " dominates " << xk << std::endl;
-      if (dominates(host_problem, xj, xk, domination_order_t::REGULAR)) {
-        std::cout << xj << " dominates " << xk << std::endl;
-        update_variable_bounds(host_problem, xj, xk, domination_order_t::REGULAR);
-      }
-      if (dominates(host_problem, xj, xk, domination_order_t::NEGATED_XJ)) {
-        std::cout << "-" << xj << " dominates " << xk << std::endl;
-        update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XJ);
-      }
-      if (dominates(host_problem, xj, xk, domination_order_t::NEGATED_XK)) {
-        std::cout << xj << " dominates -" << xk << std::endl;
-        update_variable_bounds(host_problem, xj, xk, domination_order_t::NEGATED_XK);
+      for (int order_idx = 0; order_idx < static_cast<int>(domination_order_t::SIZE); ++order_idx) {
+        auto order = static_cast<domination_order_t>(order_idx);
+        if (dominates(host_problem, xj, xk, order)) {
+          // std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
+          update_variable_bounds(host_problem, xj, xk, order);
+          dominated_vars.push_back(xk);
+        }
       }
     }
   }
 
-  // Update the problem with the new bounds
-  raft::copy(problem.variable_lower_bounds.data(),
-             host_problem.variable_lower_bounds.data(),
-             problem.n_variables,
-             stream);
-  raft::copy(problem.variable_upper_bounds.data(),
-             host_problem.variable_upper_bounds.data(),
-             problem.n_variables,
-             stream);
-  cuopt::print("variable_lower_bounds", problem.variable_lower_bounds);
-  cuopt::print("variable_upper_bounds", problem.variable_upper_bounds);
+  if (!dominated_vars.empty()) { update_from_csr(problem, dominated_vars); }
+}
+
+template <typename i_t, typename f_t>
+bool dominated_columns_t<i_t, f_t>::is_variable_inferred(i_t var_idx) const
+{
+  return problem.presolve_data.inferred_variables[var_idx] != std::numeric_limits<f_t>::infinity();
 }
 
 }  // namespace cuopt::linear_programming::detail

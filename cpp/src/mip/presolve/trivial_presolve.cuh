@@ -115,7 +115,7 @@ void cleanup_vectors(problem_t<i_t, f_t>& pb,
 }
 
 template <typename i_t, typename f_t>
-void update_from_csr(problem_t<i_t, f_t>& pb)
+void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_remove = {})
 {
   auto handle_ptr = pb.handle_ptr;
   rmm::device_uvector<i_t> cnst(pb.coefficients.size(), handle_ptr->get_stream());
@@ -170,6 +170,25 @@ void update_from_csr(problem_t<i_t, f_t>& pb)
                   pb.variables.begin(),
                   var_map.begin());
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
+
+  // Mark explicitly removed variables as unused (0 in var_map)
+  if (!vars_to_remove.empty()) {
+    rmm::device_uvector<i_t> d_vars_to_remove(vars_to_remove.size(), handle_ptr->get_stream());
+    raft::copy(d_vars_to_remove.data(),
+               vars_to_remove.data(),
+               vars_to_remove.size(),
+               handle_ptr->get_stream());
+
+    thrust::for_each(handle_ptr->get_thrust_policy(),
+                     d_vars_to_remove.begin(),
+                     d_vars_to_remove.end(),
+                     [var_map = var_map.data()] __device__(i_t var_idx) {
+                       if (var_idx >= 0 && var_idx < var_map.size()) {
+                         var_map[var_idx] = 0;  // Mark as unused
+                       }
+                     });
+    RAFT_CHECK_CUDA(handle_ptr->get_stream());
+  }
 
   auto unused_var_count =
     thrust::count(handle_ptr->get_thrust_policy(), var_map.begin(), var_map.end(), 0);
@@ -354,12 +373,12 @@ void test_reverse_matches(const problem_t<i_t, f_t>& pb)
 }
 
 template <typename i_t, typename f_t>
-void trivial_presolve(problem_t<i_t, f_t>& problem)
+void trivial_presolve(problem_t<i_t, f_t>& problem, const std::vector<i_t>& vars_to_remove = {})
 {
   cuopt_expects(problem.preprocess_called,
                 error_type_t::RuntimeError,
                 "preprocess_problem should be called before running the solver");
-  update_from_csr(problem);
+  update_from_csr(problem, vars_to_remove);
   problem.recompute_auxilliary_data(
     false);  // check problem representation later once cstr bounds are computed
   cuopt_func_call(test_reverse_matches(problem));
