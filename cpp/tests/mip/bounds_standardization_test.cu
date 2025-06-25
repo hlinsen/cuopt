@@ -72,7 +72,7 @@ void test_bounds_standardization_test(std::string test_instance)
   // run the problem constructor of MIP, so that we do bounds standardization
   detail::problem_t<int, double> standardized_problem(op_problem);
   standardized_problem.preprocess_problem();
-  detail::trivial_presolve(standardized_problem);
+  detail::apply_presolve(standardized_problem, detail::presolve_type_t::TRIVIAL);
   detail::solution_t<int, double> solution_1(standardized_problem);
 
   mip_solver_settings_t<int, double> default_settings{};

@@ -183,7 +183,7 @@ void test_equal_val_bounds(i_t n_cnst, i_t n_var)
 
   dtl::problem_t<i_t, f_t> problem(op_problem);
   problem.preprocess_problem();
-  detail::trivial_presolve(problem);
+  detail::apply_presolve(problem, detail::presolve_type_t::TRIVIAL);
 
   EXPECT_EQ(selected_vars.size() + problem.n_variables, n_var);
 }

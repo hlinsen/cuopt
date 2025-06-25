@@ -246,7 +246,7 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
   }
   if (termination_criterion_t::NO_UPDATE != term_crit) {
     ls.constraint_prop.bounds_update.set_updated_bounds(*problem_ptr);
-    // trivial_presolve(*problem_ptr);
+    // apply_presolve(*problem_ptr, presolve_type_t::TRIVIAL);
     if (!problem_ptr->empty) { check_bounds_sanity(*problem_ptr); }
   }
   if (!problem_ptr->empty) {
@@ -258,9 +258,9 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
     check_bounds_sanity(*problem_ptr);
   }
   dominated_columns_t<i_t, f_t> dominated_columns(*problem_ptr);
-  std::cout << "Running dominated columns presolve" << std::endl;
+  CUOPT_LOG_INFO("Running dominated columns presolve");
   dominated_columns.presolve(ls.constraint_prop.bounds_update);
-  std::cout << "Dominated columns presolve done" << std::endl;
+  CUOPT_LOG_INFO("Dominated columns presolve done");
   stats.presolve_time = presolve_timer.elapsed_time();
   return true;
 }

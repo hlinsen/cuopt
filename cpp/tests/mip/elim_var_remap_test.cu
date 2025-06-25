@@ -87,7 +87,7 @@ void test_elim_var_remap(std::string test_instance)
   // run the problem constructor of MIP, so that we do bounds standardization
   detail::problem_t<int, double> problem(op_problem);
   problem.preprocess_problem();
-  trivial_presolve(problem);
+  apply_presolve(problem, detail::presolve_type_t::TRIVIAL);
 
   // golden assignment vector
   rmm::device_uvector<double> full_assignment(problem.n_variables, handle_.get_stream());
@@ -113,7 +113,7 @@ void test_elim_var_remap(std::string test_instance)
   }
 
   detail::problem_t<int, double> sub_problem(problem);
-  trivial_presolve(sub_problem);
+  apply_presolve(sub_problem, detail::presolve_type_t::TRIVIAL);
 
   // check if number of variables is updated correctly due to trivial presolve
   EXPECT_EQ(sub_problem.n_variables, problem.n_variables - fixed_vars.size());
@@ -155,7 +155,7 @@ void test_elim_var_solution(std::string test_instance)
   // run the problem constructor of MIP, so that we do bounds standardization
   detail::problem_t<int, double> standardized_problem(op_problem);
   standardized_problem.preprocess_problem();
-  trivial_presolve(standardized_problem);
+  apply_presolve(standardized_problem, detail::presolve_type_t::TRIVIAL);
   detail::problem_t<int, double> sub_problem(standardized_problem);
 
   mip_solver_settings_t<int, double> default_settings{};
@@ -184,7 +184,7 @@ void test_elim_var_solution(std::string test_instance)
 
   handle_.sync_stream();
 
-  trivial_presolve(sub_problem);
+  apply_presolve(sub_problem, detail::presolve_type_t::TRIVIAL);
 
   detail::solution_t<int, double> solution_2(sub_problem);
   // run the problem through pdlp

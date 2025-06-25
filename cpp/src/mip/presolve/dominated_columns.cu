@@ -234,10 +234,10 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   }
 
   // cuopt::print("original_variables", problem.original_problem_ptr->get_variable_names());
-  // cuopt::print("original_variable_lower_bounds",
-  //              problem.original_problem_ptr->get_variable_lower_bounds());
-  // cuopt::print("original_variable_upper_bounds",
-  //              problem.original_problem_ptr->get_variable_upper_bounds());
+  cuopt::print("original_variable_lower_bounds",
+               problem.original_problem_ptr->get_variable_lower_bounds());
+  cuopt::print("original_variable_upper_bounds",
+               problem.original_problem_ptr->get_variable_upper_bounds());
 
   // cuopt::print("variable_lower_bounds", problem.variable_lower_bounds);
   // cuopt::print("variable_upper_bounds", problem.variable_upper_bounds);
@@ -273,7 +273,25 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     }
   }
 
-  if (!dominated_vars.empty()) { update_from_csr(problem, dominated_vars); }
+  if (!dominated_vars.empty()) {
+    std::cout << "Dominated variables: " << dominated_vars.size() << std::endl;
+    for (size_t var_idx = 0; var_idx < dominated_vars.size(); ++var_idx) {
+      auto var_type = host_problem.variable_types[dominated_vars[var_idx]];
+
+      if (var_type == var_t::INTEGER) {
+        std::cout << "("
+                  << "integer"
+                  << ", " << dominated_vars[var_idx] << ") ";
+      } else {
+        std::cout << "("
+                  << "continuous"
+                  << ", " << dominated_vars[var_idx] << ") ";
+      }
+    }
+    std::cout << std::endl;
+  }
+
+  apply_presolve(problem, presolve_type_t::DOMINATED_COLUMNS, dominated_vars);
 }
 
 template <typename i_t, typename f_t>

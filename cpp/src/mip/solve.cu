@@ -121,7 +121,7 @@ mip_solution_t<i_t, f_t> run_mip(detail::problem_t<i_t, f_t>& problem,
   // only call preprocess on scaled problem, so we can compute feasibility on the original problem
   scaled_problem.preprocess_problem();
   // cuopt_func_call((check_scaled_problem<i_t, f_t>(scaled_problem, saved_problem)));
-  detail::trivial_presolve(scaled_problem);
+  detail::apply_presolve(scaled_problem, detail::presolve_type_t::TRIVIAL);
 
   detail::mip_solver_t<i_t, f_t> solver(scaled_problem, settings, scaling, timer);
   auto scaled_sol                 = solver.run_solver();

@@ -43,6 +43,8 @@
 
 namespace cuopt::linear_programming::detail {
 
+enum class presolve_type_t { TRIVIAL = 0, DOMINATED_COLUMNS, SIZE };
+
 template <typename i_t, typename f_t>
 void test_renumbered_coo(raft::device_span<i_t> coo_major, const problem_t<i_t, f_t>& pb)
 {
@@ -164,6 +166,8 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
                   cnst.begin(),
                   cnst_map.begin());
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
+  cuopt::print("variables", pb.variables);
+  std::cout << "nnz_edge_count: " << nnz_edge_count << std::endl;
   thrust::scatter(handle_ptr->get_thrust_policy(),
                   thrust::make_constant_iterator<i_t>(1),
                   thrust::make_constant_iterator<i_t>(1) + nnz_edge_count,
@@ -171,6 +175,7 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
                   var_map.begin());
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
 
+  cuopt::print("var_map", var_map);
   // Mark explicitly removed variables as unused (0 in var_map)
   if (!vars_to_remove.empty()) {
     rmm::device_uvector<i_t> d_vars_to_remove(vars_to_remove.size(), handle_ptr->get_stream());
@@ -187,6 +192,7 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
                          var_map[var_idx] = 0;  // Mark as unused
                        }
                      });
+    cuopt::print("var_map", var_map);
     RAFT_CHECK_CUDA(handle_ptr->get_stream());
   }
 
@@ -296,9 +302,18 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
 
   pb.n_constraints = updated_n_cnst;
   pb.n_variables   = updated_n_vars;
-  CUOPT_LOG_INFO("After trivial presolve updated number of %d constraints %d variables",
-                 updated_n_cnst,
-                 updated_n_vars);
+
+  // FIXME: Use enum type
+  if (vars_to_remove.empty()) {
+    CUOPT_LOG_INFO("After trivial presolve updated number of %d constraints %d variables",
+                   updated_n_cnst,
+                   updated_n_vars);
+  } else {
+    CUOPT_LOG_INFO("After dominated presolve updated number of %d constraints %d variables",
+                   updated_n_cnst,
+                   updated_n_vars);
+  }
+
   // check successive cnst in coo increases by atmost 1
   // update csr offset
   pb.offsets.resize(pb.n_constraints + 1, handle_ptr->get_stream());
@@ -373,12 +388,22 @@ void test_reverse_matches(const problem_t<i_t, f_t>& pb)
 }
 
 template <typename i_t, typename f_t>
-void trivial_presolve(problem_t<i_t, f_t>& problem)
+void apply_presolve(problem_t<i_t, f_t>& problem,
+                    presolve_type_t presolve_type,
+                    const std::vector<i_t>& vars_to_remove = {})
 {
+  cuopt_assert(presolve_type != presolve_type_t::TRIVIAL || vars_to_remove.empty(),
+               "For trivial presolve, vars_to_remove must be empty");
+
+  if (presolve_type != presolve_type_t::TRIVIAL && vars_to_remove.empty()) {
+    CUOPT_LOG_WARN("No variables to remove, skipping presolve");
+    return;
+  }
+
   cuopt_expects(problem.preprocess_called,
                 error_type_t::RuntimeError,
                 "preprocess_problem should be called before running the solver");
-  update_from_csr(problem);
+  update_from_csr(problem, vars_to_remove);
   problem.recompute_auxilliary_data(
     false);  // check problem representation later once cstr bounds are computed
   cuopt_func_call(test_reverse_matches(problem));

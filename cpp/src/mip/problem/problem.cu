@@ -421,6 +421,7 @@ void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
     cuopt_assert(thrust::is_sorted(
                    handle_ptr->get_thrust_policy(), integer_indices.begin(), integer_indices.end()),
                  "integer indices are not sorted");
+    cuopt::print("integer_indices", integer_indices);
     // check precomputed helpers
     cuopt_assert(thrust::all_of(handle_ptr->get_thrust_policy(),
                                 integer_indices.cbegin(),
@@ -667,9 +668,12 @@ void problem_t<i_t, f_t>::post_process_assignment(rmm::device_uvector<f_t>& curr
 
   // Apply inferred variables to the assignment
   cuopt_assert(presolve_data.inferred_variables.size() == h_assignment.size(), "Size mismatch");
+  std::cout << "assignment size: " << h_assignment.size()
+            << ", inferred variables: " << presolve_data.inferred_variables.size() << std::endl;
   for (i_t i = 0; i < (i_t)h_assignment.size(); ++i) {
     if (presolve_data.inferred_variables[i] != std::numeric_limits<f_t>::infinity()) {
       h_assignment[i] = presolve_data.inferred_variables[i];
+      std::cout << "inferred variable " << i << " is " << h_assignment[i] << std::endl;
     }
   }
 

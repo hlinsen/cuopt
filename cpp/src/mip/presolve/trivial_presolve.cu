@@ -21,11 +21,15 @@
 namespace cuopt::linear_programming::detail {
 
 #if MIP_INSTANTIATE_FLOAT
-template void trivial_presolve(problem_t<int, float>& problem);
+template void apply_presolve(problem_t<int, float>& problem,
+                             presolve_type_t presolve_type,
+                             const std::vector<int>& vars_to_remove);
 #endif
 
 #if MIP_INSTANTIATE_DOUBLE
-template void trivial_presolve(problem_t<int, double>& problem);
+template void apply_presolve(problem_t<int, double>& problem,
+                             presolve_type_t presolve_type,
+                             const std::vector<int>& vars_to_remove);
 #endif
 
 }  // namespace cuopt::linear_programming::detail
