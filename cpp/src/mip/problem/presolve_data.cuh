@@ -35,7 +35,7 @@ class presolve_data_t {
       objective_scaling_factor(problem.get_objective_scaling_factor()),
       variable_mapping(0, stream),
       fixed_var_assignment(0, stream),
-      inferred_variables(problem.get_n_variables(), std::numeric_limits<f_t>::quiet_NaN())
+      inferred_variables(problem.get_n_variables(), std::numeric_limits<f_t>::infinity())
   {
   }
   presolve_data_t(const presolve_data_t& other, rmm::cuda_stream_view stream)
@@ -64,7 +64,6 @@ class presolve_data_t {
   rmm::device_uvector<f_t> fixed_var_assignment;
 
   // Vector to store inferred/fixed values for variables
-  // NaN indicates the variable is not fixed
   std::vector<f_t> inferred_variables;
 };
 

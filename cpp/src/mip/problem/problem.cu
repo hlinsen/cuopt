@@ -664,6 +664,15 @@ void problem_t<i_t, f_t>::post_process_assignment(rmm::device_uvector<f_t>& curr
       h_assignment[i] -= h_assignment[presolve_data.additional_var_id_per_var[i]];
     }
   }
+
+  // Apply inferred variables to the assignment
+  cuopt_assert(presolve_data.inferred_variables.size() == h_assignment.size(), "Size mismatch");
+  for (i_t i = 0; i < (i_t)h_assignment.size(); ++i) {
+    if (presolve_data.inferred_variables[i] != std::numeric_limits<f_t>::infinity()) {
+      h_assignment[i] = presolve_data.inferred_variables[i];
+    }
+  }
+
   raft::copy(
     current_assignment.data(), h_assignment.data(), h_assignment.size(), handle_ptr->get_stream());
   // this separate resizing is needed because of the callback
