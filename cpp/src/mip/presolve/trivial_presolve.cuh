@@ -182,7 +182,7 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
     thrust::for_each(handle_ptr->get_thrust_policy(),
                      d_vars_to_remove.begin(),
                      d_vars_to_remove.end(),
-                     [var_map = var_map.data()] __device__(i_t var_idx) {
+                     [var_map = make_span(var_map)] __device__(i_t var_idx) {
                        if (var_idx >= 0 && var_idx < var_map.size()) {
                          var_map[var_idx] = 0;  // Mark as unused
                        }
@@ -373,12 +373,12 @@ void test_reverse_matches(const problem_t<i_t, f_t>& pb)
 }
 
 template <typename i_t, typename f_t>
-void trivial_presolve(problem_t<i_t, f_t>& problem, const std::vector<i_t>& vars_to_remove = {})
+void trivial_presolve(problem_t<i_t, f_t>& problem)
 {
   cuopt_expects(problem.preprocess_called,
                 error_type_t::RuntimeError,
                 "preprocess_problem should be called before running the solver");
-  update_from_csr(problem, vars_to_remove);
+  update_from_csr(problem);
   problem.recompute_auxilliary_data(
     false);  // check problem representation later once cstr bounds are computed
   cuopt_func_call(test_reverse_matches(problem));
