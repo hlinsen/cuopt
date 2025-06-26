@@ -143,6 +143,7 @@ TEST(presolve, test_dominated_columns)
 #endif
 
   settings.time_limit                  = test_time_limit;
+  settings.mip_scaling                 = false;
   mip_solution_t<int, double> solution = solve_mip(&handle_, mps_problem, settings);
 
   // Check if solution was found

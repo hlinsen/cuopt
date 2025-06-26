@@ -140,7 +140,13 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
 
   //  partition coo - fixed variables reside in second partition
   i_t nnz_edge_count = pb.coefficients.size();
-  {
+  std::cout << "nnz_edge_count: " << nnz_edge_count << std::endl;
+  cuopt::print("variable_lower_bounds", pb.variable_lower_bounds);
+  cuopt::print("variable_upper_bounds", pb.variable_upper_bounds);
+
+  // we only want to remove free variables when we have not provided variables to remove or when we
+  // apply trivial presolve.
+  if (vars_to_remove.empty()) {
     auto coo_begin = thrust::make_zip_iterator(
       thrust::make_tuple(cnst.begin(), pb.coefficients.begin(), pb.variables.begin()));
     auto partition_iter =
@@ -167,6 +173,9 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
                   cnst_map.begin());
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
   cuopt::print("variables", pb.variables);
+  cuopt::print("offsets", pb.offsets);
+  cuopt::print("coefficients", pb.coefficients);
+
   std::cout << "nnz_edge_count: " << nnz_edge_count << std::endl;
   thrust::scatter(handle_ptr->get_thrust_policy(),
                   thrust::make_constant_iterator<i_t>(1),
@@ -223,6 +232,8 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
   }
 
   if (nnz_edge_count != static_cast<i_t>(pb.coefficients.size())) {
+    std::cout << "nnz_edge_count: " << nnz_edge_count
+              << ", coefficients size: " << pb.coefficients.size() << std::endl;
     //   Calculate updates to constraint bounds affected by fixed variables
     rmm::device_uvector<i_t> unused_coo_cnst(cnst.size() - nnz_edge_count,
                                              handle_ptr->get_stream());

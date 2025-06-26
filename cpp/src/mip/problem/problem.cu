@@ -421,7 +421,6 @@ void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
     cuopt_assert(thrust::is_sorted(
                    handle_ptr->get_thrust_policy(), integer_indices.begin(), integer_indices.end()),
                  "integer indices are not sorted");
-    cuopt::print("integer_indices", integer_indices);
     // check precomputed helpers
     cuopt_assert(thrust::all_of(handle_ptr->get_thrust_policy(),
                                 integer_indices.cbegin(),
@@ -928,12 +927,16 @@ typename problem_t<i_t, f_t>::host_view_t problem_t<i_t, f_t>::to_host()
   h.reverse_constraints  = cuopt::host_copy(reverse_constraints);
   h.reverse_offsets      = cuopt::host_copy(reverse_offsets);
 
-  h.coefficients              = cuopt::host_copy(coefficients);
-  h.variables                 = cuopt::host_copy(variables);
-  h.offsets                   = cuopt::host_copy(offsets);
-  h.objective_coefficients    = cuopt::host_copy(objective_coefficients);
-  h.variable_lower_bounds     = cuopt::host_copy(variable_lower_bounds);
-  h.variable_upper_bounds     = cuopt::host_copy(variable_upper_bounds);
+  h.coefficients           = cuopt::host_copy(coefficients);
+  h.variables              = cuopt::host_copy(variables);
+  h.offsets                = cuopt::host_copy(offsets);
+  h.objective_coefficients = cuopt::host_copy(objective_coefficients);
+  h.variable_lower_bounds  = cuopt::host_copy(variable_lower_bounds);
+  h.variable_upper_bounds  = cuopt::host_copy(variable_upper_bounds);
+  h.original_variable_lower_bounds =
+    cuopt::host_copy(original_problem_ptr->get_variable_lower_bounds());
+  h.original_variable_upper_bounds =
+    cuopt::host_copy(original_problem_ptr->get_variable_upper_bounds());
   h.constraint_lower_bounds   = cuopt::host_copy(constraint_lower_bounds);
   h.constraint_upper_bounds   = cuopt::host_copy(constraint_upper_bounds);
   h.variable_types            = cuopt::host_copy(variable_types);

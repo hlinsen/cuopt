@@ -209,6 +209,8 @@ class problem_t {
     std::vector<f_t> objective_coefficients;
     std::vector<f_t> variable_lower_bounds;
     std::vector<f_t> variable_upper_bounds;
+    std::vector<f_t> original_variable_lower_bounds;
+    std::vector<f_t> original_variable_upper_bounds;
     std::vector<f_t> constraint_lower_bounds;
     std::vector<f_t> constraint_upper_bounds;
     std::vector<var_t> variable_types;
