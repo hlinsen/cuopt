@@ -270,11 +270,11 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
       for (int order_idx = 0; order_idx < static_cast<int>(domination_order_t::SIZE); ++order_idx) {
         auto order = static_cast<domination_order_t>(order_idx);
         if (dominates(host_problem, xj, xk, order)) {
-          if (xk == 5) {
-            std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
-            update_variable_bounds(host_problem, xj, xk, order);
-            dominated_vars[xk] = 1;
-          }
+          // if (xk == 5) {
+          std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
+          update_variable_bounds(host_problem, xj, xk, order);
+          dominated_vars[xk] = 1;
+          // }
         }
       }
     }
