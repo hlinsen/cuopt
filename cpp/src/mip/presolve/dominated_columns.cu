@@ -225,18 +225,18 @@ template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
   auto host_problem = problem.to_host();
-  std::cout << "Constraints and coefficients:" << std::endl;
-  for (i_t row = 0; row < host_problem.n_constraints; ++row) {
-    std::cout << "Row " << row << ": ";
-    auto row_offset = host_problem.offsets[row];
-    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
-    for (i_t j = 0; j < nnz_in_row; ++j) {
-      auto var   = host_problem.variables[row_offset + j];
-      auto coeff = host_problem.coefficients[row_offset + j];
-      std::cout << coeff << "x" << var << " ";
-    }
-    std::cout << std::endl;
-  }
+  // std::cout << "Constraints and coefficients:" << std::endl;
+  // for (i_t row = 0; row < host_problem.n_constraints; ++row) {
+  //   std::cout << "Row " << row << ": ";
+  //   auto row_offset = host_problem.offsets[row];
+  //   auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
+  //   for (i_t j = 0; j < nnz_in_row; ++j) {
+  //     auto var   = host_problem.variables[row_offset + j];
+  //     auto coeff = host_problem.coefficients[row_offset + j];
+  //     std::cout << coeff << "x" << var << " ";
+  //   }
+  //   std::cout << std::endl;
+  // }
 
   // cuopt::print("original_variables", problem.original_problem_ptr->get_variable_names());
   cuopt::print("original_variable_lower_bounds",
@@ -270,13 +270,17 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
       for (int order_idx = 0; order_idx < static_cast<int>(domination_order_t::SIZE); ++order_idx) {
         auto order = static_cast<domination_order_t>(order_idx);
         if (dominates(host_problem, xj, xk, order)) {
-          // std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
-          update_variable_bounds(host_problem, xj, xk, order);
+          if (xk == 5) {
+            std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
+            update_variable_bounds(host_problem, xj, xk, order);
+          }
           dominated_vars.push_back(xk);
         }
       }
     }
   }
+
+  dominated_vars = {5};
 
   if (!dominated_vars.empty()) {
     std::cout << "Dominated variables: " << dominated_vars.size() << std::endl;

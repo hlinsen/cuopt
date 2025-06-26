@@ -386,6 +386,10 @@ void test_reverse_matches(const problem_t<i_t, f_t>& pb)
       vars_per_constr[i].insert(h_variables[c]);
       coeff_per_constr[i].insert(h_coefficients[c]);
     }
+    // Check that no variable appears twice in the same constraint
+    i_t nnz_in_constraint = h_offsets[i + 1] - h_offsets[i];
+    cuopt_assert(vars_per_constr[i].size() == nnz_in_constraint,
+                 "Duplicate variable found in constraint");
   }
 
   for (i_t i = 0; i < (i_t)h_reverse_offsets.size() - 1; ++i) {

@@ -249,6 +249,23 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
     // apply_presolve(*problem_ptr, presolve_type_t::TRIVIAL);
     if (!problem_ptr->empty) { check_bounds_sanity(*problem_ptr); }
   }
+  // cuopt::print("variables", problem_ptr->variables);
+  // cuopt::print("coefficients", problem_ptr->coefficients);
+  // cuopt::print("offsets", problem_ptr->offsets);
+
+  // auto host_problem = problem_ptr->to_host();
+  // std::cout << "Constraints and coefficients:" << std::endl;
+  // for (i_t row = 0; row < host_problem.n_constraints; ++row) {
+  //   std::cout << "Row " << row << ": ";
+  //   auto row_offset = host_problem.offsets[row];
+  //   auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
+  //   for (i_t j = 0; j < nnz_in_row; ++j) {
+  //     auto var   = host_problem.variables[row_offset + j];
+  //     auto coeff = host_problem.coefficients[row_offset + j];
+  //     std::cout << coeff << "x" << var << " ";
+  //   }
+  //   std::cout << std::endl;
+  // }
   if (!problem_ptr->empty) {
     // do the resizing no-matter what, bounds presolve might not change the bounds but initial
     // trivial presolve might have
@@ -262,6 +279,24 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
   dominated_columns.presolve(ls.constraint_prop.bounds_update);
   CUOPT_LOG_INFO("Dominated columns presolve done");
   stats.presolve_time = presolve_timer.elapsed_time();
+  cuopt::print("variables", problem_ptr->variables);
+  cuopt::print("coefficients", problem_ptr->coefficients);
+  cuopt::print("offsets", problem_ptr->offsets);
+
+  auto host_problem = problem_ptr->to_host();
+  std::cout << "Constraints and coefficients:" << std::endl;
+  for (i_t row = 0; row < host_problem.n_constraints; ++row) {
+    std::cout << "Row " << row << ": ";
+    auto row_offset = host_problem.offsets[row];
+    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
+    for (i_t j = 0; j < nnz_in_row; ++j) {
+      auto var   = host_problem.variables[row_offset + j];
+      auto coeff = host_problem.coefficients[row_offset + j];
+      std::cout << coeff << "x" << var << " ";
+    }
+    std::cout << std::endl;
+  }
+
   return true;
 }
 
@@ -358,8 +393,8 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     // get lp user objective and pass it to set_new_user_bound
     set_new_user_bound(problem_ptr->get_user_obj_from_solver_obj(lp_result.get_objective_value()));
   } else if (lp_result.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible) {
-    // PDLP's infeasibility detection isn't an exact method and might be subject to false positives.
-    // Issue a warning, and continue solving.
+    // PDLP's infeasibility detection isn't an exact method and might be subject to false
+    // positives. Issue a warning, and continue solving.
     CUOPT_LOG_WARN("PDLP detected primal infeasibility, problem might be infeasible!");
     ls.lp_optimal_exists = false;
   } else if (lp_result.get_termination_status() == pdlp_termination_status_t::DualInfeasible) {
@@ -368,8 +403,8 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   } else if (lp_result.get_termination_status() == pdlp_termination_status_t::TimeLimit) {
     CUOPT_LOG_DEBUG(
       "Initial LP run exceeded time limit, continuing solver with partial LP result!");
-    // note to developer, in debug mode the LP run might be too slow and it might cause PDLP not to
-    // bring variables within the bounds
+    // note to developer, in debug mode the LP run might be too slow and it might cause PDLP not
+    // to bring variables within the bounds
   }
   // in case the pdlp returned var boudns that are out of bounds
   clamp_within_var_bounds(lp_optimal_solution, problem_ptr, problem_ptr->handle_ptr);
