@@ -197,4 +197,20 @@ struct is_zero_t {
   __device__ bool operator()(const i_t x) { return (x == 0); }
 };
 
+template <typename i_t>
+struct is_variable_in_remove_list_t {
+  raft::device_span<i_t> vars_to_remove;
+  is_variable_in_remove_list_t(raft::device_span<i_t> vars_to_remove_)
+    : vars_to_remove(vars_to_remove_)
+  {
+  }
+
+  template <typename tuple_t>
+  __device__ bool operator()(tuple_t edge)
+  {
+    auto var = thrust::get<2>(edge);
+    return vars_to_remove[var] == 0;  // negate to have it in second partition
+  }
+};
+
 }  // namespace cuopt::linear_programming::detail

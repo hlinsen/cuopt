@@ -249,23 +249,7 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
     // apply_presolve(*problem_ptr, presolve_type_t::TRIVIAL);
     if (!problem_ptr->empty) { check_bounds_sanity(*problem_ptr); }
   }
-  // cuopt::print("variables", problem_ptr->variables);
-  // cuopt::print("coefficients", problem_ptr->coefficients);
-  // cuopt::print("offsets", problem_ptr->offsets);
 
-  // auto host_problem = problem_ptr->to_host();
-  // std::cout << "Constraints and coefficients:" << std::endl;
-  // for (i_t row = 0; row < host_problem.n_constraints; ++row) {
-  //   std::cout << "Row " << row << ": ";
-  //   auto row_offset = host_problem.offsets[row];
-  //   auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
-  //   for (i_t j = 0; j < nnz_in_row; ++j) {
-  //     auto var   = host_problem.variables[row_offset + j];
-  //     auto coeff = host_problem.coefficients[row_offset + j];
-  //     std::cout << coeff << "x" << var << " ";
-  //   }
-  //   std::cout << std::endl;
-  // }
   if (!problem_ptr->empty) {
     // do the resizing no-matter what, bounds presolve might not change the bounds but initial
     // trivial presolve might have
@@ -279,24 +263,6 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
   dominated_columns.presolve(ls.constraint_prop.bounds_update);
   CUOPT_LOG_INFO("Dominated columns presolve done");
   stats.presolve_time = presolve_timer.elapsed_time();
-  cuopt::print("variables", problem_ptr->variables);
-  cuopt::print("coefficients", problem_ptr->coefficients);
-  cuopt::print("offsets", problem_ptr->offsets);
-
-  auto host_problem = problem_ptr->to_host();
-  std::cout << "Constraints and coefficients:" << std::endl;
-  for (i_t row = 0; row < host_problem.n_constraints; ++row) {
-    std::cout << "Row " << row << ": ";
-    auto row_offset = host_problem.offsets[row];
-    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
-    for (i_t j = 0; j < nnz_in_row; ++j) {
-      auto var   = host_problem.variables[row_offset + j];
-      auto coeff = host_problem.coefficients[row_offset + j];
-      std::cout << coeff << "x" << var << " ";
-    }
-    std::cout << std::endl;
-  }
-
   return true;
 }
 

@@ -254,7 +254,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   // std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
 
   // Track variables that have been fixed by domination
-  std::vector<i_t> dominated_vars;
+  std::vector<i_t> dominated_vars(problem.n_variables, 0);
 
   for (const auto& [xj, pair] : shortest_rows) {
     auto const& [row_size, row] = pair;
@@ -273,28 +273,27 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
           if (xk == 5) {
             std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
             update_variable_bounds(host_problem, xj, xk, order);
+            dominated_vars[xk] = 1;
           }
-          dominated_vars.push_back(xk);
         }
       }
     }
   }
 
-  dominated_vars = {5};
-
   if (!dominated_vars.empty()) {
     std::cout << "Dominated variables: " << dominated_vars.size() << std::endl;
     for (size_t var_idx = 0; var_idx < dominated_vars.size(); ++var_idx) {
-      auto var_type = host_problem.variable_types[dominated_vars[var_idx]];
+      if (dominated_vars[var_idx] == 0) { continue; }
+      auto var_type = host_problem.variable_types[var_idx];
 
       if (var_type == var_t::INTEGER) {
         std::cout << "("
                   << "integer"
-                  << ", " << dominated_vars[var_idx] << ") ";
+                  << ", " << var_idx << ") ";
       } else {
         std::cout << "("
                   << "continuous"
-                  << ", " << dominated_vars[var_idx] << ") ";
+                  << ", " << var_idx << ") ";
       }
     }
     std::cout << std::endl;

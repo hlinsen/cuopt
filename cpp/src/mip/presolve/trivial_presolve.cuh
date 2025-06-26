@@ -140,24 +140,37 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
 
   //  partition coo - fixed variables reside in second partition
   i_t nnz_edge_count = pb.coefficients.size();
-  std::cout << "nnz_edge_count: " << nnz_edge_count << std::endl;
-  cuopt::print("variable_lower_bounds", pb.variable_lower_bounds);
-  cuopt::print("variable_upper_bounds", pb.variable_upper_bounds);
-
-  // we only want to remove free variables when we have not provided variables to remove or when we
-  // apply trivial presolve.
-  if (vars_to_remove.empty()) {
+  {
     auto coo_begin = thrust::make_zip_iterator(
       thrust::make_tuple(cnst.begin(), pb.coefficients.begin(), pb.variables.begin()));
-    auto partition_iter =
-      thrust::stable_partition(handle_ptr->get_thrust_policy(),
-                               coo_begin,
-                               coo_begin + cnst.size(),
-                               is_variable_free_t<f_t>{pb.tolerances.integrality_tolerance,
-                                                       make_span(pb.variable_lower_bounds),
-                                                       make_span(pb.variable_upper_bounds)});
-    RAFT_CHECK_CUDA(handle_ptr->get_stream());
-    nnz_edge_count = partition_iter - coo_begin;
+
+    // Choose partitioning functor based on whether vars_to_remove is empty
+    if (vars_to_remove.empty()) {
+      auto partition_iter =
+        thrust::stable_partition(handle_ptr->get_thrust_policy(),
+                                 coo_begin,
+                                 coo_begin + cnst.size(),
+                                 is_variable_free_t<f_t>{pb.tolerances.integrality_tolerance,
+                                                         make_span(pb.variable_lower_bounds),
+                                                         make_span(pb.variable_upper_bounds)});
+      RAFT_CHECK_CUDA(handle_ptr->get_stream());
+      nnz_edge_count = partition_iter - coo_begin;
+    } else {
+      // Convert vars_to_remove to device vector for the functor
+      rmm::device_uvector<i_t> d_vars_to_remove(vars_to_remove.size(), handle_ptr->get_stream());
+      raft::copy(d_vars_to_remove.data(),
+                 vars_to_remove.data(),
+                 vars_to_remove.size(),
+                 handle_ptr->get_stream());
+
+      auto partition_iter =
+        thrust::stable_partition(handle_ptr->get_thrust_policy(),
+                                 coo_begin,
+                                 coo_begin + cnst.size(),
+                                 is_variable_in_remove_list_t<i_t>{make_span(d_vars_to_remove)});
+      RAFT_CHECK_CUDA(handle_ptr->get_stream());
+      nnz_edge_count = partition_iter - coo_begin;
+    }
   }
 
   //  maps to denote active constraints and non-fixed variables
@@ -172,38 +185,13 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
                   cnst.begin(),
                   cnst_map.begin());
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
-  cuopt::print("variables", pb.variables);
-  cuopt::print("offsets", pb.offsets);
-  cuopt::print("coefficients", pb.coefficients);
 
-  std::cout << "nnz_edge_count: " << nnz_edge_count << std::endl;
   thrust::scatter(handle_ptr->get_thrust_policy(),
                   thrust::make_constant_iterator<i_t>(1),
                   thrust::make_constant_iterator<i_t>(1) + nnz_edge_count,
                   pb.variables.begin(),
                   var_map.begin());
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
-
-  cuopt::print("var_map", var_map);
-  // Mark explicitly removed variables as unused (0 in var_map)
-  if (!vars_to_remove.empty()) {
-    rmm::device_uvector<i_t> d_vars_to_remove(vars_to_remove.size(), handle_ptr->get_stream());
-    raft::copy(d_vars_to_remove.data(),
-               vars_to_remove.data(),
-               vars_to_remove.size(),
-               handle_ptr->get_stream());
-
-    thrust::for_each(handle_ptr->get_thrust_policy(),
-                     d_vars_to_remove.begin(),
-                     d_vars_to_remove.end(),
-                     [var_map = make_span(var_map)] __device__(i_t var_idx) {
-                       if (var_idx >= 0 && var_idx < var_map.size()) {
-                         var_map[var_idx] = 0;  // Mark as unused
-                       }
-                     });
-    cuopt::print("var_map", var_map);
-    RAFT_CHECK_CUDA(handle_ptr->get_stream());
-  }
 
   auto unused_var_count =
     thrust::count(handle_ptr->get_thrust_policy(), var_map.begin(), var_map.end(), 0);
@@ -294,6 +282,8 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
     var_map.begin(),
     var_map.end(),
     thrust::make_transform_output_iterator(var_renum_ids.begin(), sub_t<i_t>{}));
+  cuopt::print("cnst_renum_ids", cnst_renum_ids);
+  cuopt::print("var_renum_ids", var_renum_ids);
   //  renumber coo
   thrust::transform(handle_ptr->get_thrust_policy(),
                     cnst.begin(),
@@ -419,6 +409,21 @@ void apply_presolve(problem_t<i_t, f_t>& problem,
                 error_type_t::RuntimeError,
                 "preprocess_problem should be called before running the solver");
   update_from_csr(problem, vars_to_remove);
+  cuopt::print("variables", problem.variables);
+  cuopt::print("offsets", problem.offsets);
+  cuopt::print("coefficients", problem.coefficients);
+  auto host_problem = problem.to_host();
+  for (i_t row = 0; row < host_problem.n_constraints; ++row) {
+    std::cout << "Row " << row << ": ";
+    auto row_offset = host_problem.offsets[row];
+    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
+    for (i_t j = 0; j < nnz_in_row; ++j) {
+      auto var   = host_problem.variables[row_offset + j];
+      auto coeff = host_problem.coefficients[row_offset + j];
+      std::cout << coeff << "x" << var << " ";
+    }
+    std::cout << std::endl;
+  }
   problem.recompute_auxilliary_data(
     false);  // check problem representation later once cstr bounds are computed
   cuopt_func_call(test_reverse_matches(problem));
