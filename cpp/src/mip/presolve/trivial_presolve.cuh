@@ -61,7 +61,8 @@ void cleanup_vectors(problem_t<i_t, f_t>& pb,
                      const rmm::device_uvector<i_t>& cnst_map,
                      const rmm::device_uvector<i_t>& var_map)
 {
-  auto handle_ptr   = pb.handle_ptr;
+  auto handle_ptr = pb.handle_ptr;
+  cuopt::print("cnst_map", cnst_map);
   auto cnst_lb_iter = thrust::remove_if(handle_ptr->get_thrust_policy(),
                                         pb.constraint_lower_bounds.begin(),
                                         pb.constraint_lower_bounds.end(),
@@ -113,6 +114,7 @@ void cleanup_vectors(problem_t<i_t, f_t>& pb,
                                handle_ptr->get_stream());
   pb.objective_coefficients.resize(obj_iter - pb.objective_coefficients.begin(),
                                    handle_ptr->get_stream());
+  cuopt::print("obj coeff", pb.objective_coefficients);
   handle_ptr->sync_stream();
 }
 
@@ -198,16 +200,20 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
   if (unused_var_count > 0) {
     CUOPT_LOG_INFO("Unused variables detected, eliminating them! Unused var count %d",
                    unused_var_count);
-    thrust::for_each(
-      handle_ptr->get_thrust_policy(),
-      thrust::make_counting_iterator<i_t>(0),
-      thrust::make_counting_iterator<i_t>(pb.n_variables),
-      assign_fixed_var_t<i_t, f_t>{make_span(var_map),
-                                   make_span(pb.variable_lower_bounds),
-                                   make_span(pb.variable_upper_bounds),
-                                   make_span(pb.objective_coefficients),
-                                   make_span(pb.presolve_data.variable_mapping),
-                                   make_span(pb.presolve_data.fixed_var_assignment)});
+
+    // Assign fixed vars only if we are removing free variables (trivial presolve)
+    if (vars_to_remove.empty()) {
+      thrust::for_each(
+        handle_ptr->get_thrust_policy(),
+        thrust::make_counting_iterator<i_t>(0),
+        thrust::make_counting_iterator<i_t>(pb.n_variables),
+        assign_fixed_var_t<i_t, f_t>{make_span(var_map),
+                                     make_span(pb.variable_lower_bounds),
+                                     make_span(pb.variable_upper_bounds),
+                                     make_span(pb.objective_coefficients),
+                                     make_span(pb.presolve_data.variable_mapping),
+                                     make_span(pb.presolve_data.fixed_var_assignment)});
+    }
     auto used_iter = thrust::stable_partition(handle_ptr->get_thrust_policy(),
                                               pb.presolve_data.variable_mapping.begin(),
                                               pb.presolve_data.variable_mapping.end(),
@@ -219,7 +225,11 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
     RAFT_CHECK_CUDA(handle_ptr->get_stream());
   }
 
-  if (nnz_edge_count != static_cast<i_t>(pb.coefficients.size())) {
+  cuopt::print("constraint lower bounds", pb.constraint_lower_bounds);
+  cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
+
+  // Update bounds only if we are removing free variables (trivial presolve)
+  if (vars_to_remove.empty() && nnz_edge_count != static_cast<i_t>(pb.coefficients.size())) {
     std::cout << "nnz_edge_count: " << nnz_edge_count
               << ", coefficients size: " << pb.coefficients.size() << std::endl;
     //   Calculate updates to constraint bounds affected by fixed variables
@@ -256,6 +266,14 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
     RAFT_CHECK_CUDA(handle_ptr->get_stream());
   }
 
+  cuopt::print("constraint lower bounds", pb.constraint_lower_bounds);
+  cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
+
+  // cuopt::print("var_map", var_map);
+  // cuopt::print("objective_coefficients", pb.objective_coefficients);
+  // cuopt::print("variable_lower_bounds", pb.variable_lower_bounds);
+  // cuopt::print("variable_upper_bounds", pb.variable_upper_bounds);
+  // std::cout << "objective_offset before: " << pb.presolve_data.objective_offset << std::endl;
   //  update objective_offset
   pb.presolve_data.objective_offset +=
     thrust::transform_reduce(handle_ptr->get_thrust_policy(),
@@ -267,6 +285,7 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
                                                                make_span(pb.variable_upper_bounds)},
                              0.,
                              thrust::plus<f_t>{});
+  // std::cout << "objective_offset after: " << pb.presolve_data.objective_offset << std::endl;
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
 
   //  create renumbering maps
@@ -282,8 +301,7 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
     var_map.begin(),
     var_map.end(),
     thrust::make_transform_output_iterator(var_renum_ids.begin(), sub_t<i_t>{}));
-  cuopt::print("cnst_renum_ids", cnst_renum_ids);
-  cuopt::print("var_renum_ids", var_renum_ids);
+
   //  renumber coo
   thrust::transform(handle_ptr->get_thrust_policy(),
                     cnst.begin(),
@@ -409,21 +427,7 @@ void apply_presolve(problem_t<i_t, f_t>& problem,
                 error_type_t::RuntimeError,
                 "preprocess_problem should be called before running the solver");
   update_from_csr(problem, vars_to_remove);
-  cuopt::print("variables", problem.variables);
-  cuopt::print("offsets", problem.offsets);
-  cuopt::print("coefficients", problem.coefficients);
-  auto host_problem = problem.to_host();
-  for (i_t row = 0; row < host_problem.n_constraints; ++row) {
-    std::cout << "Row " << row << ": ";
-    auto row_offset = host_problem.offsets[row];
-    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
-    for (i_t j = 0; j < nnz_in_row; ++j) {
-      auto var   = host_problem.variables[row_offset + j];
-      auto coeff = host_problem.coefficients[row_offset + j];
-      std::cout << coeff << "x" << var << " ";
-    }
-    std::cout << std::endl;
-  }
+
   problem.recompute_auxilliary_data(
     false);  // check problem representation later once cstr bounds are computed
   cuopt_func_call(test_reverse_matches(problem));

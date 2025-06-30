@@ -68,7 +68,7 @@ template <typename i_t, typename f_t>
 struct branch_and_bound_solution_helper_t {
   branch_and_bound_solution_helper_t(population_t<i_t, f_t>* population,
                                      dual_simplex::simplex_solver_settings_t<i_t, f_t>& settings)
-    : population_ptr(population), settings_(settings) {};
+    : population_ptr(population), settings_(settings){};
 
   void solution_callback(std::vector<f_t>& solution, f_t objective)
   {
