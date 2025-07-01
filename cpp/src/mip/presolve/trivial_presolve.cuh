@@ -135,6 +135,47 @@ void compute_objective_offset(problem_t<i_t, f_t>& pb, const rmm::device_uvector
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
 }
 
+template <typename i_t, typename f_t, presolve_type_t presolve_type>
+i_t compute_coo_partition(problem_t<i_t, f_t>& pb,
+                          const std::vector<i_t>& vars_to_remove,
+                          rmm::device_uvector<i_t>& cnst)
+{
+  auto handle_ptr = pb.handle_ptr;
+  auto coo_begin  = thrust::make_zip_iterator(
+    thrust::make_tuple(cnst.begin(), pb.coefficients.begin(), pb.variables.begin()));
+
+  i_t nnz_edge_count = pb.coefficients.size();
+
+  if constexpr (presolve_type == presolve_type_t::TRIVIAL) {
+    auto partition_iter =
+      thrust::stable_partition(handle_ptr->get_thrust_policy(),
+                               coo_begin,
+                               coo_begin + cnst.size(),
+                               is_variable_free_t<f_t>{pb.tolerances.integrality_tolerance,
+                                                       make_span(pb.variable_lower_bounds),
+                                                       make_span(pb.variable_upper_bounds)});
+    RAFT_CHECK_CUDA(handle_ptr->get_stream());
+    nnz_edge_count = partition_iter - coo_begin;
+  } else {
+    // Convert vars_to_remove to device vector for the functor
+    rmm::device_uvector<i_t> d_vars_to_remove(vars_to_remove.size(), handle_ptr->get_stream());
+    raft::copy(d_vars_to_remove.data(),
+               vars_to_remove.data(),
+               vars_to_remove.size(),
+               handle_ptr->get_stream());
+
+    auto partition_iter =
+      thrust::stable_partition(handle_ptr->get_thrust_policy(),
+                               coo_begin,
+                               coo_begin + cnst.size(),
+                               is_variable_in_remove_list_t<i_t>{make_span(d_vars_to_remove)});
+    RAFT_CHECK_CUDA(handle_ptr->get_stream());
+    nnz_edge_count = partition_iter - coo_begin;
+  }
+
+  return nnz_edge_count;
+}
+
 template <typename i_t, typename f_t>
 void update_from_csr(problem_t<i_t, f_t>& pb,
                      presolve_type_t presolve_type,
@@ -160,39 +201,11 @@ void update_from_csr(problem_t<i_t, f_t>& pb,
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
 
   //  partition coo - fixed variables reside in second partition
-  i_t nnz_edge_count = pb.coefficients.size();
-  {
-    auto coo_begin = thrust::make_zip_iterator(
-      thrust::make_tuple(cnst.begin(), pb.coefficients.begin(), pb.variables.begin()));
-
-    // Choose partitioning functor based on whether vars_to_remove is empty
-    if (vars_to_remove.empty()) {
-      auto partition_iter =
-        thrust::stable_partition(handle_ptr->get_thrust_policy(),
-                                 coo_begin,
-                                 coo_begin + cnst.size(),
-                                 is_variable_free_t<f_t>{pb.tolerances.integrality_tolerance,
-                                                         make_span(pb.variable_lower_bounds),
-                                                         make_span(pb.variable_upper_bounds)});
-      RAFT_CHECK_CUDA(handle_ptr->get_stream());
-      nnz_edge_count = partition_iter - coo_begin;
-    } else {
-      // Convert vars_to_remove to device vector for the functor
-      rmm::device_uvector<i_t> d_vars_to_remove(vars_to_remove.size(), handle_ptr->get_stream());
-      raft::copy(d_vars_to_remove.data(),
-                 vars_to_remove.data(),
-                 vars_to_remove.size(),
-                 handle_ptr->get_stream());
-
-      auto partition_iter =
-        thrust::stable_partition(handle_ptr->get_thrust_policy(),
-                                 coo_begin,
-                                 coo_begin + cnst.size(),
-                                 is_variable_in_remove_list_t<i_t>{make_span(d_vars_to_remove)});
-      RAFT_CHECK_CUDA(handle_ptr->get_stream());
-      nnz_edge_count = partition_iter - coo_begin;
-    }
-  }
+  i_t nnz_edge_count =
+    presolve_type == presolve_type_t::TRIVIAL
+      ? compute_coo_partition<i_t, f_t, presolve_type_t::TRIVIAL>(pb, vars_to_remove, cnst)
+      : compute_coo_partition<i_t, f_t, presolve_type_t::DOMINATED_COLUMNS>(
+          pb, vars_to_remove, cnst);
 
   //  maps to denote active constraints and non-fixed variables
   rmm::device_uvector<i_t> cnst_map(pb.n_constraints, handle_ptr->get_stream());
@@ -221,7 +234,7 @@ void update_from_csr(problem_t<i_t, f_t>& pb,
                    unused_var_count);
 
     // Assign fixed vars only if we are removing free variables (trivial presolve)
-    if (vars_to_remove.empty()) {
+    if (presolve_type == presolve_type_t::TRIVIAL) {
       thrust::for_each(
         handle_ptr->get_thrust_policy(),
         thrust::make_counting_iterator<i_t>(0),
