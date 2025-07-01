@@ -43,8 +43,6 @@
 
 namespace cuopt::linear_programming::detail {
 
-enum class presolve_type_t { TRIVIAL = 0, DOMINATED_COLUMNS, SIZE };
-
 template <typename i_t, typename f_t>
 void test_renumbered_coo(raft::device_span<i_t> coo_major, const problem_t<i_t, f_t>& pb)
 {
@@ -114,8 +112,27 @@ void cleanup_vectors(problem_t<i_t, f_t>& pb,
                                handle_ptr->get_stream());
   pb.objective_coefficients.resize(obj_iter - pb.objective_coefficients.begin(),
                                    handle_ptr->get_stream());
-  // cuopt::print("obj coeff", pb.objective_coefficients);
   handle_ptr->sync_stream();
+}
+
+template <typename i_t, typename f_t, presolve_type_t presolve_type>
+void compute_objective_offset(problem_t<i_t, f_t>& pb, const rmm::device_uvector<i_t>& var_map)
+{
+  auto handle_ptr = pb.handle_ptr;
+  auto d_inferred_variables =
+    cuopt::device_copy(pb.presolve_data.inferred_variables, handle_ptr->get_stream());
+  pb.presolve_data.objective_offset += thrust::transform_reduce(
+    handle_ptr->get_thrust_policy(),
+    thrust::counting_iterator<i_t>(0),
+    thrust::counting_iterator<i_t>(pb.n_variables),
+    unused_var_obj_offset_t<i_t, f_t, presolve_type>{make_span(var_map),
+                                                     make_span(pb.objective_coefficients),
+                                                     make_span(pb.variable_lower_bounds),
+                                                     make_span(pb.variable_upper_bounds),
+                                                     make_span(d_inferred_variables)},
+    0.,
+    thrust::plus<f_t>{});
+  RAFT_CHECK_CUDA(handle_ptr->get_stream());
 }
 
 template <typename i_t, typename f_t>
@@ -231,7 +248,8 @@ void update_from_csr(problem_t<i_t, f_t>& pb,
   // cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
 
   // Update bounds only if we are removing free variables (trivial presolve)
-  if (vars_to_remove.empty() && nnz_edge_count != static_cast<i_t>(pb.coefficients.size())) {
+  if (presolve_type == presolve_type_t::TRIVIAL &&
+      nnz_edge_count != static_cast<i_t>(pb.coefficients.size())) {
     // std::cout << "nnz_edge_count: " << nnz_edge_count
     //           << ", coefficients size: " << pb.coefficients.size() << std::endl;
     //   Calculate updates to constraint bounds affected by fixed variables
@@ -268,37 +286,11 @@ void update_from_csr(problem_t<i_t, f_t>& pb,
     RAFT_CHECK_CUDA(handle_ptr->get_stream());
   }
 
-  // cuopt::print("constraint lower bounds", pb.constraint_lower_bounds);
-  // cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
-
-  // cuopt::print("var_map", var_map);
-  // cuopt::print("objective_coefficients", pb.objective_coefficients);
-  // cuopt::print("variable_lower_bounds", pb.variable_lower_bounds);
-  // cuopt::print("variable_upper_bounds", pb.variable_upper_bounds);
-  // std::cout << "objective_offset before: " << pb.presolve_data.objective_offset << std::endl;
-  //  update objective_offset
   if (presolve_type == presolve_type_t::TRIVIAL) {
-    pb.presolve_data.objective_offset += thrust::transform_reduce(
-      handle_ptr->get_thrust_policy(),
-      thrust::counting_iterator<i_t>(0),
-      thrust::counting_iterator<i_t>(pb.n_variables),
-      unused_var_obj_offset_t<i_t, f_t>{make_span(var_map),
-                                        make_span(pb.objective_coefficients),
-                                        make_span(pb.variable_lower_bounds),
-                                        make_span(pb.variable_upper_bounds)},
-      0.,
-      thrust::plus<f_t>{});
+    compute_objective_offset<i_t, f_t, presolve_type_t::TRIVIAL>(pb, var_map);
   } else {
-    auto h_obj_coeff = cuopt::host_copy(pb.objective_coefficients);
-    for (size_t var_idx = 0; var_idx < pb.presolve_data.inferred_variables.size(); ++var_idx) {
-      auto inferred_value = pb.presolve_data.inferred_variables[var_idx];
-      if (inferred_value != std::numeric_limits<f_t>::infinity()) {
-        pb.presolve_data.objective_offset += h_obj_coeff[var_idx] * inferred_value;
-      }
-    }
+    compute_objective_offset<i_t, f_t, presolve_type_t::DOMINATED_COLUMNS>(pb, var_map);
   }
-  // std::cout << "objective_offset after: " << pb.presolve_data.objective_offset << std::endl;
-  RAFT_CHECK_CUDA(handle_ptr->get_stream());
 
   //  create renumbering maps
   rmm::device_uvector<i_t> cnst_renum_ids(pb.n_constraints, handle_ptr->get_stream());
@@ -335,7 +327,7 @@ void update_from_csr(problem_t<i_t, f_t>& pb,
   pb.n_variables   = updated_n_vars;
 
   // FIXME: Use enum type
-  if (vars_to_remove.empty()) {
+  if (presolve_type == presolve_type_t::TRIVIAL) {
     CUOPT_LOG_INFO("After trivial presolve updated number of %d constraints %d variables",
                    updated_n_cnst,
                    updated_n_vars);

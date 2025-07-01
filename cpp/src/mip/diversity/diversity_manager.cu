@@ -258,22 +258,21 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
       *problem_ptr, ls.constraint_prop.bounds_update);
     check_bounds_sanity(*problem_ptr);
   }
-  // cuopt::print("constraint lower bounds", problem_ptr->constraint_lower_bounds);
-  // cuopt::print("constraint upper bounds", problem_ptr->constraint_upper_bounds);
-  // dominated_columns_t<i_t, f_t> dominated_columns(*problem_ptr);
-  // CUOPT_LOG_INFO("Running dominated columns presolve");
-  // dominated_columns.presolve(ls.constraint_prop.bounds_update);
-  // CUOPT_LOG_INFO("Dominated columns presolve done");
+
+  dominated_columns_t<i_t, f_t> dominated_columns(*problem_ptr);
+  CUOPT_LOG_INFO("Running dominated columns presolve");
+  dominated_columns.presolve(ls.constraint_prop.bounds_update);
+  CUOPT_LOG_INFO("Dominated columns presolve done");
 
   cuopt::print("variables", problem_ptr->variables);
   cuopt::print("offsets", problem_ptr->offsets);
   cuopt::print("coefficients", problem_ptr->coefficients);
-  cuopt::print("original constraint lower bounds",
-               problem_ptr->original_problem_ptr->get_constraint_lower_bounds());
-  cuopt::print("original constraint upper bounds",
-               problem_ptr->original_problem_ptr->get_constraint_upper_bounds());
-  cuopt::print("constraint lower bounds", problem_ptr->constraint_lower_bounds);
-  cuopt::print("constraint upper bounds", problem_ptr->constraint_upper_bounds);
+  // cuopt::print("original constraint lower bounds",
+  //              problem_ptr->original_problem_ptr->get_constraint_lower_bounds());
+  // cuopt::print("original constraint upper bounds",
+  //              problem_ptr->original_problem_ptr->get_constraint_upper_bounds());
+  // cuopt::print("constraint lower bounds", problem_ptr->constraint_lower_bounds);
+  // cuopt::print("constraint upper bounds", problem_ptr->constraint_upper_bounds);
   cuopt::print("objective coefficients", problem_ptr->objective_coefficients);
   auto host_problem = problem_ptr->to_host();
   for (i_t row = 0; row < host_problem.n_constraints; ++row) {

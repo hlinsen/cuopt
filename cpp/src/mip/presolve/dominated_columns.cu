@@ -299,11 +299,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     std::cout << std::endl;
   }
 
-  cuopt::print("constraint lower bounds", problem.constraint_lower_bounds);
-  cuopt::print("constraint upper bounds", problem.constraint_upper_bounds);
   apply_presolve(problem, presolve_type_t::DOMINATED_COLUMNS, dominated_vars);
-  cuopt::print("constraint lower bounds", problem.constraint_lower_bounds);
-  cuopt::print("constraint upper bounds", problem.constraint_upper_bounds);
 }
 
 template <typename i_t, typename f_t>

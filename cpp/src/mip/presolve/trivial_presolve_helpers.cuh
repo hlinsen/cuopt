@@ -23,6 +23,8 @@
 
 namespace cuopt::linear_programming::detail {
 
+enum class presolve_type_t { TRIVIAL = 0, DOMINATED_COLUMNS, SIZE };
+
 template <typename i_t>
 struct non_zero_degree_t : thrust::unary_function<i_t, i_t> {
   raft::device_span<i_t> offsets;
@@ -136,28 +138,41 @@ struct update_constraint_bounds_t {
   }
 };
 
-template <typename i_t, typename f_t>
+template <typename i_t, typename f_t, presolve_type_t presolve_type>
 struct unused_var_obj_offset_t {
-  raft::device_span<i_t> var_map;
-  raft::device_span<f_t> objective_coefficients;
-  raft::device_span<f_t> lb;
-  raft::device_span<f_t> ub;
-
-  unused_var_obj_offset_t(raft::device_span<i_t> var_map_,
-                          raft::device_span<f_t> objective_coefficients_,
-                          raft::device_span<f_t> lb_,
-                          raft::device_span<f_t> ub_)
-    : var_map(var_map_), objective_coefficients(objective_coefficients_), lb(lb_), ub(ub_)
+  raft::device_span<i_t const> var_map;
+  raft::device_span<f_t const> objective_coefficients;
+  raft::device_span<f_t const> lb;
+  raft::device_span<f_t const> ub;
+  raft::device_span<f_t const> inferred_variables;
+  unused_var_obj_offset_t(raft::device_span<i_t const> var_map_,
+                          raft::device_span<f_t const> objective_coefficients_,
+                          raft::device_span<f_t const> lb_,
+                          raft::device_span<f_t const> ub_,
+                          raft::device_span<f_t const> inferred_variables_)
+    : var_map(var_map_),
+      objective_coefficients(objective_coefficients_),
+      lb(lb_),
+      ub(ub_),
+      inferred_variables(inferred_variables_)
   {
   }
 
-  __host__ __device__ f_t operator()(const i_t i) const
+  constexpr f_t operator()(const i_t i) const
   {
-    auto obj_coeff = objective_coefficients[i];
-    // in case both bounds are infinite
-    if (obj_coeff == 0.) return 0.;
-    auto obj_off = (obj_coeff > 0) ? obj_coeff * lb[i] : obj_coeff * ub[i];
-    return var_map[i] ? 0. : obj_off;
+    if constexpr (presolve_type == presolve_type_t::TRIVIAL) {
+      auto obj_coeff = objective_coefficients[i];
+      // in case both bounds are infinite
+      if (obj_coeff == 0.) return 0.;
+      auto obj_off = (obj_coeff > 0) ? obj_coeff * lb[i] : obj_coeff * ub[i];
+      return var_map[i] ? 0. : obj_off;
+    } else {
+      auto inferred_value = inferred_variables[i];
+      if (inferred_value != std::numeric_limits<f_t>::infinity()) {
+        return objective_coefficients[i] * inferred_value;
+      }
+    }
+    return 0.;
   }
 };
 
