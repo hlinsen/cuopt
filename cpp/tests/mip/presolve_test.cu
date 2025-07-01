@@ -146,6 +146,11 @@ TEST(presolve, test_dominated_columns)
   settings.mip_scaling                 = false;
   mip_solution_t<int, double> solution = solve_mip(&handle_, mps_problem, settings);
 
+  // Verify objective value
+  double expected_objective = -5.5;
+  std::cout << "final objective: " << solution.get_objective_value() << std::endl;
+  EXPECT_NEAR(solution.get_objective_value(), expected_objective, 1e-6);
+
   // Check if solution was found
   EXPECT_EQ(solution.get_termination_status(), mip_termination_status_t::Optimal);
 
@@ -157,10 +162,6 @@ TEST(presolve, test_dominated_columns)
   for (size_t i = 0; i < solution_values.size(); i++) {
     EXPECT_NEAR(solution_values[i], expected_values[i], 1e-6);
   }
-
-  // Verify objective value
-  double expected_objective = -5.5;
-  EXPECT_NEAR(solution.get_objective_value(), expected_objective, 1e-6);
 }
 
 }  // namespace cuopt::linear_programming::test

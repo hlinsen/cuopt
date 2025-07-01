@@ -246,7 +246,7 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
   }
   if (termination_criterion_t::NO_UPDATE != term_crit) {
     ls.constraint_prop.bounds_update.set_updated_bounds(*problem_ptr);
-    // apply_presolve(*problem_ptr, presolve_type_t::TRIVIAL);
+    apply_presolve(*problem_ptr, presolve_type_t::TRIVIAL);
     if (!problem_ptr->empty) { check_bounds_sanity(*problem_ptr); }
   }
 
@@ -258,12 +258,12 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
       *problem_ptr, ls.constraint_prop.bounds_update);
     check_bounds_sanity(*problem_ptr);
   }
-  cuopt::print("constraint lower bounds", problem_ptr->constraint_lower_bounds);
-  cuopt::print("constraint upper bounds", problem_ptr->constraint_upper_bounds);
-  dominated_columns_t<i_t, f_t> dominated_columns(*problem_ptr);
-  CUOPT_LOG_INFO("Running dominated columns presolve");
-  dominated_columns.presolve(ls.constraint_prop.bounds_update);
-  CUOPT_LOG_INFO("Dominated columns presolve done");
+  // cuopt::print("constraint lower bounds", problem_ptr->constraint_lower_bounds);
+  // cuopt::print("constraint upper bounds", problem_ptr->constraint_upper_bounds);
+  // dominated_columns_t<i_t, f_t> dominated_columns(*problem_ptr);
+  // CUOPT_LOG_INFO("Running dominated columns presolve");
+  // dominated_columns.presolve(ls.constraint_prop.bounds_update);
+  // CUOPT_LOG_INFO("Dominated columns presolve done");
 
   cuopt::print("variables", problem_ptr->variables);
   cuopt::print("offsets", problem_ptr->offsets);

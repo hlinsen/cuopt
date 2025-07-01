@@ -62,7 +62,7 @@ void cleanup_vectors(problem_t<i_t, f_t>& pb,
                      const rmm::device_uvector<i_t>& var_map)
 {
   auto handle_ptr = pb.handle_ptr;
-  cuopt::print("cnst_map", cnst_map);
+  // cuopt::print("cnst_map", cnst_map);
   auto cnst_lb_iter = thrust::remove_if(handle_ptr->get_thrust_policy(),
                                         pb.constraint_lower_bounds.begin(),
                                         pb.constraint_lower_bounds.end(),
@@ -114,12 +114,14 @@ void cleanup_vectors(problem_t<i_t, f_t>& pb,
                                handle_ptr->get_stream());
   pb.objective_coefficients.resize(obj_iter - pb.objective_coefficients.begin(),
                                    handle_ptr->get_stream());
-  cuopt::print("obj coeff", pb.objective_coefficients);
+  // cuopt::print("obj coeff", pb.objective_coefficients);
   handle_ptr->sync_stream();
 }
 
 template <typename i_t, typename f_t>
-void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_remove = {})
+void update_from_csr(problem_t<i_t, f_t>& pb,
+                     presolve_type_t presolve_type,
+                     const std::vector<i_t>& vars_to_remove = {})
 {
   auto handle_ptr = pb.handle_ptr;
   rmm::device_uvector<i_t> cnst(pb.coefficients.size(), handle_ptr->get_stream());
@@ -225,13 +227,13 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
     RAFT_CHECK_CUDA(handle_ptr->get_stream());
   }
 
-  cuopt::print("constraint lower bounds", pb.constraint_lower_bounds);
-  cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
+  // cuopt::print("constraint lower bounds", pb.constraint_lower_bounds);
+  // cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
 
   // Update bounds only if we are removing free variables (trivial presolve)
   if (vars_to_remove.empty() && nnz_edge_count != static_cast<i_t>(pb.coefficients.size())) {
-    std::cout << "nnz_edge_count: " << nnz_edge_count
-              << ", coefficients size: " << pb.coefficients.size() << std::endl;
+    // std::cout << "nnz_edge_count: " << nnz_edge_count
+    //           << ", coefficients size: " << pb.coefficients.size() << std::endl;
     //   Calculate updates to constraint bounds affected by fixed variables
     rmm::device_uvector<i_t> unused_coo_cnst(cnst.size() - nnz_edge_count,
                                              handle_ptr->get_stream());
@@ -266,8 +268,8 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
     RAFT_CHECK_CUDA(handle_ptr->get_stream());
   }
 
-  cuopt::print("constraint lower bounds", pb.constraint_lower_bounds);
-  cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
+  // cuopt::print("constraint lower bounds", pb.constraint_lower_bounds);
+  // cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
 
   // cuopt::print("var_map", var_map);
   // cuopt::print("objective_coefficients", pb.objective_coefficients);
@@ -275,16 +277,26 @@ void update_from_csr(problem_t<i_t, f_t>& pb, const std::vector<i_t>& vars_to_re
   // cuopt::print("variable_upper_bounds", pb.variable_upper_bounds);
   // std::cout << "objective_offset before: " << pb.presolve_data.objective_offset << std::endl;
   //  update objective_offset
-  pb.presolve_data.objective_offset +=
-    thrust::transform_reduce(handle_ptr->get_thrust_policy(),
-                             thrust::counting_iterator<i_t>(0),
-                             thrust::counting_iterator<i_t>(pb.n_variables),
-                             unused_var_obj_offset_t<i_t, f_t>{make_span(var_map),
-                                                               make_span(pb.objective_coefficients),
-                                                               make_span(pb.variable_lower_bounds),
-                                                               make_span(pb.variable_upper_bounds)},
-                             0.,
-                             thrust::plus<f_t>{});
+  if (presolve_type == presolve_type_t::TRIVIAL) {
+    pb.presolve_data.objective_offset += thrust::transform_reduce(
+      handle_ptr->get_thrust_policy(),
+      thrust::counting_iterator<i_t>(0),
+      thrust::counting_iterator<i_t>(pb.n_variables),
+      unused_var_obj_offset_t<i_t, f_t>{make_span(var_map),
+                                        make_span(pb.objective_coefficients),
+                                        make_span(pb.variable_lower_bounds),
+                                        make_span(pb.variable_upper_bounds)},
+      0.,
+      thrust::plus<f_t>{});
+  } else {
+    auto h_obj_coeff = cuopt::host_copy(pb.objective_coefficients);
+    for (size_t var_idx = 0; var_idx < pb.presolve_data.inferred_variables.size(); ++var_idx) {
+      auto inferred_value = pb.presolve_data.inferred_variables[var_idx];
+      if (inferred_value != std::numeric_limits<f_t>::infinity()) {
+        pb.presolve_data.objective_offset += h_obj_coeff[var_idx] * inferred_value;
+      }
+    }
+  }
   // std::cout << "objective_offset after: " << pb.presolve_data.objective_offset << std::endl;
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
 
@@ -426,7 +438,7 @@ void apply_presolve(problem_t<i_t, f_t>& problem,
   cuopt_expects(problem.preprocess_called,
                 error_type_t::RuntimeError,
                 "preprocess_problem should be called before running the solver");
-  update_from_csr(problem, vars_to_remove);
+  update_from_csr(problem, presolve_type, vars_to_remove);
 
   problem.recompute_auxilliary_data(
     false);  // check problem representation later once cstr bounds are computed

@@ -323,9 +323,12 @@ void solution_t<i_t, f_t>::compute_objective()
 {
   h_obj = compute_objective_from_vec<i_t, f_t>(
     assignment, problem_ptr->objective_coefficients, handle_ptr->get_stream());
+  std::cout << "h_obj: " << h_obj << std::endl;
   // to save from memory transactions, don't update the device objective
   // when needed we can update the device objective here
   h_user_obj = problem_ptr->get_user_obj_from_solver_obj(h_obj);
+  std::cout << "h_user_obj: " << h_user_obj << std::endl;
+  std::cout << "obj_offset: " << problem_ptr->presolve_data.objective_offset << std::endl;
 }
 
 template <typename i_t, typename f_t>
