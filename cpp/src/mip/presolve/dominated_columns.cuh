@@ -56,7 +56,8 @@ struct dominated_columns_t {
    */
   std::vector<i_t> identify_candidate_variables(
     typename problem_t<i_t, f_t>::host_view_t& host_problem,
-    bound_presolve_t<i_t, f_t>& bounds_presolve);
+    std::vector<f_t> const& lb_bars,
+    std::vector<f_t> const& ub_bars);
   void compute_signatures(typename problem_t<i_t, f_t>::host_view_t& host_problem);
   std::unordered_map<i_t, std::pair<i_t, i_t>> find_shortest_rows(
     typename problem_t<i_t, f_t>::host_view_t& host_problem, std::vector<i_t> const& candidates);
@@ -65,6 +66,8 @@ struct dominated_columns_t {
                  i_t xk,
                  domination_order_t order);
   void update_variable_bounds(typename problem_t<i_t, f_t>::host_view_t& host_problem,
+                              std::vector<f_t> const& lb_bars,
+                              std::vector<f_t> const& ub_bars,
                               std::vector<i_t> const& h_variable_mapping,
                               std::vector<f_t>& h_fixed_var_assignment,
                               i_t xj,

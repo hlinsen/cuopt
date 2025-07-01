@@ -32,32 +32,29 @@ dominated_columns_t<i_t, f_t>::dominated_columns_t(problem_t<i_t, f_t>& problem_
 template <typename i_t, typename f_t>
 std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   typename problem_t<i_t, f_t>::host_view_t& host_problem,
-  bound_presolve_t<i_t, f_t>& bounds_presolve)
+  std::vector<f_t> const& lb_bars,
+  std::vector<f_t> const& ub_bars)
 {
   // std::cout << "Identifying candidate variables" << std::endl;
-  auto lb_bars = cuopt::host_copy(bounds_presolve.upd.lb, stream);
-  auto ub_bars = cuopt::host_copy(bounds_presolve.upd.ub, stream);
-  auto lb      = cuopt::host_copy(problem.variable_lower_bounds, stream);
-  auto ub      = cuopt::host_copy(problem.variable_upper_bounds, stream);
+  auto lb = cuopt::host_copy(problem.variable_lower_bounds, stream);
+  auto ub = cuopt::host_copy(problem.variable_upper_bounds, stream);
   std::vector<i_t> candidates;
   for (int i = 0; i < problem.n_variables; ++i) {
-    f_t lb_bar      = lb_bars[i];
-    f_t ub_bar      = ub_bars[i];
-    f_t lb_original = lb[i];
-    f_t ub_original = ub[i];
+    f_t lb_bar = lb_bars[i];
+    f_t ub_bar = ub_bars[i];
     // std::cout << "Variable " << i << " has bounds " << lb_original << " " << ub_original
     //           << " and strengthened bounds " << lb_bar << " " << ub_bar << std::endl;
     // strenghtened bounds are included in original bounds means free
     // It is equivalent to setting the bounds to infinity
-    if (lb_bar >= lb_original && ub_bar <= ub_original) {
-      host_problem.variable_lower_bounds[i] = -std::numeric_limits<f_t>::infinity();
-      host_problem.variable_upper_bounds[i] = std::numeric_limits<f_t>::infinity();
+    if (lb_bar >= lb[i] && ub_bar <= ub[i]) {
+      // host_problem.variable_lower_bounds[i] = -std::numeric_limits<f_t>::infinity();
+      // host_problem.variable_upper_bounds[i] = std::numeric_limits<f_t>::infinity();
       // std::cout << "Implied free variable: " << i << std::endl;
       candidates.push_back(i);
     }
     // One of the bounds is infinite we can apply theorem 1.
-    else if (lb_original == -std::numeric_limits<f_t>::infinity() ||
-             ub_original == std::numeric_limits<f_t>::infinity()) {
+    else if (lb[i] == -std::numeric_limits<f_t>::infinity() ||
+             ub[i] == std::numeric_limits<f_t>::infinity()) {
       candidates.push_back(i);
     }
   }
@@ -182,6 +179,8 @@ bool dominated_columns_t<i_t, f_t>::dominates(
 template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   typename problem_t<i_t, f_t>::host_view_t& host_problem,
+  std::vector<f_t> const& lb_bars,
+  std::vector<f_t> const& ub_bars,
   std::vector<i_t> const& h_variable_mapping,
   std::vector<f_t>& h_fixed_var_assignment,
   i_t xj,
@@ -190,31 +189,34 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
 {
   // We replaced the strenghtened bounds with inf to apply the theorem. So retrieve the original
   // bounds to apply the lemma and fix variables.
-  f_t lj_bar = host_problem.variable_lower_bounds[xj];
-  f_t uj_bar = host_problem.variable_upper_bounds[xj];
-  f_t lk_bar = host_problem.variable_lower_bounds[xk];
-  f_t uk_bar = host_problem.variable_upper_bounds[xk];
+  f_t lj = host_problem.variable_lower_bounds[xj];
+  f_t uj = host_problem.variable_upper_bounds[xj];
+  f_t lk = host_problem.variable_lower_bounds[xk];
+  f_t uk = host_problem.variable_upper_bounds[xk];
 
-  f_t lj = host_problem.original_variable_lower_bounds[h_variable_mapping[xj]];
-  f_t uj = host_problem.original_variable_upper_bounds[h_variable_mapping[xj]];
-  f_t lk = host_problem.original_variable_lower_bounds[h_variable_mapping[xk]];
-  f_t uk = host_problem.original_variable_upper_bounds[h_variable_mapping[xk]];
+  f_t lj_bar = lb_bars[xj];
+  f_t uj_bar = ub_bars[xj];
+  f_t lk_bar = lb_bars[xk];
+  f_t uk_bar = ub_bars[xk];
+
+  auto xj_is_implied_free = lj_bar >= lj && uj_bar <= uj;
+  auto xk_is_implied_free = lk_bar >= lk && uk_bar <= uk;
 
   if (order == domination_order_t::REGULAR) {
-    if (uj_bar == std::numeric_limits<f_t>::infinity()) {
+    if (uj == std::numeric_limits<f_t>::infinity() || xj_is_implied_free) {
       // case i: xk can be set to lk
       h_fixed_var_assignment[h_variable_mapping[xk]] = lk;
-    } else if (lk_bar == -std::numeric_limits<f_t>::infinity()) {
+    } else if (lk == -std::numeric_limits<f_t>::infinity() || xk_is_implied_free) {
       // case iii: xj can be set to uk
       h_fixed_var_assignment[h_variable_mapping[xj]] = uk;
     }
   } else if (order == domination_order_t::NEGATED_XK) {
-    if (uj_bar == std::numeric_limits<f_t>::infinity()) {
+    if (uj == std::numeric_limits<f_t>::infinity() || xj_is_implied_free) {
       // case ii: xk can be set to uk
       h_fixed_var_assignment[h_variable_mapping[xk]] = uk;
     }
   } else if (order == domination_order_t::NEGATED_XJ) {
-    if (lk_bar == -std::numeric_limits<f_t>::infinity()) {
+    if (lk == -std::numeric_limits<f_t>::infinity() || xk_is_implied_free) {
       // case iv: xj can be set to lj
       h_fixed_var_assignment[h_variable_mapping[xj]] = lj;
     }
@@ -225,7 +227,8 @@ template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
   auto host_problem = problem.to_host();
-
+  auto lb_bars      = cuopt::host_copy(bounds_presolve.upd.lb, stream);
+  auto ub_bars      = cuopt::host_copy(bounds_presolve.upd.ub, stream);
   host_problem.print();
   // cuopt::print("original_variables", problem.original_problem_ptr->get_variable_names());
   cuopt::print("original_variable_lower_bounds",
@@ -235,7 +238,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
 
   // cuopt::print("variable_lower_bounds", problem.variable_lower_bounds);
   // cuopt::print("variable_upper_bounds", problem.variable_upper_bounds);
-  auto candidates = identify_candidate_variables(host_problem, bounds_presolve);
+  auto candidates = identify_candidate_variables(host_problem, lb_bars, ub_bars);
   // cuopt::print("candidates", candidates);
   if (candidates.empty()) { return; }
   compute_signatures(host_problem);
@@ -263,8 +266,14 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
         auto order = static_cast<domination_order_t>(order_idx);
         if (dominates(host_problem, xj, xk, order)) {
           std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
-          update_variable_bounds(
-            host_problem, h_variable_mapping, h_fixed_var_assignment, xj, xk, order);
+          update_variable_bounds(host_problem,
+                                 lb_bars,
+                                 ub_bars,
+                                 h_variable_mapping,
+                                 h_fixed_var_assignment,
+                                 xj,
+                                 xk,
+                                 order);
           dominated_vars[xk] = 1;
         }
       }
