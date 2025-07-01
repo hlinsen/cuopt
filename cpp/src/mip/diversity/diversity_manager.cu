@@ -237,6 +237,8 @@ void diversity_manager_t<i_t, f_t>::generate_initial_solutions()
 template <typename i_t, typename f_t>
 bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
 {
+  auto host_problem = problem_ptr->to_host();
+  host_problem.print();
   CUOPT_LOG_INFO("Running presolve!");
   timer_t presolve_timer(time_limit);
   auto term_crit = ls.constraint_prop.bounds_update.solve(*problem_ptr);
@@ -274,20 +276,9 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
   // cuopt::print("constraint lower bounds", problem_ptr->constraint_lower_bounds);
   // cuopt::print("constraint upper bounds", problem_ptr->constraint_upper_bounds);
   cuopt::print("objective coefficients", problem_ptr->objective_coefficients);
-  auto host_problem = problem_ptr->to_host();
-  for (i_t row = 0; row < host_problem.n_constraints; ++row) {
-    std::cout << "Row " << row << ": ";
-    auto row_offset = host_problem.offsets[row];
-    auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
-    for (i_t j = 0; j < nnz_in_row; ++j) {
-      auto var   = host_problem.variables[row_offset + j];
-      auto coeff = host_problem.coefficients[row_offset + j];
-      std::cout << coeff << "x" << var << " ";
-    }
-    std::cout << std::endl;
-  }
-  // problem_ptr->presolve_data.objective_offset = 0;
-  std::cout << "objective offset: " << problem_ptr->presolve_data.objective_offset << std::endl;
+  host_problem = problem_ptr->to_host();
+  host_problem.print();
+
   stats.presolve_time = presolve_timer.elapsed_time();
   return true;
 }

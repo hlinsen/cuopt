@@ -59,8 +59,7 @@ void cleanup_vectors(problem_t<i_t, f_t>& pb,
                      const rmm::device_uvector<i_t>& cnst_map,
                      const rmm::device_uvector<i_t>& var_map)
 {
-  auto handle_ptr = pb.handle_ptr;
-  // cuopt::print("cnst_map", cnst_map);
+  auto handle_ptr   = pb.handle_ptr;
   auto cnst_lb_iter = thrust::remove_if(handle_ptr->get_thrust_policy(),
                                         pb.constraint_lower_bounds.begin(),
                                         pb.constraint_lower_bounds.end(),

@@ -222,6 +222,22 @@ class problem_t {
     std::vector<i_t> related_variables_offsets;
     f_t objective_offset;
     f_t objective_scaling_factor;
+
+    void print() const
+    {
+      std::cout << "Constraints and coefficients:" << std::endl;
+      for (i_t row = 0; row < n_constraints; ++row) {
+        std::cout << "Row " << row << ": ";
+        auto row_offset = offsets[row];
+        auto nnz_in_row = offsets[row + 1] - row_offset;
+        for (i_t j = 0; j < nnz_in_row; ++j) {
+          auto var   = variables[row_offset + j];
+          auto coeff = coefficients[row_offset + j];
+          std::cout << coeff << "x" << var << " ";
+        }
+        std::cout << std::endl;
+      }
+    }
   };
 
   host_view_t to_host();

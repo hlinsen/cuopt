@@ -121,17 +121,15 @@ mip_solution_t<i_t, f_t> run_mip(detail::problem_t<i_t, f_t>& problem,
   // only call preprocess on scaled problem, so we can compute feasibility on the original problem
   scaled_problem.preprocess_problem();
   // cuopt_func_call((check_scaled_problem<i_t, f_t>(scaled_problem, saved_problem)));
-  // detail::apply_presolve(scaled_problem, detail::presolve_type_t::TRIVIAL);
+  detail::apply_presolve(scaled_problem, detail::presolve_type_t::TRIVIAL);
 
   detail::mip_solver_t<i_t, f_t> solver(scaled_problem, settings, scaling, timer);
   auto scaled_sol                 = solver.run_solver();
   bool is_feasible_before_scaling = scaled_sol.get_feasible();
   scaled_sol.problem_ptr          = &problem;
   if (settings.mip_scaling) { scaling.unscale_solutions(scaled_sol); }
-  std::cout << "yolo\n";
   // at this point we need to compute the feasibility on the original problem not the presolved one
   bool is_feasible_after_unscaling = scaled_sol.compute_feasibility();
-  std::cout << "yolo\n";
   if (!scaled_problem.empty && is_feasible_before_scaling != is_feasible_after_unscaling) {
     CUOPT_LOG_WARN(
       "The feasibility does not match on scaled and unscaled problems. To overcome this issue, "
