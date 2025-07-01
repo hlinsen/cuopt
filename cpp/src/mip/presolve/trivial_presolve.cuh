@@ -176,6 +176,53 @@ i_t compute_coo_partition(problem_t<i_t, f_t>& pb,
   return nnz_edge_count;
 }
 
+template <typename i_t, typename f_t, presolve_type_t presolve_type>
+void update_presolved_bounds(problem_t<i_t, f_t>& pb,
+                             const rmm::device_uvector<i_t>& cnst,
+                             i_t nnz_edge_count)
+{
+  auto handle_ptr = pb.handle_ptr;
+
+  // Update bounds only if we are removing free variables (trivial presolve)
+  if constexpr (presolve_type == presolve_type_t::TRIVIAL) {
+    if (nnz_edge_count != static_cast<i_t>(pb.coefficients.size())) {
+      // Calculate updates to constraint bounds affected by fixed variables
+      rmm::device_uvector<i_t> unused_coo_cnst(cnst.size() - nnz_edge_count,
+                                               handle_ptr->get_stream());
+      rmm::device_uvector<f_t> unused_coo_cnst_bound_updates(cnst.size() - nnz_edge_count,
+                                                             handle_ptr->get_stream());
+      elem_multi_t<i_t, f_t> mul{make_span(pb.coefficients),
+                                 make_span(pb.variables),
+                                 make_span(pb.objective_coefficients),
+                                 make_span(pb.variable_lower_bounds),
+                                 make_span(pb.variable_upper_bounds)};
+
+      auto iter = thrust::reduce_by_key(
+        handle_ptr->get_thrust_policy(),
+        cnst.begin() + nnz_edge_count,
+        cnst.end(),
+        thrust::make_transform_iterator(thrust::make_counting_iterator<i_t>(nnz_edge_count), mul),
+        unused_coo_cnst.begin(),
+        unused_coo_cnst_bound_updates.begin());
+      RAFT_CHECK_CUDA(handle_ptr->get_stream());
+      auto unused_coo_cnst_count = iter.first - unused_coo_cnst.begin();
+      unused_coo_cnst.resize(unused_coo_cnst_count, handle_ptr->get_stream());
+      unused_coo_cnst_bound_updates.resize(unused_coo_cnst_count, handle_ptr->get_stream());
+
+      // Update constraint bounds using fixed variables
+      thrust::for_each(
+        handle_ptr->get_thrust_policy(),
+        thrust::make_counting_iterator<i_t>(0),
+        thrust::make_counting_iterator<i_t>(unused_coo_cnst.size()),
+        update_constraint_bounds_t<i_t, f_t>{make_span(unused_coo_cnst),
+                                             make_span(unused_coo_cnst_bound_updates),
+                                             make_span(pb.constraint_lower_bounds),
+                                             make_span(pb.constraint_upper_bounds)});
+      RAFT_CHECK_CUDA(handle_ptr->get_stream());
+    }
+  }
+}
+
 template <typename i_t, typename f_t>
 void update_from_csr(problem_t<i_t, f_t>& pb,
                      presolve_type_t presolve_type,
@@ -257,49 +304,8 @@ void update_from_csr(problem_t<i_t, f_t>& pb,
     RAFT_CHECK_CUDA(handle_ptr->get_stream());
   }
 
-  // cuopt::print("constraint lower bounds", pb.constraint_lower_bounds);
-  // cuopt::print("constraint upper bounds", pb.constraint_upper_bounds);
-
-  // Update bounds only if we are removing free variables (trivial presolve)
-  if (presolve_type == presolve_type_t::TRIVIAL &&
-      nnz_edge_count != static_cast<i_t>(pb.coefficients.size())) {
-    // std::cout << "nnz_edge_count: " << nnz_edge_count
-    //           << ", coefficients size: " << pb.coefficients.size() << std::endl;
-    //   Calculate updates to constraint bounds affected by fixed variables
-    rmm::device_uvector<i_t> unused_coo_cnst(cnst.size() - nnz_edge_count,
-                                             handle_ptr->get_stream());
-    rmm::device_uvector<f_t> unused_coo_cnst_bound_updates(cnst.size() - nnz_edge_count,
-                                                           handle_ptr->get_stream());
-    elem_multi_t<i_t, f_t> mul{make_span(pb.coefficients),
-                               make_span(pb.variables),
-                               make_span(pb.objective_coefficients),
-                               make_span(pb.variable_lower_bounds),
-                               make_span(pb.variable_upper_bounds)};
-
-    auto iter = thrust::reduce_by_key(
-      handle_ptr->get_thrust_policy(),
-      cnst.begin() + nnz_edge_count,
-      cnst.end(),
-      thrust::make_transform_iterator(thrust::make_counting_iterator<i_t>(nnz_edge_count), mul),
-      unused_coo_cnst.begin(),
-      unused_coo_cnst_bound_updates.begin());
-    RAFT_CHECK_CUDA(handle_ptr->get_stream());
-    auto unused_coo_cnst_count = iter.first - unused_coo_cnst.begin();
-    unused_coo_cnst.resize(unused_coo_cnst_count, handle_ptr->get_stream());
-    unused_coo_cnst_bound_updates.resize(unused_coo_cnst_count, handle_ptr->get_stream());
-
-    //  update constraint bounds using fixed variables
-    thrust::for_each(handle_ptr->get_thrust_policy(),
-                     thrust::make_counting_iterator<i_t>(0),
-                     thrust::make_counting_iterator<i_t>(unused_coo_cnst.size()),
-                     update_constraint_bounds_t<i_t, f_t>{make_span(unused_coo_cnst),
-                                                          make_span(unused_coo_cnst_bound_updates),
-                                                          make_span(pb.constraint_lower_bounds),
-                                                          make_span(pb.constraint_upper_bounds)});
-    RAFT_CHECK_CUDA(handle_ptr->get_stream());
-  }
-
   if (presolve_type == presolve_type_t::TRIVIAL) {
+    update_presolved_bounds<i_t, f_t, presolve_type_t::TRIVIAL>(pb, cnst, nnz_edge_count);
     compute_objective_offset<i_t, f_t, presolve_type_t::TRIVIAL>(pb, var_map);
   } else {
     compute_objective_offset<i_t, f_t, presolve_type_t::DOMINATED_COLUMNS>(pb, var_map);
