@@ -41,9 +41,6 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   auto ub      = cuopt::host_copy(problem.variable_upper_bounds, stream);
   std::vector<i_t> candidates;
   for (int i = 0; i < problem.n_variables; ++i) {
-    // Skip variables that have already been inferred
-    if (is_variable_inferred(i)) { continue; }
-
     f_t lb_bar      = lb_bars[i];
     f_t ub_bar      = ub_bars[i];
     f_t lb_original = lb[i];
@@ -125,9 +122,6 @@ template <typename i_t, typename f_t>
 bool dominated_columns_t<i_t, f_t>::dominates(
   typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t xj, i_t xk, domination_order_t order)
 {
-  // Skip if either variable has already been inferred
-  if (is_variable_inferred(xj) || is_variable_inferred(xk)) { return false; }
-
   // Signature is valid if any bit set in xj is also set in xk
   // std::cout << "Signature " << xj << " is " << signatures[xj] << std::endl;
   // std::cout << "Signature " << xk << " is " << signatures[xk] << std::endl;
@@ -187,7 +181,12 @@ bool dominated_columns_t<i_t, f_t>::dominates(
 
 template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::update_variable_bounds(
-  typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t xj, i_t xk, domination_order_t order)
+  typename problem_t<i_t, f_t>::host_view_t& host_problem,
+  std::vector<i_t> const& h_variable_mapping,
+  std::vector<f_t>& h_fixed_var_assignment,
+  i_t xj,
+  i_t xk,
+  domination_order_t order)
 {
   // Get bounds for both variables
   f_t lj_bar = host_problem.variable_lower_bounds[xj];
@@ -203,20 +202,20 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   if (order == domination_order_t::REGULAR) {
     if (uj_bar == std::numeric_limits<f_t>::infinity()) {
       // case i: xk can be set to lk
-      problem.presolve_data.inferred_variables[xk] = lk;
+      h_fixed_var_assignment[h_variable_mapping[xk]] = lk;
     } else if (lk_bar == -std::numeric_limits<f_t>::infinity()) {
       // case iii: xj can be set to uk
-      problem.presolve_data.inferred_variables[xj] = uk;
+      h_fixed_var_assignment[h_variable_mapping[xj]] = uk;
     }
   } else if (order == domination_order_t::NEGATED_XK) {
     if (uj_bar == std::numeric_limits<f_t>::infinity()) {
       // case ii: xk can be set to uk
-      problem.presolve_data.inferred_variables[xk] = uk;
+      h_fixed_var_assignment[h_variable_mapping[xk]] = uk;
     }
   } else if (order == domination_order_t::NEGATED_XJ) {
     if (lk_bar == -std::numeric_limits<f_t>::infinity()) {
       // case iv: xj can be set to lj
-      problem.presolve_data.inferred_variables[xj] = lj;
+      h_fixed_var_assignment[h_variable_mapping[xj]] = lj;
     }
   }
 }
@@ -244,6 +243,9 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
 
   // Track variables that have been fixed by domination
   std::vector<i_t> dominated_vars(problem.n_variables, 0);
+  auto h_variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
+  auto h_fixed_var_assignment =
+    cuopt::host_copy(problem.presolve_data.fixed_var_assignment, stream);
 
   for (const auto& [xj, pair] : shortest_rows) {
     auto const& [row_size, row] = pair;
@@ -260,7 +262,8 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
         auto order = static_cast<domination_order_t>(order_idx);
         if (dominates(host_problem, xj, xk, order)) {
           std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
-          update_variable_bounds(host_problem, xj, xk, order);
+          update_variable_bounds(
+            host_problem, h_variable_mapping, h_fixed_var_assignment, xj, xk, order);
           dominated_vars[xk] = 1;
         }
       }
@@ -285,14 +288,11 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     }
     std::cout << std::endl;
   }
-
+  raft::copy(problem.presolve_data.fixed_var_assignment.data(),
+             h_fixed_var_assignment.data(),
+             h_fixed_var_assignment.size(),
+             stream);
   apply_presolve(problem, presolve_type_t::DOMINATED_COLUMNS, dominated_vars);
-}
-
-template <typename i_t, typename f_t>
-bool dominated_columns_t<i_t, f_t>::is_variable_inferred(i_t var_idx) const
-{
-  return problem.presolve_data.inferred_variables[var_idx] != std::numeric_limits<f_t>::infinity();
 }
 
 }  // namespace cuopt::linear_programming::detail

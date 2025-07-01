@@ -633,8 +633,6 @@ bool problem_t<i_t, f_t>::pre_process_assignment(rmm::device_uvector<f_t>& assig
   return true;
 }
 
-// this function is used to post process the assignment
-// it removes the additional variable for free variables
 // and expands the assignment to the original variable dimension
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::post_process_assignment(rmm::device_uvector<f_t>& current_assignment)
@@ -663,18 +661,6 @@ void problem_t<i_t, f_t>::post_process_assignment(rmm::device_uvector<f_t>& curr
       cuopt_assert(presolve_data.additional_var_id_per_var[i] != -1,
                    "additional_var_id_per_var is not set");
       h_assignment[i] -= h_assignment[presolve_data.additional_var_id_per_var[i]];
-    }
-  }
-
-  cuopt::print("assignment", h_assignment);
-  // Apply inferred variables to the assignment
-  cuopt_assert(presolve_data.inferred_variables.size() == h_assignment.size(), "Size mismatch");
-  std::cout << "assignment size: " << h_assignment.size()
-            << ", inferred variables: " << presolve_data.inferred_variables.size() << std::endl;
-  for (i_t i = 0; i < (i_t)h_assignment.size(); ++i) {
-    if (presolve_data.inferred_variables[i] != std::numeric_limits<f_t>::infinity()) {
-      h_assignment[i] = presolve_data.inferred_variables[i];
-      std::cout << "inferred variable " << i << " is " << h_assignment[i] << std::endl;
     }
   }
 

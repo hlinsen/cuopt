@@ -118,19 +118,18 @@ template <typename i_t, typename f_t, presolve_type_t presolve_type>
 void compute_objective_offset(problem_t<i_t, f_t>& pb, const rmm::device_uvector<i_t>& var_map)
 {
   auto handle_ptr = pb.handle_ptr;
-  auto d_inferred_variables =
-    cuopt::device_copy(pb.presolve_data.inferred_variables, handle_ptr->get_stream());
-  pb.presolve_data.objective_offset += thrust::transform_reduce(
-    handle_ptr->get_thrust_policy(),
-    thrust::counting_iterator<i_t>(0),
-    thrust::counting_iterator<i_t>(pb.n_variables),
-    unused_var_obj_offset_t<i_t, f_t, presolve_type>{make_span(var_map),
-                                                     make_span(pb.objective_coefficients),
-                                                     make_span(pb.variable_lower_bounds),
-                                                     make_span(pb.variable_upper_bounds),
-                                                     make_span(d_inferred_variables)},
-    0.,
-    thrust::plus<f_t>{});
+  pb.presolve_data.objective_offset +=
+    thrust::transform_reduce(handle_ptr->get_thrust_policy(),
+                             thrust::counting_iterator<i_t>(0),
+                             thrust::counting_iterator<i_t>(pb.n_variables),
+                             unused_var_obj_offset_t<i_t, f_t, presolve_type>{
+                               make_span(var_map),
+                               make_span(pb.objective_coefficients),
+                               make_span(pb.variable_lower_bounds),
+                               make_span(pb.variable_upper_bounds),
+                               make_span(pb.presolve_data.fixed_var_assignment)},
+                             0.,
+                             thrust::plus<f_t>{});
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
 }
 

@@ -32,23 +32,6 @@ struct non_zero_degree_t : thrust::unary_function<i_t, i_t> {
   __device__ i_t operator()(i_t i) { return offsets[i] != offsets[i + 1]; }
 };
 
-template <typename f_t>
-struct is_variable_free_t {
-  f_t tol;
-  raft::device_span<f_t> lb;
-  raft::device_span<f_t> ub;
-  is_variable_free_t(f_t tol_, raft::device_span<f_t> lb_, raft::device_span<f_t> ub_)
-    : tol(tol_), lb(lb_), ub(ub_)
-  {
-  }
-  template <typename tuple_t>
-  __device__ bool operator()(tuple_t edge)
-  {
-    auto var = thrust::get<2>(edge);
-    return abs(ub[var] - lb[var]) > tol;
-  }
-};
-
 template <typename i_t, typename f_t>
 struct assign_fixed_var_t {
   raft::device_span<i_t> is_var_used;
@@ -144,17 +127,17 @@ struct unused_var_obj_offset_t {
   raft::device_span<f_t const> objective_coefficients;
   raft::device_span<f_t const> lb;
   raft::device_span<f_t const> ub;
-  raft::device_span<f_t const> inferred_variables;
+  raft::device_span<f_t const> fixed_var_assignment;
   unused_var_obj_offset_t(raft::device_span<i_t const> var_map_,
                           raft::device_span<f_t const> objective_coefficients_,
                           raft::device_span<f_t const> lb_,
                           raft::device_span<f_t const> ub_,
-                          raft::device_span<f_t const> inferred_variables_)
+                          raft::device_span<f_t const> fixed_var_assignment_)
     : var_map(var_map_),
       objective_coefficients(objective_coefficients_),
       lb(lb_),
       ub(ub_),
-      inferred_variables(inferred_variables_)
+      fixed_var_assignment(fixed_var_assignment_)
   {
   }
 
@@ -167,10 +150,8 @@ struct unused_var_obj_offset_t {
       auto obj_off = (obj_coeff > 0) ? obj_coeff * lb[i] : obj_coeff * ub[i];
       return var_map[i] ? 0. : obj_off;
     } else {
-      auto inferred_value = inferred_variables[i];
-      if (inferred_value != std::numeric_limits<f_t>::infinity()) {
-        return objective_coefficients[i] * inferred_value;
-      }
+      auto orig_v_idx = var_map[i];
+      return objective_coefficients[orig_v_idx] * fixed_var_assignment[orig_v_idx];
     }
     return 0.;
   }

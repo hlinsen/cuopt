@@ -65,6 +65,8 @@ struct dominated_columns_t {
                  i_t xk,
                  domination_order_t order);
   void update_variable_bounds(typename problem_t<i_t, f_t>::host_view_t& host_problem,
+                              std::vector<i_t> const& h_variable_mapping,
+                              std::vector<f_t>& h_fixed_var_assignment,
                               i_t xj,
                               i_t xk,
                               domination_order_t order);

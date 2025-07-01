@@ -34,8 +34,7 @@ class presolve_data_t {
       objective_offset(problem.get_objective_offset()),
       objective_scaling_factor(problem.get_objective_scaling_factor()),
       variable_mapping(0, stream),
-      fixed_var_assignment(0, stream),
-      inferred_variables(problem.get_n_variables(), std::numeric_limits<f_t>::infinity())
+      fixed_var_assignment(0, stream)
   {
   }
   presolve_data_t(const presolve_data_t& other, rmm::cuda_stream_view stream)
@@ -45,8 +44,7 @@ class presolve_data_t {
       objective_offset(other.objective_offset),
       objective_scaling_factor(other.objective_scaling_factor),
       variable_mapping(other.variable_mapping, stream),
-      fixed_var_assignment(other.fixed_var_assignment, stream),
-      inferred_variables(other.inferred_variables)
+      fixed_var_assignment(other.fixed_var_assignment, stream)
   {
   }
   presolve_data_t(presolve_data_t&&)                 = default;
@@ -62,9 +60,6 @@ class presolve_data_t {
 
   rmm::device_uvector<i_t> variable_mapping;
   rmm::device_uvector<f_t> fixed_var_assignment;
-
-  // Vector to store inferred/fixed values for variables
-  std::vector<f_t> inferred_variables;
 };
 
 }  // namespace linear_programming::detail
