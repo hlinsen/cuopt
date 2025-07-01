@@ -188,16 +188,17 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   i_t xk,
   domination_order_t order)
 {
-  // Get bounds for both variables
+  // We replaced the strenghtened bounds with inf to apply the theorem. So retrieve the original
+  // bounds to apply the lemma and fix variables.
   f_t lj_bar = host_problem.variable_lower_bounds[xj];
   f_t uj_bar = host_problem.variable_upper_bounds[xj];
   f_t lk_bar = host_problem.variable_lower_bounds[xk];
   f_t uk_bar = host_problem.variable_upper_bounds[xk];
 
-  f_t lj = host_problem.original_variable_lower_bounds[xj];
-  f_t uj = host_problem.original_variable_upper_bounds[xj];
-  f_t lk = host_problem.original_variable_lower_bounds[xk];
-  f_t uk = host_problem.original_variable_upper_bounds[xk];
+  f_t lj = host_problem.original_variable_lower_bounds[h_variable_mapping[xj]];
+  f_t uj = host_problem.original_variable_upper_bounds[h_variable_mapping[xj]];
+  f_t lk = host_problem.original_variable_lower_bounds[h_variable_mapping[xk]];
+  f_t uk = host_problem.original_variable_upper_bounds[h_variable_mapping[xk]];
 
   if (order == domination_order_t::REGULAR) {
     if (uj_bar == std::numeric_limits<f_t>::infinity()) {

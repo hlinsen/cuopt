@@ -451,6 +451,9 @@ void apply_presolve(problem_t<i_t, f_t>& problem,
     return;
   }
 
+  cuopt::print("fixed_var_assignment", problem.presolve_data.fixed_var_assignment);
+  cuopt::print("variable_mapping", problem.presolve_data.variable_mapping);
+
   auto d_vars_to_remove = create_vars_to_remove(problem, presolve_type, vars_to_remove);
   update_from_csr(problem, presolve_type, d_vars_to_remove);
 
@@ -461,6 +464,8 @@ void apply_presolve(problem_t<i_t, f_t>& problem,
   // The problem has been solved by presolve. Mark its empty status as valid
   if (problem.n_variables == 0) { problem.empty = true; }
   problem.check_problem_representation(true);
+  cuopt::print("fixed_var_assignment", problem.presolve_data.fixed_var_assignment);
+  cuopt::print("variable_mapping", problem.presolve_data.variable_mapping);
 }
 
 }  // namespace cuopt::linear_programming::detail
