@@ -213,9 +213,9 @@ struct is_zero_t {
 };
 
 template <typename i_t>
-struct is_variable_in_remove_list_t {
-  raft::device_span<i_t> vars_to_remove;
-  is_variable_in_remove_list_t(raft::device_span<i_t> vars_to_remove_)
+struct variable_not_in_remove_list_t {
+  raft::device_span<i_t const> vars_to_remove;
+  variable_not_in_remove_list_t(raft::device_span<i_t const> vars_to_remove_)
     : vars_to_remove(vars_to_remove_)
   {
   }

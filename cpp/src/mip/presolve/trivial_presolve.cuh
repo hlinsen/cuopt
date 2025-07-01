@@ -136,43 +136,20 @@ void compute_objective_offset(problem_t<i_t, f_t>& pb, const rmm::device_uvector
 
 template <typename i_t, typename f_t, presolve_type_t presolve_type>
 i_t compute_coo_partition(problem_t<i_t, f_t>& pb,
-                          const std::vector<i_t>& vars_to_remove,
+                          const rmm::device_uvector<i_t>& d_vars_to_remove,
                           rmm::device_uvector<i_t>& cnst)
 {
   auto handle_ptr = pb.handle_ptr;
   auto coo_begin  = thrust::make_zip_iterator(
     thrust::make_tuple(cnst.begin(), pb.coefficients.begin(), pb.variables.begin()));
 
-  i_t nnz_edge_count = pb.coefficients.size();
-
-  if constexpr (presolve_type == presolve_type_t::TRIVIAL) {
-    auto partition_iter =
-      thrust::stable_partition(handle_ptr->get_thrust_policy(),
-                               coo_begin,
-                               coo_begin + cnst.size(),
-                               is_variable_free_t<f_t>{pb.tolerances.integrality_tolerance,
-                                                       make_span(pb.variable_lower_bounds),
-                                                       make_span(pb.variable_upper_bounds)});
-    RAFT_CHECK_CUDA(handle_ptr->get_stream());
-    nnz_edge_count = partition_iter - coo_begin;
-  } else {
-    // Convert vars_to_remove to device vector for the functor
-    rmm::device_uvector<i_t> d_vars_to_remove(vars_to_remove.size(), handle_ptr->get_stream());
-    raft::copy(d_vars_to_remove.data(),
-               vars_to_remove.data(),
-               vars_to_remove.size(),
-               handle_ptr->get_stream());
-
-    auto partition_iter =
-      thrust::stable_partition(handle_ptr->get_thrust_policy(),
-                               coo_begin,
-                               coo_begin + cnst.size(),
-                               is_variable_in_remove_list_t<i_t>{make_span(d_vars_to_remove)});
-    RAFT_CHECK_CUDA(handle_ptr->get_stream());
-    nnz_edge_count = partition_iter - coo_begin;
-  }
-
-  return nnz_edge_count;
+  auto partition_iter =
+    thrust::stable_partition(handle_ptr->get_thrust_policy(),
+                             coo_begin,
+                             coo_begin + cnst.size(),
+                             variable_not_in_remove_list_t<i_t>{make_span(d_vars_to_remove)});
+  RAFT_CHECK_CUDA(handle_ptr->get_stream());
+  return partition_iter - coo_begin;
 }
 
 template <typename i_t, typename f_t, presolve_type_t presolve_type>
@@ -225,7 +202,7 @@ void update_presolved_bounds(problem_t<i_t, f_t>& pb,
 template <typename i_t, typename f_t>
 void update_from_csr(problem_t<i_t, f_t>& pb,
                      presolve_type_t presolve_type,
-                     const std::vector<i_t>& vars_to_remove = {})
+                     const rmm::device_uvector<i_t>& d_vars_to_remove)
 {
   auto handle_ptr = pb.handle_ptr;
   rmm::device_uvector<i_t> cnst(pb.coefficients.size(), handle_ptr->get_stream());
@@ -249,9 +226,9 @@ void update_from_csr(problem_t<i_t, f_t>& pb,
   //  partition coo - fixed variables reside in second partition
   i_t nnz_edge_count =
     presolve_type == presolve_type_t::TRIVIAL
-      ? compute_coo_partition<i_t, f_t, presolve_type_t::TRIVIAL>(pb, vars_to_remove, cnst)
+      ? compute_coo_partition<i_t, f_t, presolve_type_t::TRIVIAL>(pb, d_vars_to_remove, cnst)
       : compute_coo_partition<i_t, f_t, presolve_type_t::DOMINATED_COLUMNS>(
-          pb, vars_to_remove, cnst);
+          pb, d_vars_to_remove, cnst);
 
   //  maps to denote active constraints and non-fixed variables
   rmm::device_uvector<i_t> cnst_map(pb.n_constraints, handle_ptr->get_stream());
@@ -344,7 +321,6 @@ void update_from_csr(problem_t<i_t, f_t>& pb,
   pb.n_constraints = updated_n_cnst;
   pb.n_variables   = updated_n_vars;
 
-  // FIXME: Use enum type
   if (presolve_type == presolve_type_t::TRIVIAL) {
     CUOPT_LOG_INFO("After trivial presolve updated number of %d constraints %d variables",
                    updated_n_cnst,
@@ -433,22 +409,51 @@ void test_reverse_matches(const problem_t<i_t, f_t>& pb)
 }
 
 template <typename i_t, typename f_t>
+rmm::device_uvector<i_t> create_vars_to_remove(const problem_t<i_t, f_t>& problem,
+                                               presolve_type_t presolve_type,
+                                               const std::vector<i_t>& vars_to_remove)
+{
+  rmm::device_uvector<i_t> d_vars_to_remove(problem.n_variables, problem.handle_ptr->get_stream());
+  if (presolve_type == presolve_type_t::TRIVIAL) {
+    thrust::uninitialized_fill(
+      problem.handle_ptr->get_thrust_policy(), d_vars_to_remove.begin(), d_vars_to_remove.end(), 0);
+    thrust::for_each(problem.handle_ptr->get_thrust_policy(),
+                     thrust::make_counting_iterator<i_t>(0),
+                     thrust::make_counting_iterator<i_t>(problem.n_variables),
+                     [vars_to_remove = make_span(d_vars_to_remove),
+                      lb             = make_span(problem.variable_lower_bounds),
+                      ub             = make_span(problem.variable_upper_bounds),
+                      tol            = problem.tolerances.integrality_tolerance] __device__(i_t i) {
+                       if (abs(ub[i] - lb[i]) <= tol) { vars_to_remove[i] = 1; }
+                     });
+    RAFT_CHECK_CUDA(problem.handle_ptr->get_stream());
+  } else {
+    raft::copy(d_vars_to_remove.data(),
+               vars_to_remove.data(),
+               vars_to_remove.size(),
+               problem.handle_ptr->get_stream());
+  }
+  return d_vars_to_remove;
+}
+
+template <typename i_t, typename f_t>
 void apply_presolve(problem_t<i_t, f_t>& problem,
                     presolve_type_t presolve_type,
                     const std::vector<i_t>& vars_to_remove = {})
 {
   cuopt_assert(presolve_type != presolve_type_t::TRIVIAL || vars_to_remove.empty(),
                "For trivial presolve, vars_to_remove must be empty");
+  cuopt_expects(problem.preprocess_called,
+                error_type_t::RuntimeError,
+                "preprocess_problem should be called before running the solver");
 
   if (presolve_type != presolve_type_t::TRIVIAL && vars_to_remove.empty()) {
     CUOPT_LOG_WARN("No variables to remove, skipping presolve");
     return;
   }
 
-  cuopt_expects(problem.preprocess_called,
-                error_type_t::RuntimeError,
-                "preprocess_problem should be called before running the solver");
-  update_from_csr(problem, presolve_type, vars_to_remove);
+  auto d_vars_to_remove = create_vars_to_remove(problem, presolve_type, vars_to_remove);
+  update_from_csr(problem, presolve_type, d_vars_to_remove);
 
   problem.recompute_auxilliary_data(
     false);  // check problem representation later once cstr bounds are computed
