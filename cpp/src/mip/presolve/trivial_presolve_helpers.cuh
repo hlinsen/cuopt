@@ -127,16 +127,19 @@ struct unused_var_obj_offset_t {
   raft::device_span<f_t const> objective_coefficients;
   raft::device_span<f_t const> lb;
   raft::device_span<f_t const> ub;
+  raft::device_span<i_t const> variable_mapping;
   raft::device_span<f_t const> fixed_var_assignment;
   unused_var_obj_offset_t(raft::device_span<i_t const> var_map_,
                           raft::device_span<f_t const> objective_coefficients_,
                           raft::device_span<f_t const> lb_,
                           raft::device_span<f_t const> ub_,
+                          raft::device_span<i_t const> variable_mapping_,
                           raft::device_span<f_t const> fixed_var_assignment_)
     : var_map(var_map_),
       objective_coefficients(objective_coefficients_),
       lb(lb_),
       ub(ub_),
+      variable_mapping(variable_mapping_),
       fixed_var_assignment(fixed_var_assignment_)
   {
   }
@@ -150,7 +153,7 @@ struct unused_var_obj_offset_t {
       auto obj_off = (obj_coeff > 0) ? obj_coeff * lb[i] : obj_coeff * ub[i];
       return var_map[i] ? 0. : obj_off;
     } else {
-      auto orig_v_idx = var_map[i];
+      auto orig_v_idx = variable_mapping[i];
       return objective_coefficients[orig_v_idx] * fixed_var_assignment[orig_v_idx];
     }
     return 0.;

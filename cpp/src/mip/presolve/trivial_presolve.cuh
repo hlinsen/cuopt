@@ -127,6 +127,7 @@ void compute_objective_offset(problem_t<i_t, f_t>& pb, const rmm::device_uvector
                                make_span(pb.objective_coefficients),
                                make_span(pb.variable_lower_bounds),
                                make_span(pb.variable_upper_bounds),
+                               make_span(pb.presolve_data.variable_mapping),
                                make_span(pb.presolve_data.fixed_var_assignment)},
                              0.,
                              thrust::plus<f_t>{});
