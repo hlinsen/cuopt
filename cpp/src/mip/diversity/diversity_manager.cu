@@ -245,10 +245,10 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
   i_t prev_n_constraints = problem_ptr->n_constraints;
 
   while (!presolve_timer.check_time_limit() && !problem_ptr->empty) {
-    CUOPT_LOG_INFO("Running presolve iteration %d (vars: %d, constraints: %d)",
+    CUOPT_LOG_INFO("Running presolve iteration %d (constraints: %d, vars: %d)",
                    iteration + 1,
-                   prev_n_variables,
-                   prev_n_constraints);
+                   prev_n_constraints,
+                   prev_n_variables);
 
     // Step 1: Bounds strengthening
     CUOPT_LOG_DEBUG("Step 1: Bounds strengthening");

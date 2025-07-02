@@ -40,6 +40,7 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   auto ub = cuopt::host_copy(problem.variable_upper_bounds, stream);
   std::vector<i_t> candidates;
   for (int i = 0; i < problem.n_variables; ++i) {
+    // if (candidates.size() > 10) { break; }
     f_t lb_bar = lb_bars[i];
     f_t ub_bar = ub_bars[i];
     // std::cout << "Variable " << i << " has bounds " << lb_original << " " << ub_original
@@ -265,6 +266,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
       // std::cout << "Check if " << xj << " dominates " << xk << std::endl;
       for (int order_idx = 0; order_idx < static_cast<int>(domination_order_t::SIZE); ++order_idx) {
         auto order = static_cast<domination_order_t>(order_idx);
+        if (order != domination_order_t::REGULAR) { continue; }
         if (dominates(host_problem, xj, xk, order)) {
           // std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
           update_variable_bounds(host_problem,
