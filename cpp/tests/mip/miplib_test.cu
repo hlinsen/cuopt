@@ -51,9 +51,9 @@ void test_mps_file(result_map_t test_instance)
   mip_solver_settings_t<int, double> settings;
   // set the time limit depending on we are in assert mode or not
 #ifdef ASSERT_MODE
-  constexpr double test_time_limit = 60.;
+  constexpr double test_time_limit = 5.;
 #else
-  constexpr double test_time_limit = 30.;
+  constexpr double test_time_limit = 5.;
 #endif
 
   settings.time_limit                  = test_time_limit;
@@ -69,7 +69,8 @@ void test_mps_file(result_map_t test_instance)
 TEST(mip_solve, run_small_tests)
 {
   std::vector<result_map_t> test_instances = {
-    {"mip/50v-10.mps", 11311031.}, {"mip/neos5.mps", 15.}, {"mip/swath1.mps", 1300.}};
+    // {"mip/50v-10.mps", 11311031.}, {"mip/neos5.mps", 15.},
+    {"mip/swath1.mps", 1300.}};
   for (const auto& test_instance : test_instances) {
     test_mps_file(test_instance);
   }

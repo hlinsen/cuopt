@@ -638,7 +638,6 @@ template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::post_process_assignment(rmm::device_uvector<f_t>& current_assignment)
 {
   cuopt_assert(current_assignment.size() == presolve_data.variable_mapping.size(), "size mismatch");
-  cuopt::print("current_assignment", current_assignment);
   auto assgn       = make_span(current_assignment);
   auto fixed_assgn = make_span(presolve_data.fixed_var_assignment);
   auto var_map     = make_span(presolve_data.variable_mapping);

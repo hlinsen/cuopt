@@ -313,7 +313,7 @@ void print_solution(const raft::handle_t* handle_ptr, const rmm::device_uvector<
   for (int i = 0; i < (int)solution.size(); i++) {
     log_str.append(std::to_string(host_solution[i]) + ", ");
   }
-  CUOPT_LOG_INFO("%s]", log_str.c_str());
+  CUOPT_LOG_DEBUG("%s]", log_str.c_str());
 }
 
 template <typename f_t>

@@ -229,18 +229,19 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   auto host_problem = problem.to_host();
   auto lb_bars      = cuopt::host_copy(bounds_presolve.upd.lb, stream);
   auto ub_bars      = cuopt::host_copy(bounds_presolve.upd.ub, stream);
-  host_problem.print();
+  // host_problem.print();
   // cuopt::print("original_variables", problem.original_problem_ptr->get_variable_names());
-  cuopt::print("original_variable_lower_bounds",
-               problem.original_problem_ptr->get_variable_lower_bounds());
-  cuopt::print("original_variable_upper_bounds",
-               problem.original_problem_ptr->get_variable_upper_bounds());
+  // cuopt::print("original_variable_lower_bounds",
+  //              problem.original_problem_ptr->get_variable_lower_bounds());
+  // cuopt::print("original_variable_upper_bounds",
+  //              problem.original_problem_ptr->get_variable_upper_bounds());
 
   // cuopt::print("variable_lower_bounds", problem.variable_lower_bounds);
   // cuopt::print("variable_upper_bounds", problem.variable_upper_bounds);
   auto candidates = identify_candidate_variables(host_problem, lb_bars, ub_bars);
   // cuopt::print("candidates", candidates);
   if (candidates.empty()) { return; }
+  std::cout << "candidates size: " << candidates.size() << std::endl;
   compute_signatures(host_problem);
   auto shortest_rows = find_shortest_rows(host_problem, candidates);
   // std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
@@ -265,7 +266,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
       for (int order_idx = 0; order_idx < static_cast<int>(domination_order_t::SIZE); ++order_idx) {
         auto order = static_cast<domination_order_t>(order_idx);
         if (dominates(host_problem, xj, xk, order)) {
-          std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
+          // std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
           update_variable_bounds(host_problem,
                                  lb_bars,
                                  ub_bars,
@@ -280,24 +281,24 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     }
   }
 
-  if (!dominated_vars.empty()) {
-    std::cout << "Dominated variables: " << dominated_vars.size() << std::endl;
-    for (size_t var_idx = 0; var_idx < dominated_vars.size(); ++var_idx) {
-      if (dominated_vars[var_idx] == 0) { continue; }
-      auto var_type = host_problem.variable_types[var_idx];
+  // if (!dominated_vars.empty()) {
+  //   std::cout << "Dominated variables: " << dominated_vars.size() << std::endl;
+  //   for (size_t var_idx = 0; var_idx < dominated_vars.size(); ++var_idx) {
+  //     if (dominated_vars[var_idx] == 0) { continue; }
+  //     auto var_type = host_problem.variable_types[var_idx];
 
-      if (var_type == var_t::INTEGER) {
-        std::cout << "("
-                  << "integer"
-                  << ", " << var_idx << ") ";
-      } else {
-        std::cout << "("
-                  << "continuous"
-                  << ", " << var_idx << ") ";
-      }
-    }
-    std::cout << std::endl;
-  }
+  //     if (var_type == var_t::INTEGER) {
+  //       std::cout << "("
+  //                 << "integer"
+  //                 << ", " << var_idx << ") ";
+  //     } else {
+  //       std::cout << "("
+  //                 << "continuous"
+  //                 << ", " << var_idx << ") ";
+  //     }
+  //   }
+  //   std::cout << std::endl;
+  // }
   raft::copy(problem.presolve_data.fixed_var_assignment.data(),
              h_fixed_var_assignment.data(),
              h_fixed_var_assignment.size(),
