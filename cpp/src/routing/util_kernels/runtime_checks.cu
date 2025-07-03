@@ -292,7 +292,7 @@ void solution_t<i_t, f_t, REQUEST>::global_runtime_checks(
   [[maybe_unused]] bool check_feasible,
   [[maybe_unused]] const std::string_view where)
 {
-#define DEBUG_RUNTIME_CHECKS 1
+  // #define DEBUG_RUNTIME_CHECKS 1
 
 #ifdef DEBUG_RUNTIME_CHECKS
   // Enable this print for debugging
