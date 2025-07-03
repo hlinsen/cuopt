@@ -154,7 +154,7 @@ void adapted_modifier_t<i_t, f_t, REQUEST>::equalize_routes_and_nodes(
     }
   }
 
-  if (sol_a.sol.get_n_routes() > sol_b.sol.get_n_routes()) {
+  if (!skip_adding_nodes_to_a && sol_a.sol.get_n_routes() > sol_b.sol.get_n_routes()) {
     auto removed_nodes = sol_a.priority_remove_diff_routes(sol_b);
     missing_in_a.insert(missing_in_a.end(), removed_nodes.begin(), removed_nodes.end());
   } else if (sol_b.sol.get_n_routes() > sol_a.sol.get_n_routes()) {

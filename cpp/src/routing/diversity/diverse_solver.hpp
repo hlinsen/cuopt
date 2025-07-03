@@ -1130,9 +1130,7 @@ struct solve {
       if (consider_expensive_recombiners) {
         recombine_options.insert(recombiner_t::EAX);
         recombine_options.insert(recombiner_t::AEAX);
-        if (solution::request_type != request_t::VRP && !a.problem->is_tsp) {
-          recombine_options.insert(recombiner_t::IX);
-        }
+        if (!a.problem->is_tsp) { recombine_options.insert(recombiner_t::IX); }
       }
       if (recombine_options.size() == 0) { return false; }
     }
