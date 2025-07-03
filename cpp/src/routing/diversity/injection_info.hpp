@@ -40,7 +40,6 @@ struct injection_info_t {
 
   std::vector<solution> load_solutions()
   {
-    std::cout << "Inside load_solutions" << std::endl;
     auto stream = pool_allocator.sol_handles[0]->get_stream();
     auto [d_vehicle_ids, d_routes, d_types, d_sol_offsets] =
       p->data_view_ptr->get_initial_solutions();
@@ -126,7 +125,7 @@ struct injection_info_t {
       std::iota(sequence.begin(), sequence.end(), 0);
       S.remove_routes(sequence);
       S.add_new_routes(sol_routes);
-      S.sol.global_runtime_checks(false, false, "Check Sol after injection");
+      S.sol.global_runtime_checks(false, false, "Check solution after injection");
       solutions.emplace_back(std::move(S));
     }
     return solutions;
