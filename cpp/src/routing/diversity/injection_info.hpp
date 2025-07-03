@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,7 @@ struct injection_info_t {
 
   std::vector<solution> load_solutions()
   {
+    std::cout << "Inside load_solutions" << std::endl;
     auto stream = pool_allocator.sol_handles[0]->get_stream();
     auto [d_vehicle_ids, d_routes, d_types, d_sol_offsets] =
       p->data_view_ptr->get_initial_solutions();
@@ -47,7 +48,8 @@ struct injection_info_t {
     auto tmp_routes  = cuopt::host_copy(d_routes, stream);
     auto vehicle_ids = cuopt::host_copy(d_vehicle_ids, stream);
     auto node_types  = cuopt::host_copy(d_types, stream);
-    n_sol            = sol_offsets.size() - 1;
+
+    n_sol = sol_offsets.size() - 1;
 
     accepted.resize(n_sol, -1);
 
@@ -87,6 +89,17 @@ struct injection_info_t {
         added_node_ids.insert(tmp_routes[j]);
       }
 
+      if (p->order_info.is_pdp()) {
+        for (int node_id : added_node_ids) {
+          int brother_id = p->get_brother_node_info(p->get_node_info_of_node(node_id)).node();
+          auto cond      = added_node_ids.count(brother_id) > 0;
+          if (!cond) {
+            std::cout << "node_id: " << node_id << " brother_id: " << brother_id << std::endl;
+          }
+          cuopt_expects(cond, error_type_t::ValidationError, "Brother node is not served");
+        }
+      }
+
       desired_vehicle_ids.push_back(curr_vehicle_id);
       sol_routes.push_back({sol_n_routes++, new_route});
       cuopt_expects(sol_n_routes <= p->get_fleet_size(),
@@ -113,6 +126,7 @@ struct injection_info_t {
       std::iota(sequence.begin(), sequence.end(), 0);
       S.remove_routes(sequence);
       S.add_new_routes(sol_routes);
+      S.sol.global_runtime_checks(false, false, "Check Sol after injection");
       solutions.emplace_back(std::move(S));
     }
     return solutions;
