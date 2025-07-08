@@ -23,6 +23,8 @@
 #include <mip/presolve/probing_cache.cuh>
 #include <mip/presolve/trivial_presolve.cuh>
 
+#include <utilities/scope_guard.hpp>
+
 #include "cuda_profiler_api.h"
 
 namespace cuopt::linear_programming::detail {
@@ -72,7 +74,7 @@ bool diversity_manager_t<i_t, f_t>::regenerate_solutions()
   const i_t min_size = 2;
   while (population.current_size() <= min_size && (current_step == 0 || counter < 5)) {
     CUOPT_LOG_DEBUG("Trying to regenerate solution, pop size %d\n", population.current_size());
-    time_limit = min(time_limit, timer.remaining_time());
+    time_limit = std::min(time_limit, timer.remaining_time());
     ls.fj.randomize_weights(problem_ptr->handle_ptr);
     population.add_solution(generate_solution(time_limit));
     if (timer.check_time_limit()) { return false; }
@@ -91,18 +93,18 @@ std::vector<solution_t<i_t, f_t>> diversity_manager_t<i_t, f_t>::generate_more_s
 {
   std::vector<solution_t<i_t, f_t>> solutions;
   timer_t total_time_to_generate = timer_t(timer.remaining_time() / 5.);
-  f_t time_limit                 = min(60., total_time_to_generate.remaining_time());
-  f_t ls_limit                   = min(5., timer.remaining_time() / 20.);
+  f_t time_limit                 = std::min(60., total_time_to_generate.remaining_time());
+  f_t ls_limit                   = std::min(5., timer.remaining_time() / 20.);
   const i_t n_sols_to_generate   = 2;
   for (i_t i = 0; i < n_sols_to_generate; ++i) {
     CUOPT_LOG_DEBUG("Trying to generate more solutions");
-    time_limit = min(time_limit, timer.remaining_time());
+    time_limit = std::min(time_limit, timer.remaining_time());
     ls.fj.randomize_weights(problem_ptr->handle_ptr);
     auto sol = generate_solution(time_limit);
     population.run_solution_callbacks(sol);
     solutions.emplace_back(solution_t<i_t, f_t>(sol));
     if (total_time_to_generate.check_time_limit()) { return solutions; }
-    timer_t timer(min(ls_limit, timer.remaining_time()));
+    timer_t timer(std::min(ls_limit, timer.remaining_time()));
     ls.run_local_search(sol, population.weights, timer);
     population.run_solution_callbacks(sol);
     solutions.emplace_back(std::move(sol));
@@ -184,7 +186,7 @@ void diversity_manager_t<i_t, f_t>::generate_initial_solutions()
   // solution if we can generate faster generate up to 10 sols
   const f_t generation_time_limit = 0.6 * timer.get_time_limit();
   const f_t max_island_gen_time   = 600;
-  f_t total_island_gen_time       = min(generation_time_limit, max_island_gen_time);
+  f_t total_island_gen_time       = std::min(generation_time_limit, max_island_gen_time);
   timer_t gen_timer(total_island_gen_time);
   f_t sol_time_limit = gen_timer.remaining_time();
   for (i_t i = 0; i < maximum_island_size; ++i) {
@@ -264,7 +266,7 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
     if (termination_criterion_t::NO_UPDATE != bounds_term_crit) {
       ls.constraint_prop.bounds_update.set_updated_bounds(*problem_ptr);
       apply_presolve(*problem_ptr, presolve_type_t::TRIVIAL);
-      if (!problem_ptr->empty) { check_bounds_sanity(*problem_ptr); }
+      if (!problem_ptr->empty && !check_bounds_sanity(*problem_ptr)) { return false; }
     }
 
     // Step 3: Update bounds
@@ -272,7 +274,7 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
       ls.constraint_prop.bounds_update.resize(*problem_ptr);
       ls.constraint_prop.conditional_bounds_update.update_constraint_bounds(
         *problem_ptr, ls.constraint_prop.bounds_update);
-      check_bounds_sanity(*problem_ptr);
+      if (!check_bounds_sanity(*problem_ptr)) { return false; }
     }
 
     // Step 4: Dominated columns presolve
@@ -285,7 +287,7 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
       ls.constraint_prop.bounds_update.resize(*problem_ptr);
       ls.constraint_prop.conditional_bounds_update.update_constraint_bounds(
         *problem_ptr, ls.constraint_prop.bounds_update);
-      check_bounds_sanity(*problem_ptr);
+      if (!check_bounds_sanity(*problem_ptr)) { return false; }
     }
 
     // Check if any variables or constraints were removed
@@ -323,7 +325,7 @@ void diversity_manager_t<i_t, f_t>::generate_quick_feasible_solution()
 {
   solution_t<i_t, f_t> solution(*problem_ptr);
   // min 1 second, max 10 seconds
-  const f_t generate_fast_solution_time = min(10., max(1., timer.remaining_time() / 20.));
+  const f_t generate_fast_solution_time = std::min(10., std::max(1., timer.remaining_time() / 20.));
   timer_t sol_timer(generate_fast_solution_time);
   // do very short LP run to get somewhere close to the optimal point
   ls.generate_fast_solution(solution, sol_timer);
@@ -364,7 +366,11 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   const f_t time_limit                = timer.remaining_time();
   constexpr f_t time_ratio_on_init_lp = 0.1;
   constexpr f_t max_time_on_lp        = 30;
-  const f_t lp_time_limit             = min(max_time_on_lp, time_limit * time_ratio_on_init_lp);
+  const f_t lp_time_limit = std::min(max_time_on_lp, time_limit * time_ratio_on_init_lp);
+
+  // to automatically compute the solving time on scope exit
+  auto timer_raii_guard =
+    cuopt::scope_guard([&]() { stats.total_solve_time = timer.elapsed_time(); });
 
   // after every change to the problem, we should resize all the relevant vars
   // we need to encapsulate that to prevent repetitions
@@ -386,7 +392,8 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   generate_quick_feasible_solution();
   constexpr f_t time_ratio_of_probing_cache = 0.10;
   constexpr f_t max_time_on_probing         = 60;
-  f_t time_for_probing_cache = min(max_time_on_probing, time_limit * time_ratio_of_probing_cache);
+  f_t time_for_probing_cache =
+    std::min(max_time_on_probing, time_limit * time_ratio_of_probing_cache);
   timer_t probing_timer{time_for_probing_cache};
   if (check_b_b_preemption()) { return population.best_feasible(); }
   compute_probing_cache(ls.constraint_prop.bounds_update, *problem_ptr, probing_timer);
@@ -409,7 +416,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   ls.lp_optimal_exists = true;
   if (lp_result.get_termination_status() == pdlp_termination_status_t::Optimal) {
     // get lp user objective and pass it to set_new_user_bound
-    set_new_user_bound(problem_ptr->get_user_obj_from_solver_obj(lp_result.get_objective_value()));
+    set_new_user_bound(lp_result.get_objective_value());
   } else if (lp_result.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible) {
     // PDLP's infeasibility detection isn't an exact method and might be subject to false
     // positives. Issue a warning, and continue solving.
@@ -429,12 +436,8 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   if (check_b_b_preemption()) { return population.best_feasible(); }
   // generate a population with 5 solutions(FP+FJ)
   generate_initial_solutions();
-  if (timer.check_time_limit()) {
-    stats.total_solve_time = timer.elapsed_time();
-    return population.best_feasible();
-  }
+  if (timer.check_time_limit()) { return population.best_feasible(); }
   main_loop();
-  stats.total_solve_time = timer.elapsed_time();
   return population.best_feasible();
 };
 
@@ -600,7 +603,7 @@ diversity_manager_t<i_t, f_t>::recombine_and_local_search(solution_t<i_t, f_t>& 
   cuopt_assert(population.test_invariant(), "");
   cuopt_assert(lp_offspring.test_number_all_integer(), "All must be integers before LP");
   f_t lp_run_time = offspring.get_feasible() ? 3. : 1.;
-  lp_run_time     = min(lp_run_time, timer.remaining_time());
+  lp_run_time     = std::min(lp_run_time, timer.remaining_time());
   run_lp_with_vars_fixed(*lp_offspring.problem_ptr,
                          lp_offspring,
                          lp_offspring.problem_ptr->integer_indices,
@@ -611,7 +614,7 @@ diversity_manager_t<i_t, f_t>::recombine_and_local_search(solution_t<i_t, f_t>& 
   cuopt_assert(lp_offspring.test_number_all_integer(), "All must be integers after LP");
   f_t lp_qual = lp_offspring.get_quality(population.weights);
   CUOPT_LOG_DEBUG("After LP offspring sol cost:feas %f : %d", lp_qual, lp_offspring.get_feasible());
-  f_t offspring_qual = min(offspring.get_quality(population.weights), lp_qual);
+  f_t offspring_qual = std::min(offspring.get_quality(population.weights), lp_qual);
   recombine_stats.update_improve_stats(
     offspring_qual, sol1.get_quality(population.weights), sol2.get_quality(population.weights));
   return std::make_pair(std::move(offspring), std::move(lp_offspring));

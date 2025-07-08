@@ -17,11 +17,15 @@
 
 #pragma once
 
+#include <vector>
+
 #include <cuopt/linear_programming/constants.h>
 #include <cuopt/linear_programming/utilities/internals.hpp>
 
 #include <raft/core/device_span.hpp>
 #include <rmm/device_uvector.hpp>
+
+#include <vector>
 
 namespace cuopt::linear_programming {
 
@@ -70,11 +74,12 @@ class mip_solver_settings_t {
   bool has_initial_solution() const;
 
   struct tolerances_t {
-    f_t absolute_tolerance    = 1.0e-4;
-    f_t relative_tolerance    = 1.0e-6;
-    f_t integrality_tolerance = 1.0e-5;
-    f_t absolute_mip_gap      = 1.0e-10;
-    f_t relative_mip_gap      = 1.0e-4;
+    f_t presolve_absolute_tolerance = 1.0e-6;
+    f_t absolute_tolerance          = 1.0e-4;
+    f_t relative_tolerance          = 1.0e-6;
+    f_t integrality_tolerance       = 1.0e-5;
+    f_t absolute_mip_gap            = 1.0e-10;
+    f_t relative_mip_gap            = 1.0e-4;
   };
 
   /**
@@ -92,6 +97,7 @@ class mip_solver_settings_t {
   bool log_to_console  = true;
   std::string log_file;
   std::string sol_file;
+  std::string user_problem_file;
 
   /** Initial primal solution */
   std::shared_ptr<rmm::device_uvector<f_t>> initial_solution_;

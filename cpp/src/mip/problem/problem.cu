@@ -58,12 +58,6 @@ void problem_t<i_t, f_t>::op_problem_cstr_body(const optimization_problem_t<i_t,
                  "Problem is empty but constraint matrix indices are not empty.");
     cuopt_assert(problem_.get_constraint_matrix_offsets().size() == 1,
                  "Problem is empty but constraint matrix offsets are not empty.");
-    cuopt_assert(problem_.get_objective_coefficients().is_empty(),
-                 "Problem is empty but objective coefficients are not empty.");
-    cuopt_assert(problem_.get_variable_lower_bounds().is_empty(),
-                 "Problem is empty but variable lower bounds are not empty.");
-    cuopt_assert(problem_.get_variable_upper_bounds().is_empty(),
-                 "Problem is empty but variable upper bounds are not empty.");
     cuopt_assert(problem_.get_constraint_lower_bounds().is_empty(),
                  "Problem is empty but constraint lower bounds are not empty.");
     cuopt_assert(problem_.get_constraint_upper_bounds().is_empty(),
@@ -79,6 +73,7 @@ void problem_t<i_t, f_t>::op_problem_cstr_body(const optimization_problem_t<i_t,
   check_problem_representation(false, false);
   // If maximization problem, convert the problem
   if (maximize) convert_to_maximization_problem(*this);
+
   const bool is_mip = original_problem_ptr->get_problem_category() != problem_category_t::LP;
   if (is_mip) {
     // Resize what is needed for MIP
@@ -90,6 +85,7 @@ void problem_t<i_t, f_t>::op_problem_cstr_body(const optimization_problem_t<i_t,
     compute_n_integer_vars();
     compute_binary_var_table();
   }
+
   compute_transpose_of_problem();
   // Check after modifications
   check_problem_representation(true, is_mip);
@@ -288,6 +284,17 @@ void problem_t<i_t, f_t>::compute_transpose_of_problem()
   reverse_offsets.resize(n_variables + 1, handle_ptr->get_stream());
   reverse_constraints.resize(nnz, handle_ptr->get_stream());
   reverse_coefficients.resize(nnz, handle_ptr->get_stream());
+
+  // Special case if A is empty
+  // as cuSparse had a bug up until 12.9 causing cusparseCsr2cscEx2 to return incorrect results
+  // for empty matrices (CUSPARSE-2319)
+  // In this case, construct it manually
+  if (reverse_coefficients.is_empty()) {
+    thrust::fill(
+      handle_ptr->get_thrust_policy(), reverse_offsets.begin(), reverse_offsets.end(), 0);
+    return;
+  }
+
   raft::sparse::linalg::csr_transpose(*handle_ptr,
                                       offsets.data(),
                                       variables.data(),
@@ -318,12 +325,12 @@ void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
 {
   raft::common::nvtx::range scope("check_problem_representation");
 
-  // Presolve reductions might trivially solve the problem to optimality/infeasibility.
-  // In this case, it is exptected that the problem fields are empty.
   cuopt_assert(!offsets.is_empty(), "A_offsets must never be empty.");
   if (check_transposed) {
     cuopt_assert(!reverse_offsets.is_empty(), "A_offsets must never be empty.");
   }
+  // Presolve reductions might trivially solve the problem to optimality/infeasibility.
+  // In this case, it is exptected that the problem fields are empty.
   if (!empty) {
     // Check for empty fields
     cuopt_assert(!coefficients.is_empty(), "A_values must be set before calling the solver.");
@@ -334,8 +341,9 @@ void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
       cuopt_assert(!reverse_constraints.is_empty(),
                    "A_indices must be set before calling the solver.");
     }
-    cuopt_assert(!objective_coefficients.is_empty(), "c must be set before calling the solver.");
   }
+  cuopt_assert(objective_coefficients.size() == n_variables,
+               "objective_coefficients size mismatch");
 
   // Check CSR validity
   check_csr_representation(
@@ -388,7 +396,7 @@ void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
                "Sizes for vectors related to the constraints are not the same.");
 
   // Check the validity of bounds
-  cuopt_assert(
+  cuopt_expects(
     thrust::all_of(handle_ptr->get_thrust_policy(),
                    thrust::make_counting_iterator<i_t>(0),
                    thrust::make_counting_iterator<i_t>(n_variables),
@@ -396,8 +404,9 @@ void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
                     variable_upper_bounds = variable_upper_bounds.data()] __device__(i_t idx) {
                      return variable_lower_bounds[idx] <= variable_upper_bounds[idx];
                    }),
+    error_type_t::ValidationError,
     "Variable bounds are invalid");
-  cuopt_assert(
+  cuopt_expects(
     thrust::all_of(handle_ptr->get_thrust_policy(),
                    thrust::make_counting_iterator<i_t>(0),
                    thrust::make_counting_iterator<i_t>(n_constraints),
@@ -405,6 +414,7 @@ void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
                     constraint_upper_bounds = constraint_upper_bounds.data()] __device__(i_t idx) {
                      return constraint_lower_bounds[idx] <= constraint_upper_bounds[idx];
                    }),
+    error_type_t::ValidationError,
     "Constraints bounds are invalid");
 
   if (check_mip_related_data) {
@@ -694,6 +704,7 @@ void problem_t<i_t, f_t>::recompute_auxilliary_data(bool check_representation)
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_n_integer_vars()
 {
+  cuopt_assert(n_variables == variable_types.size(), "size mismatch");
   integer_indices.resize(n_variables, handle_ptr->get_stream());
   auto end =
     thrust::copy_if(handle_ptr->get_thrust_policy(),
@@ -765,6 +776,11 @@ void problem_t<i_t, f_t>::compute_binary_var_table()
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_related_variables(double time_limit)
 {
+  if (n_variables == 0) {
+    related_variables.resize(0, handle_ptr->get_stream());
+    related_variables_offsets.resize(0, handle_ptr->get_stream());
+    return;
+  }
   auto pb_view = view();
 
   handle_ptr->sync_stream();
@@ -792,7 +808,7 @@ void problem_t<i_t, f_t>::compute_related_variables(double time_limit)
   i_t related_var_offset = 0;
   auto start_time        = std::chrono::high_resolution_clock::now();
   for (i_t i = 0;; ++i) {
-    i_t slice_size = min(max_slice_size, n_variables - i * max_slice_size);
+    i_t slice_size = std::min(max_slice_size, n_variables - i * max_slice_size);
     if (slice_size <= 0) break;
 
     i_t slice_begin = i * max_slice_size;

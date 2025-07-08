@@ -860,9 +860,9 @@ DI void update_lift_moves(typename fj_t<i_t, f_t>::climber_data_t::view_t fj)
 
     // cub::BlockReduce because raft::blockReduce has a bug when using min() w/ floats
     // lfd = lift feasible domain
-    f_t lfd_lb = BlockReduce(shmem.cub).Reduce(th_lower_domain, cub::Max());
+    f_t lfd_lb = BlockReduce(shmem.cub).Reduce(th_lower_domain, cuda::maximum());
     __syncthreads();
-    f_t lfd_ub = BlockReduce(shmem.cub).Reduce(th_upper_domain, cub::Min());
+    f_t lfd_ub = BlockReduce(shmem.cub).Reduce(th_upper_domain, cuda::minimum());
 
     if (lfd_lb >= lfd_ub) continue;
 
@@ -1153,7 +1153,9 @@ __global__ void select_variable_kernel(typename fj_t<i_t, f_t>::climber_data_t::
   raft::random::PCGenerator rng(
     fj.settings->seed, *fj.iterations * fj.settings->parameters.max_sampled_moves, 0);
 
-  __shared__ typename fj_t<i_t, f_t>::move_score_t shmem[2 * raft::WarpSize];
+  using move_score_t = typename fj_t<i_t, f_t>::move_score_t;
+  __shared__ alignas(move_score_t) char shmem_storage[2 * raft::WarpSize * sizeof(move_score_t)];
+  auto* const shmem = (move_score_t*)shmem_storage;
 
   auto th_best_score  = fj_t<i_t, f_t>::move_score_t::invalid();
   i_t th_selected_var = std::numeric_limits<i_t>::max();
@@ -1300,7 +1302,9 @@ DI thrust::tuple<i_t, f_t, typename fj_t<i_t, f_t>::move_score_t> gridwide_reduc
   cg::this_grid().sync();
 
   if (blockIdx.x == 0) {
-    __shared__ typename fj_t<i_t, f_t>::move_score_t shmem[2 * raft::WarpSize];
+    using move_score_t = typename fj_t<i_t, f_t>::move_score_t;
+    __shared__ alignas(move_score_t) char shmem_storage[2 * raft::WarpSize * sizeof(move_score_t)];
+    auto* const shmem = (move_score_t*)shmem_storage;
 
     auto th_best_score = fj_t<i_t, f_t>::move_score_t::invalid();
     i_t th_best_block  = 0;
