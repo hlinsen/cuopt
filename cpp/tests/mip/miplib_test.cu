@@ -57,6 +57,7 @@ void test_mps_file(result_map_t test_instance)
 #endif
 
   settings.time_limit                  = test_time_limit;
+  settings.mip_scaling                 = false;
   mip_solution_t<int, double> solution = solve_mip(&handle_, problem, settings);
   EXPECT_EQ(solution.get_termination_status(), mip_termination_status_t::FeasibleFound);
   double obj_val = solution.get_objective_value();

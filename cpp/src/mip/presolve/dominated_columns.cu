@@ -105,8 +105,9 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
       //           << ", upper: " << original_upper_bounds[row] << std::endl;
       // Check for LesserThanOrEqual or Equality
       if ((original_lower_bounds[row] == -std::numeric_limits<f_t>::infinity() &&
-           original_upper_bounds[row] != std::numeric_limits<f_t>::infinity()) ||
-          problem.integer_equal(original_lower_bounds[row], original_upper_bounds[row])) {
+           original_upper_bounds[row] != std::numeric_limits<f_t>::infinity())) {
+        //||
+        // problem.integer_equal(original_lower_bounds[row], original_upper_bounds[row])) {
         auto [min_row_size, row_id] = shortest_rows[col];
         if (row_size < min_row_size) { shortest_rows[col] = std::make_pair(row_size, row); }
       }
@@ -123,6 +124,8 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   // Signature is valid if any bit set in xj is also set in xk
   // std::cout << "Signature " << xj << " is " << signatures[xj] << std::endl;
   // std::cout << "Signature " << xk << " is " << signatures[xk] << std::endl;
+  // std::cout << "Signature " << xj << " and " << xk << " is " << (signatures[xj] & signatures[xk])
+  //           << std::endl;
   if ((signatures[xj] & signatures[xk]) != signatures[xj]) { return false; }
   // std::cout << "Signature " << xj << " and " << xk << " is true" << std::endl;
 
@@ -147,6 +150,9 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   auto xj_nnz    = host_problem.reverse_offsets[xj + 1] - xj_offset;
   auto xk_offset = host_problem.reverse_offsets[xk];
   auto xk_nnz    = host_problem.reverse_offsets[xk + 1] - xk_offset;
+
+  // host_problem.print();
+  // host_problem.print_transposed();
 
   for (int i = 0; i < xj_nnz; ++i) {
     auto row1  = host_problem.reverse_constraints[xj_offset + i];
@@ -254,6 +260,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     cuopt::host_copy(problem.presolve_data.fixed_var_assignment, stream);
 
   for (const auto& [xj, pair] : shortest_rows) {
+    if (dominated_vars[xj] == 1) { continue; }
     auto const& [row_size, row] = pair;
     // std::cout << "For variable " << xj << " the shortest row is " << row << " with size "
     //           << row_size << std::endl;
@@ -262,13 +269,13 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     // All the variables in this row are the candidates to be dominated by xj
     for (int j = 0; j < nnz_in_row; ++j) {
       auto xk = host_problem.variables[row_offset + j];
-      if (xj == xk) { continue; }
+      if (xj == xk || dominated_vars[xk] == 1) { continue; }
       // std::cout << "Check if " << xj << " dominates " << xk << std::endl;
       for (int order_idx = 0; order_idx < static_cast<int>(domination_order_t::SIZE); ++order_idx) {
         auto order = static_cast<domination_order_t>(order_idx);
         if (order != domination_order_t::REGULAR) { continue; }
         if (dominates(host_problem, xj, xk, order)) {
-          // std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
+          std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
           update_variable_bounds(host_problem,
                                  lb_bars,
                                  ub_bars,
@@ -277,6 +284,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
                                  xj,
                                  xk,
                                  order);
+          // exit(1);
           dominated_vars[xk] = 1;
         }
       }

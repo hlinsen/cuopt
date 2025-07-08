@@ -238,6 +238,22 @@ class problem_t {
         std::cout << std::endl;
       }
     }
+
+    void print_transposed() const
+    {
+      std::cout << "Transposed problem (variables and their constraints):" << std::endl;
+      for (i_t var = 0; var < n_variables; ++var) {
+        std::cout << "Variable " << var << ": ";
+        auto var_offset = reverse_offsets[var];
+        auto nnz_in_var = reverse_offsets[var + 1] - var_offset;
+        for (i_t j = 0; j < nnz_in_var; ++j) {
+          auto constraint = reverse_constraints[var_offset + j];
+          auto coeff      = reverse_coefficients[var_offset + j];
+          std::cout << coeff << "x" << constraint << " ";
+        }
+        std::cout << std::endl;
+      }
+    }
   };
 
   host_view_t to_host();

@@ -243,6 +243,7 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
   i_t iteration          = 0;
   i_t prev_n_variables   = problem_ptr->n_variables;
   i_t prev_n_constraints = problem_ptr->n_constraints;
+  cuopt::print("objective", problem_ptr->objective_coefficients);
 
   while (!presolve_timer.check_time_limit() && !problem_ptr->empty) {
     CUOPT_LOG_INFO("Running presolve iteration %d (constraints: %d, vars: %d)",
