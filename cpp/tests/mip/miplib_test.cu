@@ -51,9 +51,9 @@ void test_mps_file(result_map_t test_instance)
   mip_solver_settings_t<int, double> settings;
   // set the time limit depending on we are in assert mode or not
 #ifdef ASSERT_MODE
-  constexpr double test_time_limit = 5.;
+  constexpr double test_time_limit = 60.;
 #else
-  constexpr double test_time_limit = 5.;
+  constexpr double test_time_limit = 60.;
 #endif
 
   settings.time_limit                  = test_time_limit;

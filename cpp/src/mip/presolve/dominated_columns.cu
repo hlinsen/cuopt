@@ -130,10 +130,9 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   // std::cout << "Signature " << xj << " and " << xk << " is true" << std::endl;
 
   // Check variable types (iii)
-  bool xj_is_int   = host_problem.variable_types[xj] == var_t::INTEGER;
-  bool xk_is_int   = host_problem.variable_types[xk] == var_t::INTEGER;
-  auto valid_types = xj_is_int && xk_is_int;
-  if (!valid_types) { return false; }
+  bool xj_is_int = host_problem.variable_types[xj] == var_t::INTEGER;
+  bool xk_is_int = host_problem.variable_types[xk] == var_t::INTEGER;
+  if (!xj_is_int && !xk_is_int) { return false; }
   // std::cout << "Variable types " << xj << " and " << xk << " is true" << std::endl;
 
   auto cj = host_problem.objective_coefficients[xj];
@@ -260,7 +259,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     cuopt::host_copy(problem.presolve_data.fixed_var_assignment, stream);
 
   for (const auto& [xj, pair] : shortest_rows) {
-    if (dominated_vars[xj] == 1) { continue; }
+    // if (dominated_vars[xj] == 1) { continue; }
     auto const& [row_size, row] = pair;
     // std::cout << "For variable " << xj << " the shortest row is " << row << " with size "
     //           << row_size << std::endl;
@@ -269,13 +268,13 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     // All the variables in this row are the candidates to be dominated by xj
     for (int j = 0; j < nnz_in_row; ++j) {
       auto xk = host_problem.variables[row_offset + j];
-      if (xj == xk || dominated_vars[xk] == 1) { continue; }
+      if (xj == xk) { continue; }
       // std::cout << "Check if " << xj << " dominates " << xk << std::endl;
       for (int order_idx = 0; order_idx < static_cast<int>(domination_order_t::SIZE); ++order_idx) {
         auto order = static_cast<domination_order_t>(order_idx);
         if (order != domination_order_t::REGULAR) { continue; }
         if (dominates(host_problem, xj, xk, order)) {
-          std::cout << xj << " dominates " << xk << " with order " << order_idx << std::endl;
+          std::cout << xj << " dominates " << xk << std::endl;
           update_variable_bounds(host_problem,
                                  lb_bars,
                                  ub_bars,
