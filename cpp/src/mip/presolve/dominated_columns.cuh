@@ -21,6 +21,8 @@
 
 #include <algorithm>
 #include <bitset>
+#include <functional>
+#include <stack>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -59,7 +61,7 @@ struct dominated_columns_t {
     std::vector<f_t> const& lb_bars,
     std::vector<f_t> const& ub_bars);
   void compute_signatures(typename problem_t<i_t, f_t>::host_view_t& host_problem);
-  std::unordered_map<i_t, std::pair<i_t, i_t>> find_shortest_rows(
+  std::map<i_t, std::pair<i_t, i_t>> find_shortest_rows(
     typename problem_t<i_t, f_t>::host_view_t& host_problem, std::vector<i_t> const& candidates);
   bool dominates(typename problem_t<i_t, f_t>::host_view_t& host_problem,
                  i_t xj,
@@ -75,92 +77,31 @@ struct dominated_columns_t {
                               domination_order_t order);
 
   /**
-   * @brief Check if a variable has been inferred (fixed) during presolve
-   *
-   * @param var_idx Variable index to check
-   * @return true if the variable has been inferred, false otherwise
+   * @brief Add a domination relationship to the dependency graph
    */
-  bool is_variable_inferred(i_t var_idx) const;
+  void add_domination_relationship(i_t dominator, i_t dominated);
 
   /**
-   * @brief Get the inferred value for a variable
-   *
-   * @param var_idx Variable index
-   * @return The inferred value, or NaN if not inferred
+   * @brief Check if adding a new domination relationship would create a cycle
    */
-  f_t get_inferred_value(i_t var_idx) const;
+  bool would_create_cycle(i_t dominator, i_t dominated);
+
+  /**
+   * @brief Perform depth-first search to detect cycles in the dependency graph
+   */
+  bool has_cycle_dfs(i_t node, std::vector<bool>& visited, std::vector<bool>& rec_stack);
+
+  /**
+   * @brief Print the current dependency graph for debugging
+   */
+  void print_dependency_graph();
+
+  /**
+   * @brief Find and print the cycle in the dependency graph
+   */
+  void find_and_print_cycle(i_t dominator, i_t dominated);
 
   void presolve(bound_presolve_t<i_t, f_t>& bounds_presolve);
-
-  /**
-   * @brief Remove dominated columns from CSR matrix and update all related data structures
-   *
-   * @param host_problem Host view of the problem
-   * @param dominated_vars Vector of variable indices to remove
-   */
-  void remove_dominated_columns_from_csr(typename problem_t<i_t, f_t>::host_view_t& host_problem,
-                                         std::vector<i_t>& dominated_vars);
-
-  /**
-   * @brief Update constraint bounds to account for removed dominated variables
-   *
-   * @param host_problem Host view of the problem
-   * @param dominated_vars Vector of removed variable indices
-   */
-  void update_constraint_bounds_for_removed_vars(
-    typename problem_t<i_t, f_t>::host_view_t& host_problem,
-    const std::vector<i_t>& dominated_vars);
-
-  /**
-   * @brief Handle free variables that result from removing dominated variables
-   *
-   * @param host_problem Host view of the problem
-   * @param dominated_vars Vector of dominated variables being removed
-   * @param var_map Variable map (1 = keep, 0 = remove)
-   */
-  void handle_free_variables_after_removal(typename problem_t<i_t, f_t>::host_view_t& host_problem,
-                                           const std::vector<i_t>& dominated_vars,
-                                           rmm::device_uvector<i_t>& var_map);
-
-  /**
-   * @brief Handle free variables using the standardize_bounds approach
-   *
-   * @param host_problem Host view of the problem
-   * @param free_vars Vector of newly free variable indices
-   * @param var_map Variable map (1 = keep, 0 = remove)
-   */
-  void handle_free_variables_standardization(
-    typename problem_t<i_t, f_t>::host_view_t& host_problem,
-    const std::vector<i_t>& free_vars,
-    rmm::device_uvector<i_t>& var_map);
-
-  /**
-   * @brief Update CSR matrix to handle free variables
-   *
-   * @param host_problem Host view of the problem
-   * @param free_vars Vector of free variable indices
-   */
-  void update_csr_for_free_variables(typename problem_t<i_t, f_t>::host_view_t& host_problem,
-                                     const std::vector<i_t>& free_vars);
-
-  /**
-   * @brief Identify and remove dominated variables from the problem
-   *
-   * @param host_problem Host view of the problem
-   * @param bounds_presolve Bounds presolve data
-   * @return Vector of removed variable indices
-   */
-  std::vector<i_t> identify_and_remove_dominated_variables(
-    typename problem_t<i_t, f_t>::host_view_t& host_problem,
-    bound_presolve_t<i_t, f_t>& bounds_presolve);
-
-  /**
-   * @brief Example usage of dominated columns removal functionality
-   *
-   * This function demonstrates how to use the dominated columns removal
-   * functionality in a typical presolve workflow.
-   */
-  void example_usage();
 
   problem_t<i_t, f_t>& problem;
   std::vector<std::bitset<signature_size>> signatures;
@@ -168,6 +109,10 @@ struct dominated_columns_t {
 
   std::vector<f_t> out_ub;
   rmm::cuda_stream_view stream;
+
+  // Dependency graph for cycle detection
+  std::unordered_map<i_t, std::vector<i_t>> dependency_graph;
+  std::unordered_set<i_t> nodes_in_graph;
 };
 
 }  // namespace cuopt::linear_programming::detail

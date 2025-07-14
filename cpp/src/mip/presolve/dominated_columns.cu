@@ -84,11 +84,11 @@ void dominated_columns_t<i_t, f_t>::compute_signatures(
 }
 
 template <typename i_t, typename f_t>
-std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find_shortest_rows(
+std::map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find_shortest_rows(
   typename problem_t<i_t, f_t>::host_view_t& host_problem, std::vector<i_t> const& candidates)
 {
   // std::cout << "Finding shortest rows" << std::endl;
-  std::unordered_map<i_t, std::pair<i_t, i_t>> shortest_rows;
+  std::map<i_t, std::pair<i_t, i_t>> shortest_rows;
   auto original_lower_bounds =
     cuopt::host_copy(problem.original_problem_ptr->get_constraint_lower_bounds(), stream);
   auto original_upper_bounds =
@@ -104,6 +104,7 @@ std::unordered_map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find
       // std::cout << "constraint: " << row << ", lower: " << original_lower_bounds[row]
       //           << ", upper: " << original_upper_bounds[row] << std::endl;
       // Check for LesserThanOrEqual or Equality
+
       if ((original_lower_bounds[row] == -std::numeric_limits<f_t>::infinity() &&
            original_upper_bounds[row] != std::numeric_limits<f_t>::infinity())) {
         //||
@@ -122,18 +123,18 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   typename problem_t<i_t, f_t>::host_view_t& host_problem, i_t xj, i_t xk, domination_order_t order)
 {
   // Signature is valid if any bit set in xj is also set in xk
-  // std::cout << "Signature " << xj << " is " << signatures[xj] << std::endl;
-  // std::cout << "Signature " << xk << " is " << signatures[xk] << std::endl;
-  // std::cout << "Signature " << xj << " and " << xk << " is " << (signatures[xj] & signatures[xk])
-  //           << std::endl;
+  std::cout << "Signature " << xj << " is " << signatures[xj] << std::endl;
+  std::cout << "Signature " << xk << " is " << signatures[xk] << std::endl;
+  std::cout << "Signature " << xj << " and " << xk << " is " << (signatures[xj] & signatures[xk])
+            << std::endl;
   if ((signatures[xj] & signatures[xk]) != signatures[xj]) { return false; }
-  // std::cout << "Signature " << xj << " and " << xk << " is true" << std::endl;
+  std::cout << "Signature " << xj << " and " << xk << " is true" << std::endl;
 
   // Check variable types (iii)
   bool xj_is_int = host_problem.variable_types[xj] == var_t::INTEGER;
   bool xk_is_int = host_problem.variable_types[xk] == var_t::INTEGER;
-  if (!xj_is_int && !xk_is_int) { return false; }
-  // std::cout << "Variable types " << xj << " and " << xk << " is true" << std::endl;
+  if (xj_is_int && !xk_is_int) { return false; }
+  std::cout << "Variable types " << xj << " and " << xk << " is true" << std::endl;
 
   auto cj = host_problem.objective_coefficients[xj];
   if (order == domination_order_t::NEGATED_XJ) { cj = -cj; }
@@ -141,8 +142,8 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   if (order == domination_order_t::NEGATED_XK) { ck = -ck; }
   // Check objective coefficients (i)
   if (cj > ck) { return false; }
-  // std::cout << "Objective coefficients " << xj << " and " << xk << " is true" << std::endl;
-  // std::cout << "cj: " << cj << ", ck: " << ck << std::endl;
+  std::cout << "Objective coefficients " << xj << " and " << xk << " is true" << std::endl;
+  std::cout << "cj: " << cj << ", ck: " << ck << std::endl;
 
   // Check constraint coefficients (ii)
   auto xj_offset = host_problem.reverse_offsets[xj];
@@ -156,28 +157,27 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   for (int i = 0; i < xj_nnz; ++i) {
     auto row1  = host_problem.reverse_constraints[xj_offset + i];
     f_t coeff1 = host_problem.reverse_coefficients[xj_offset + i];
-    // std::cout << "cst: " << row1 << ", coeff: " << coeff1 << std::endl;
+    std::cout << "cst: " << row1 << ", coeff: " << coeff1 << std::endl;
     f_t coeff2 = 0;
 
     for (int j = 0; j < xk_nnz; ++j) {
       auto row2 = host_problem.reverse_constraints[xk_offset + j];
-      // std::cout << "cst: " << row2
-      //           << ", coeff: " << host_problem.reverse_coefficients[xk_offset + j] << std::endl;
+      std::cout << "cst: " << row2
+                << ", coeff: " << host_problem.reverse_coefficients[xk_offset + j] << std::endl;
       if (row1 == row2) {
         coeff2 = host_problem.reverse_coefficients[xk_offset + j];
-        // std::cout << xk << " found in row " << row2 << " with coefficient " << coeff2 <<
-        // std::endl;
+        std::cout << xk << " found in row " << row2 << " with coefficient " << coeff2 << std::endl;
         break;
       }
     }
     if (order == domination_order_t::NEGATED_XJ) { coeff1 = -coeff1; }
     if (order == domination_order_t::NEGATED_XK) { coeff2 = -coeff2; }
-    // std::cout << "constraint: " << row1 << ", coeff1: " << coeff1 << ", coeff2: " << coeff2
-    //           << std::endl;
+    std::cout << "constraint: " << row1 << ", coeff1: " << coeff1 << ", coeff2: " << coeff2
+              << std::endl;
     if (coeff1 > coeff2) { return false; }
   }
 
-  // std::cout << "Constraint coefficients " << xj << " and " << xk << " is true" << std::endl;
+  std::cout << "Constraint coefficients " << xj << " and " << xk << " is true" << std::endl;
 
   return true;
 }
@@ -230,6 +230,150 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
 }
 
 template <typename i_t, typename f_t>
+void dominated_columns_t<i_t, f_t>::add_domination_relationship(i_t dominator, i_t dominated)
+{
+  // Add nodes to the graph if they don't exist
+  if (dependency_graph.find(dominator) == dependency_graph.end()) {
+    dependency_graph[dominator] = std::vector<i_t>();
+    nodes_in_graph.insert(dominator);
+  }
+  if (dependency_graph.find(dominated) == dependency_graph.end()) {
+    dependency_graph[dominated] = std::vector<i_t>();
+    nodes_in_graph.insert(dominated);
+  }
+
+  // Add the edge: dominator -> dominated
+  dependency_graph[dominator].push_back(dominated);
+}
+
+template <typename i_t, typename f_t>
+bool dominated_columns_t<i_t, f_t>::would_create_cycle(i_t dominator, i_t dominated)
+{
+  // Temporarily add the edge to check for cycles
+  add_domination_relationship(dominator, dominated);
+
+  // Check for cycles using DFS
+  std::vector<bool> visited(problem.n_variables, false);
+  std::vector<bool> rec_stack(problem.n_variables, false);
+  std::vector<i_t> cycle_path;
+
+  bool has_cycle = false;
+  for (const auto& node : nodes_in_graph) {
+    if (!visited[node]) {
+      if (has_cycle_dfs(node, visited, rec_stack)) {
+        has_cycle = true;
+        break;
+      }
+    }
+  }
+
+  // Remove the temporary edge
+  auto& dominator_edges = dependency_graph[dominator];
+  dominator_edges.pop_back();
+
+  return has_cycle;
+}
+
+template <typename i_t, typename f_t>
+bool dominated_columns_t<i_t, f_t>::has_cycle_dfs(i_t node,
+                                                  std::vector<bool>& visited,
+                                                  std::vector<bool>& rec_stack)
+{
+  if (!visited[node]) {
+    visited[node]   = true;
+    rec_stack[node] = true;
+
+    // Check all neighbors of the current node
+    if (dependency_graph.find(node) != dependency_graph.end()) {
+      for (i_t neighbor : dependency_graph[node]) {
+        if (!visited[neighbor]) {
+          if (has_cycle_dfs(neighbor, visited, rec_stack)) { return true; }
+        } else if (rec_stack[neighbor]) {
+          // Found a back edge, cycle detected
+          return true;
+        }
+      }
+    }
+  }
+
+  rec_stack[node] = false;
+  return false;
+}
+
+template <typename i_t, typename f_t>
+void dominated_columns_t<i_t, f_t>::print_dependency_graph()
+{
+  std::cout << "Dependency Graph (" << dependency_graph.size() << " nodes):" << std::endl;
+  for (const auto& [node, edges] : dependency_graph) {
+    std::cout << "  " << node << " -> [";
+    for (size_t i = 0; i < edges.size(); ++i) {
+      if (i > 0) std::cout << ", ";
+      std::cout << edges[i];
+    }
+    std::cout << "]" << std::endl;
+  }
+}
+
+template <typename i_t, typename f_t>
+void dominated_columns_t<i_t, f_t>::find_and_print_cycle(i_t dominator, i_t dominated)
+{
+  // Temporarily add the edge to find the cycle
+  add_domination_relationship(dominator, dominated);
+
+  // Use DFS to find the cycle path
+  std::vector<bool> visited(problem.n_variables, false);
+  std::vector<bool> rec_stack(problem.n_variables, false);
+  std::vector<i_t> path;
+  std::vector<i_t> cycle;
+
+  // Find cycle starting from the dominated node
+  std::function<bool(i_t)> dfs_cycle = [&](i_t node) -> bool {
+    if (rec_stack[node]) {
+      // Found a cycle, reconstruct it
+      auto it = std::find(path.begin(), path.end(), node);
+      if (it != path.end()) {
+        cycle.assign(it, path.end());
+        cycle.push_back(node);  // Complete the cycle
+      }
+      return true;
+    }
+
+    if (visited[node]) return false;
+
+    visited[node]   = true;
+    rec_stack[node] = true;
+    path.push_back(node);
+
+    if (dependency_graph.find(node) != dependency_graph.end()) {
+      for (i_t neighbor : dependency_graph[node]) {
+        if (dfs_cycle(neighbor)) { return true; }
+      }
+    }
+
+    rec_stack[node] = false;
+    path.pop_back();
+    return false;
+  };
+
+  // Start DFS from the dominated node
+  dfs_cycle(dominated);
+
+  // Remove the temporary edge
+  auto& dominator_edges = dependency_graph[dominator];
+  dominator_edges.pop_back();
+
+  // Print the cycle
+  if (!cycle.empty()) {
+    std::cout << "CYCLE FOUND: ";
+    for (size_t i = 0; i < cycle.size(); ++i) {
+      if (i > 0) std::cout << " -> ";
+      std::cout << cycle[i];
+    }
+    std::cout << std::endl;
+  }
+}
+
+template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
   auto host_problem = problem.to_host();
@@ -253,28 +397,54 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   // std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
 
   // Track variables that have been fixed by domination
+  auto variable_names = problem.original_problem_ptr->get_variable_names();
   std::vector<i_t> dominated_vars(problem.n_variables, 0);
   auto h_variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
   auto h_fixed_var_assignment =
     cuopt::host_copy(problem.presolve_data.fixed_var_assignment, stream);
 
+  // Clear dependency graph for this presolve run
+  dependency_graph.clear();
+  nodes_in_graph.clear();
+
+  // host_problem.print_transposed();
+
   for (const auto& [xj, pair] : shortest_rows) {
-    // if (dominated_vars[xj] == 1) { continue; }
+    // std::cout << "Checking if " << xj << " is dominating" << std::endl;
     auto const& [row_size, row] = pair;
     // std::cout << "For variable " << xj << " the shortest row is " << row << " with size "
     //           << row_size << std::endl;
     auto row_offset = host_problem.offsets[row];
     auto nnz_in_row = host_problem.offsets[row + 1] - row_offset;
+    // std::cout << "Row " << row << " has " << nnz_in_row << " non-zeros" << std::endl;
     // All the variables in this row are the candidates to be dominated by xj
     for (int j = 0; j < nnz_in_row; ++j) {
       auto xk = host_problem.variables[row_offset + j];
       if (xj == xk) { continue; }
-      // std::cout << "Check if " << xj << " dominates " << xk << std::endl;
-      for (int order_idx = 0; order_idx < static_cast<int>(domination_order_t::SIZE); ++order_idx) {
-        auto order = static_cast<domination_order_t>(order_idx);
-        if (order != domination_order_t::REGULAR) { continue; }
-        if (dominates(host_problem, xj, xk, order)) {
-          std::cout << xj << " dominates " << xk << std::endl;
+      // std::cout << "Checking if " << xk << " is dominated" << std::endl;
+      if (xj == 224 && xk == 458) {
+        std::cout << "row: " << row << ", lower: " << host_problem.constraint_lower_bounds[row]
+                  << ", upper: " << host_problem.constraint_upper_bounds[row] << std::endl;
+        // std::cout << "Checking if " << xj << " dominates " << xk << std::endl;
+        if (dominates(host_problem, xj, xk, domination_order_t::REGULAR)) {
+          // Check if adding this domination relationship would create a cycle
+          // if (would_create_cycle(xj, xk)) {
+          //   std::cout << "CYCLE DETECTED: Adding domination " << xj << " -> " << xk
+          //             << " would create a cycle in the dependency graph!" << std::endl;
+          //   std::cout << "Current dependency graph:" << std::endl;
+          //   print_dependency_graph();
+          //   std::cout << "Finding the cycle path..." << std::endl;
+          //   find_and_print_cycle(xj, xk);
+          // }
+
+          // Add the domination relationship to the graph
+          add_domination_relationship(xj, xk);
+
+          // Print domination relationship with variable names
+          auto xj_name = variable_names[xj];
+          auto xk_name = variable_names[xk];
+          std::cout << "Domination " << xj << "(" << xj_name << ") -> " << xk << "(" << xk_name
+                    << ")" << std::endl;
           update_variable_bounds(host_problem,
                                  lb_bars,
                                  ub_bars,
@@ -282,13 +452,17 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
                                  h_fixed_var_assignment,
                                  xj,
                                  xk,
-                                 order);
-          // exit(1);
+                                 domination_order_t::REGULAR);
           dominated_vars[xk] = 1;
+          exit(1);
         }
       }
     }
   }
+  int num_dominated = std::count(dominated_vars.begin(), dominated_vars.end(), 1);
+  std::cout << "Number of dominated variables: " << num_dominated << std::endl;
+  std::cout << "Dependency graph size: " << dependency_graph.size() << " nodes" << std::endl;
+  exit(1);
 
   // if (!dominated_vars.empty()) {
   //   std::cout << "Dominated variables: " << dominated_vars.size() << std::endl;
