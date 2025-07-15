@@ -58,6 +58,7 @@ struct dominated_columns_t {
    */
   std::vector<i_t> identify_candidate_variables(
     typename problem_t<i_t, f_t>::host_view_t& host_problem,
+    bound_presolve_t<i_t, f_t>& bounds_presolve,
     std::vector<f_t> const& lb_bars,
     std::vector<f_t> const& ub_bars);
   void compute_signatures(typename problem_t<i_t, f_t>::host_view_t& host_problem);
@@ -75,32 +76,6 @@ struct dominated_columns_t {
                               i_t xj,
                               i_t xk,
                               domination_order_t order);
-
-  /**
-   * @brief Add a domination relationship to the dependency graph
-   */
-  void add_domination_relationship(i_t dominator, i_t dominated);
-
-  /**
-   * @brief Check if adding a new domination relationship would create a cycle
-   */
-  bool would_create_cycle(i_t dominator, i_t dominated);
-
-  /**
-   * @brief Perform depth-first search to detect cycles in the dependency graph
-   */
-  bool has_cycle_dfs(i_t node, std::vector<bool>& visited, std::vector<bool>& rec_stack);
-
-  /**
-   * @brief Print the current dependency graph for debugging
-   */
-  void print_dependency_graph();
-
-  /**
-   * @brief Find and print the cycle in the dependency graph
-   */
-  void find_and_print_cycle(i_t dominator, i_t dominated);
-
   void presolve(bound_presolve_t<i_t, f_t>& bounds_presolve);
 
   problem_t<i_t, f_t>& problem;
@@ -109,10 +84,6 @@ struct dominated_columns_t {
 
   std::vector<f_t> out_ub;
   rmm::cuda_stream_view stream;
-
-  // Dependency graph for cycle detection
-  std::unordered_map<i_t, std::vector<i_t>> dependency_graph;
-  std::unordered_set<i_t> nodes_in_graph;
 };
 
 }  // namespace cuopt::linear_programming::detail
