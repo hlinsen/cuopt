@@ -41,18 +41,28 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   auto lb = cuopt::host_copy(problem.variable_lower_bounds, stream);
   auto ub = cuopt::host_copy(problem.variable_upper_bounds, stream);
   std::vector<i_t> candidates;
+
+  // Tolerance for determining significant bound changes
+  auto const SIGNIFICANT_BOUND_CHANGE_TOL = 1e3 * problem.tolerances.absolute_tolerance;
+
   for (int i = 0; i < problem.n_variables; ++i) {
     // if (candidates.size() > 10) { break; }
-    f_t lb_bar = lb_bars[i];
-    f_t ub_bar = ub_bars[i];
+    f_t lb_bar      = lb_bars[i];
+    f_t ub_bar      = ub_bars[i];
+    f_t original_lb = host_problem.original_variable_lower_bounds[i];
+    f_t original_ub = host_problem.original_variable_upper_bounds[i];
+
     // std::cout << "Variable " << i << " has bounds " << lb_original << " " << ub_original
     //           << " and strengthened bounds " << lb_bar << " " << ub_bar << std::endl;
-    // strenghtened bounds are included in original bounds means free
-    // It is equivalent to setting the bounds to infinity
-    if (lb_bar >= lb[i] && ub_bar <= ub[i]) {
-      // host_problem.variable_lower_bounds[i] = -std::numeric_limits<f_t>::infinity();
-      // host_problem.variable_upper_bounds[i] = std::numeric_limits<f_t>::infinity();
-      // std::cout << "Implied free variable: " << i << std::endl;
+
+    // Check if bounds presolve actually tightened bounds from original bounds significantly
+    bool implied_free = (lb_bar >= original_lb + SIGNIFICANT_BOUND_CHANGE_TOL) &&
+                        (ub_bar <= original_ub - SIGNIFICANT_BOUND_CHANGE_TOL);
+
+    // Only consider as "implied free" if:
+    // 1. Bounds were actually tightened by bounds presolve (showing constraint interaction)
+    // 2. The strengthened bounds are still within current bounds (making variable effectively free)
+    if (implied_free) {
       candidates.push_back(i);
     }
     // One of the bounds is infinite we can apply theorem 1.
@@ -151,13 +161,13 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   auto xj_nnz    = host_problem.reverse_offsets[xj + 1] - xj_offset;
   auto xk_offset = host_problem.reverse_offsets[xk];
   auto xk_nnz    = host_problem.reverse_offsets[xk + 1] - xk_offset;
-
   // host_problem.print();
   // host_problem.print_transposed();
 
   for (int i = 0; i < xj_nnz; ++i) {
-    auto row1  = host_problem.reverse_constraints[xj_offset + i];
-    f_t coeff1 = host_problem.reverse_coefficients[xj_offset + i];
+    auto found_in_row = false;
+    auto row1         = host_problem.reverse_constraints[xj_offset + i];
+    f_t coeff1        = host_problem.reverse_coefficients[xj_offset + i];
     // std::cout << "cst: " << row1 << ", coeff: " << coeff1 << std::endl;
     f_t coeff2 = 0;
 
@@ -169,6 +179,7 @@ bool dominated_columns_t<i_t, f_t>::dominates(
         coeff2 = host_problem.reverse_coefficients[xk_offset + j];
         // std::cout << xk << " found in row " << row2 << " with coefficient " << coeff2 <<
         // std::endl;
+        found_in_row = true;
         break;
       }
     }
@@ -182,8 +193,12 @@ bool dominated_columns_t<i_t, f_t>::dominates(
     // Check if this is an equality constraint
     bool is_ranged_or_equality = row_lb != -std::numeric_limits<f_t>::infinity() &&
                                  row_ub != std::numeric_limits<f_t>::infinity();
+    // std::cout << "row_lb: " << row_lb << ", row_ub: " << row_ub << std::endl;
+    // std::cout << "is_ranged_or_equality: " << is_ranged_or_equality << std::endl;
+    // std::cout << "row: " << row1 << ", coeff1: " << coeff1 << ", coeff2: " << coeff2 <<
+    // std::endl;
 
-    if (is_ranged_or_equality) {
+    if (found_in_row && is_ranged_or_equality) {
       // For equality constraints, coefficients must be equal (within epsilon)
       if (std::abs(coeff1 - coeff2) > COEFF_EPSILON) { return false; }
     } else {
@@ -424,6 +439,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
 
   // host_problem.print_transposed();
 
+  auto num_dominated_vars = 0;
   for (const auto& [xj, pair] : shortest_rows) {
     // std::cout << "Checking if " << xj << " is dominating" << std::endl;
     auto const& [row_size, row] = pair;
@@ -464,6 +480,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
                                xk,
                                domination_order_t::REGULAR);
         dominated_vars[xk] = 1;
+        num_dominated_vars++;
       }
     }
   }

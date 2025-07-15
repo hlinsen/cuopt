@@ -241,79 +241,56 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit)
 {
   CUOPT_LOG_INFO("Running presolve!");
   timer_t presolve_timer(time_limit);
-  // Run comprehensive presolve loop while variables are being removed
-  i_t iteration          = 0;
-  i_t prev_n_variables   = problem_ptr->n_variables;
-  i_t prev_n_constraints = problem_ptr->n_constraints;
 
-  while (!presolve_timer.check_time_limit() && !problem_ptr->empty) {
-    CUOPT_LOG_INFO("Running presolve iteration %d (constraints: %d, vars: %d)",
-                   iteration + 1,
-                   prev_n_constraints,
-                   prev_n_variables);
-
-    // Step 1: Bounds strengthening
-    CUOPT_LOG_DEBUG("Step 1: Bounds strengthening");
-    auto bounds_term_crit = ls.constraint_prop.bounds_update.solve(*problem_ptr);
-    if (ls.constraint_prop.bounds_update.infeas_constraints_count > 0) {
-      CUOPT_LOG_INFO("Infeasibility detected during bounds strengthening");
-      stats.presolve_time = timer.elapsed_time();
-      return false;
-    }
-
-    // Step 2: Trivial presolve
-    if (termination_criterion_t::NO_UPDATE != bounds_term_crit) {
-      ls.constraint_prop.bounds_update.set_updated_bounds(*problem_ptr);
-      apply_presolve(*problem_ptr, presolve_type_t::TRIVIAL);
-      if (!problem_ptr->empty && !check_bounds_sanity(*problem_ptr)) { return false; }
-    }
-
-    // Step 3: Update bounds
-    if (!problem_ptr->empty) {
-      ls.constraint_prop.bounds_update.resize(*problem_ptr);
-      ls.constraint_prop.conditional_bounds_update.update_constraint_bounds(
-        *problem_ptr, ls.constraint_prop.bounds_update);
-      if (!check_bounds_sanity(*problem_ptr)) { return false; }
-    }
-
-    // Step 4: Dominated columns presolve
-    CUOPT_LOG_DEBUG("Step 4: Dominated columns presolve");
-    dominated_columns_t<i_t, f_t> dominated_columns(*problem_ptr);
-    dominated_columns.presolve(ls.constraint_prop.bounds_update);
-
-    // Step 5: Resize bounds update
-    if (!problem_ptr->empty) {
-      ls.constraint_prop.bounds_update.resize(*problem_ptr);
-      ls.constraint_prop.conditional_bounds_update.update_constraint_bounds(
-        *problem_ptr, ls.constraint_prop.bounds_update);
-      if (!check_bounds_sanity(*problem_ptr)) { return false; }
-    }
-
-    // Check if any variables or constraints were removed
-    i_t current_n_variables   = problem_ptr->n_variables;
-    i_t current_n_constraints = problem_ptr->n_constraints;
-
-    i_t vars_removed        = prev_n_variables - current_n_variables;
-    i_t constraints_removed = prev_n_constraints - current_n_constraints;
-
-    CUOPT_LOG_INFO("Iteration %d complete - removed %d variables, %d constraints",
-                   iteration + 1,
-                   vars_removed,
-                   constraints_removed);
-
-    // If no variables or constraints were removed, we can stop
-    if (vars_removed == 0 && constraints_removed == 0) {
-      CUOPT_LOG_INFO("No more variables or constraints removed, stopping presolve loop");
-      break;
-    }
-
-    // Update for next iteration
-    prev_n_variables   = current_n_variables;
-    prev_n_constraints = current_n_constraints;
-    ++iteration;
+  // Step 1: Bounds strengthening
+  CUOPT_LOG_DEBUG("Step 1: Bounds strengthening");
+  auto bounds_term_crit = ls.constraint_prop.bounds_update.solve(*problem_ptr);
+  if (ls.constraint_prop.bounds_update.infeas_constraints_count > 0) {
+    CUOPT_LOG_INFO("Infeasibility detected during bounds strengthening");
+    stats.presolve_time = timer.elapsed_time();
+    return false;
   }
 
-  CUOPT_LOG_INFO("Comprehensive presolve completed in %d iterations", iteration);
+  // Step 2: Trivial presolve
+  if (termination_criterion_t::NO_UPDATE != bounds_term_crit) {
+    ls.constraint_prop.bounds_update.set_updated_bounds(*problem_ptr);
+    apply_presolve(*problem_ptr, presolve_type_t::TRIVIAL);
+    if (!problem_ptr->empty && !check_bounds_sanity(*problem_ptr)) { return false; }
+  }
+
+  // Step 3: Update bounds
+  if (!problem_ptr->empty) {
+    ls.constraint_prop.bounds_update.resize(*problem_ptr);
+    ls.constraint_prop.conditional_bounds_update.update_constraint_bounds(
+      *problem_ptr, ls.constraint_prop.bounds_update);
+    if (!check_bounds_sanity(*problem_ptr)) { return false; }
+  }
+
+  // Step 4: Bounds strengthening
+  CUOPT_LOG_DEBUG("Step 4: Bounds strengthening 2");
+  bounds_term_crit = ls.constraint_prop.bounds_update.solve(*problem_ptr);
+  if (ls.constraint_prop.bounds_update.infeas_constraints_count > 0) {
+    CUOPT_LOG_INFO("Infeasibility detected during bounds strengthening");
+    stats.presolve_time = timer.elapsed_time();
+    return false;
+  }
+
+  // Step 5: Dominated columns presolve
+  CUOPT_LOG_DEBUG("Step 5: Dominated columns presolve");
+  if (termination_criterion_t::NO_UPDATE != bounds_term_crit) {
+    ls.constraint_prop.bounds_update.set_updated_bounds(*problem_ptr);
+  }
+  dominated_columns_t<i_t, f_t> dominated_columns(*problem_ptr);
+  dominated_columns.presolve(ls.constraint_prop.bounds_update);
+  if (!problem_ptr->empty && !check_bounds_sanity(*problem_ptr)) { return false; }
+
+  // Step 6: Update bounds
+  if (!problem_ptr->empty) {
+    ls.constraint_prop.bounds_update.resize(*problem_ptr);
+    ls.constraint_prop.conditional_bounds_update.update_constraint_bounds(
+      *problem_ptr, ls.constraint_prop.bounds_update);
+    if (!check_bounds_sanity(*problem_ptr)) { return false; }
+  }
 
   stats.presolve_time = presolve_timer.elapsed_time();
   return true;
