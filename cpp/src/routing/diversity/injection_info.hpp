@@ -106,6 +106,14 @@ struct injection_info_t {
                     "One solution has more vehicles than the fleet size");
 
       if (!p->has_prize_collection()) {
+        std::cout << "p->get_num_orders(): " << p->get_num_orders() << std::endl;
+        std::cout << "p->order_info.depot_included_: " << p->order_info.depot_included_
+                  << std::endl;
+        std::cout << "added_node_ids.size(): " << added_node_ids.size() << std::endl;
+        std::cout << "std::prev(added_node_ids.end()): " << *std::prev(added_node_ids.end())
+                  << std::endl;
+        std::cout << "std::prev(added_node_ids.end()) - added_node_ids.begin(): "
+                  << *std::prev(added_node_ids.end()) - *added_node_ids.begin() << std::endl;
         cuopt_expects(
           p->get_num_orders() - (int)p->order_info.depot_included_ == (int)added_node_ids.size(),
           error_type_t::ValidationError,

@@ -940,6 +940,10 @@ typename problem_t<i_t, f_t>::host_view_t problem_t<i_t, f_t>::to_host()
     cuopt::host_copy(original_problem_ptr->get_variable_lower_bounds());
   h.original_variable_upper_bounds =
     cuopt::host_copy(original_problem_ptr->get_variable_upper_bounds());
+  h.original_constraint_lower_bounds =
+    cuopt::host_copy(original_problem_ptr->get_constraint_lower_bounds());
+  h.original_constraint_upper_bounds =
+    cuopt::host_copy(original_problem_ptr->get_constraint_upper_bounds());
   h.constraint_lower_bounds   = cuopt::host_copy(constraint_lower_bounds);
   h.constraint_upper_bounds   = cuopt::host_copy(constraint_upper_bounds);
   h.variable_types            = cuopt::host_copy(variable_types);
