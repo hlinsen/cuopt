@@ -42,10 +42,10 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   auto lb = cuopt::host_copy(problem.variable_lower_bounds, stream);
   auto ub = cuopt::host_copy(problem.variable_upper_bounds, stream);
   std::vector<i_t> candidates;
-  auto changed_variables = cuopt::host_copy(bounds_presolve.upd.changed_variables, stream);
+  // auto changed_variables = cuopt::host_copy(bounds_presolve.upd.changed_variables, stream);
   // Tolerance for determining significant bound changes
-  auto const SIGNIFICANT_BOUND_CHANGE_TOL = 1e3 * problem.tolerances.absolute_tolerance;
-
+  auto variable_names   = problem.original_problem_ptr->get_variable_names();
+  auto variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
   for (int i = 0; i < problem.n_variables; ++i) {
     // if (candidates.size() > 10) { break; }
     f_t lb_bar      = lb_bars[i];
@@ -53,19 +53,20 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
     f_t original_lb = host_problem.original_variable_lower_bounds[i];
     f_t original_ub = host_problem.original_variable_upper_bounds[i];
 
-    bool implied_free = (lb_bar >= original_lb) && (ub_bar <= original_ub);
+    auto is_lower_implied = lb_bar >= original_lb - problem.tolerances.absolute_tolerance;
+    auto is_upper_implied = ub_bar <= original_ub + problem.tolerances.absolute_tolerance;
 
-    auto lb_updated = (abs(lb_bar - original_lb) > SIGNIFICANT_BOUND_CHANGE_TOL);
-    auto ub_updated = (abs(ub_bar - original_ub) > SIGNIFICANT_BOUND_CHANGE_TOL);
-    bool is_changed = lb_updated || ub_updated;
-    std::cout << "lb_updated: " << lb_updated << ", ub_updated: " << ub_updated << std::endl;
-    std::cout << "Variable " << i << " changed: " << changed_variables[i] << " has bounds "
-              << original_lb << " " << original_ub << " and strengthened bounds " << lb_bar << " "
-              << ub_bar << std::endl;
-    std::cout << "Implied free: " << implied_free << std::endl;
-    std::cout << "lb_bar: " << lb_bar << ", ub_bar: " << ub_bar << std::endl;
-    std::cout << "original_lb: " << original_lb << ", original_ub: " << original_ub << std::endl;
-    if (is_changed && implied_free) {
+    // if (i == 0) {
+    // std::cout << "col: " << i << " (" << variable_names[i] << ")" << std::endl;
+    // std::cout << "lb_updated: " << lb_updated << ", ub_updated: " << ub_updated << std::endl;
+    // std::cout << "Variable " << i << " has bounds " << original_lb << " " << original_ub
+    //           << " and strengthened bounds " << lb_bar << " " << ub_bar << std::endl;
+    // std::cout << "Implied free: " << implied_free << std::endl;
+    // }
+    if (is_lower_implied || is_upper_implied) {
+      std::cout << "col " << i << " (" << variable_names[variable_mapping[i]]
+                << ") is lower implied: " << is_lower_implied
+                << " is upper implied: " << is_upper_implied << std::endl;
       candidates.push_back(i);
     }
     // One of the bounds is infinite we can apply theorem 1.
@@ -105,9 +106,8 @@ std::map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find_shortest_
   // std::cout << "Finding shortest rows" << std::endl;
   std::map<i_t, std::pair<i_t, i_t>> shortest_rows;
   for (auto col : candidates) {
-    auto col_offset = host_problem.reverse_offsets[col];
-    auto nnz_in_col = host_problem.reverse_offsets[col + 1] - col_offset;
-    // std::cout << "col: " << col << " has " << nnz_in_col << " non-zeros" << std::endl;
+    auto col_offset    = host_problem.reverse_offsets[col];
+    auto nnz_in_col    = host_problem.reverse_offsets[col + 1] - col_offset;
     shortest_rows[col] = {std::numeric_limits<i_t>::max(), -1};
     for (int j = 0; j < nnz_in_col; ++j) {
       auto row      = host_problem.reverse_constraints[col_offset + j];
@@ -278,13 +278,17 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   std::cout << "candidates size: " << candidates.size() << std::endl;
   if (candidates.empty()) { return; }
   compute_signatures(host_problem);
-  auto shortest_rows = find_shortest_rows(host_problem, candidates);
+  auto shortest_rows      = find_shortest_rows(host_problem, candidates);
+  auto variable_names     = problem.original_problem_ptr->get_variable_names();
+  auto h_variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
+  // for (const auto& [xj, pair] : shortest_rows) {
+  //   std::cout << "processing col " << xj << " (" << variable_names[h_variable_mapping[xj]] << ")"
+  //             << std::endl;
+  // }
   // std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
 
   // Track variables that have been fixed by domination
-  auto variable_names = problem.original_problem_ptr->get_variable_names();
   std::vector<i_t> dominated_vars(problem.n_variables, 0);
-  auto h_variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
   auto h_fixed_var_assignment =
     cuopt::host_copy(problem.presolve_data.fixed_var_assignment, stream);
 

@@ -36,16 +36,20 @@ inline __device__ f_t max_act_of_var(f_t coeff, f_t var_lb, f_t var_ub)
 }
 
 template <typename f_t>
-inline __device__ f_t update_lb(f_t curr_lb, f_t coeff, f_t delta_min_act, f_t delta_max_act)
+inline __device__ f_t
+update_lb(f_t curr_lb, f_t coeff, f_t delta_min_act, f_t delta_max_act, bool debug = false)
 {
   auto comp_bnd = (coeff < 0.) ? delta_min_act / coeff : delta_max_act / coeff;
+  if (debug) { printf("lb comp_bnd %f\n", comp_bnd); }
   return max(curr_lb, comp_bnd);
 }
 
 template <typename f_t>
-inline __device__ f_t update_ub(f_t curr_ub, f_t coeff, f_t delta_min_act, f_t delta_max_act)
+inline __device__ f_t
+update_ub(f_t curr_ub, f_t coeff, f_t delta_min_act, f_t delta_max_act, bool debug = false)
 {
   auto comp_bnd = (coeff < 0.) ? delta_max_act / coeff : delta_min_act / coeff;
+  if (debug) { printf("ub comp_bnd %f\n", comp_bnd); }
   return min(curr_ub, comp_bnd);
 }
 
@@ -129,6 +133,9 @@ __global__ void calc_activity_kernel(typename problem_t<i_t, f_t>::view_t pb,
     min_act += min_act_of_var(coeff, var_lb, var_ub);
     max_act += max_act_of_var(coeff, var_lb, var_ub);
     atomicExch(&upd.changed_variables[var_idx], 1);
+    // c0 : v1 v6 v10
+    // c1 : v2 v5 v10
+    // c2 : v3 v7 v9
   }
   min_act = BlockReduce(temp_storage).Sum(min_act);
   __syncthreads();
@@ -179,10 +186,20 @@ inline __device__ thrust::pair<f_t, f_t> update_bounds_per_cnst(
   f_t cnst_ub,
   typename bounds_update_data_t<i_t, f_t>::view_t upd,
   thrust::pair<f_t, f_t> bnd,
-  thrust::pair<f_t, f_t> old_bnd)
+  thrust::pair<f_t, f_t> old_bnd,
+  bool debug = false)
 {
   auto min_a = upd.min_activity[cnst_idx];
   auto max_a = upd.max_activity[cnst_idx];
+  if (debug) {
+    printf("cnst %d : min_a %f max_a %f cnst_lb %f cnst_ub %f colcoeff %f\n",
+           cnst_idx,
+           min_a,
+           max_a,
+           cnst_lb,
+           cnst_ub,
+           coeff);
+  }
   // don't propagate over constraints that are infeasible
   if (check_infeasibility<i_t, f_t>(min_a,
                                     max_a,
@@ -194,10 +211,18 @@ inline __device__ thrust::pair<f_t, f_t> update_bounds_per_cnst(
   }
   min_a -= (coeff < 0) ? coeff * thrust::get<1>(old_bnd) : coeff * thrust::get<0>(old_bnd);
   max_a -= (coeff > 0) ? coeff * thrust::get<1>(old_bnd) : coeff * thrust::get<0>(old_bnd);
-  auto delta_min_act  = cnst_ub - min_a;
-  auto delta_max_act  = cnst_lb - max_a;
-  thrust::get<0>(bnd) = update_lb(thrust::get<0>(bnd), coeff, delta_min_act, delta_max_act);
-  thrust::get<1>(bnd) = update_ub(thrust::get<1>(bnd), coeff, delta_min_act, delta_max_act);
+  auto delta_min_act = cnst_ub - min_a;
+  auto delta_max_act = cnst_lb - max_a;
+  if (debug) { printf("delta_min_act %f delta_max_act %f\n", delta_min_act, delta_max_act); }
+  thrust::get<0>(bnd) = update_lb(thrust::get<0>(bnd), coeff, delta_min_act, delta_max_act, debug);
+  thrust::get<1>(bnd) = update_ub(thrust::get<1>(bnd), coeff, delta_min_act, delta_max_act, debug);
+  if (debug) {
+    printf("old lb %f old ub %f new lb %f new ub %f\n",
+           thrust::get<0>(old_bnd),
+           thrust::get<1>(old_bnd),
+           thrust::get<0>(bnd),
+           thrust::get<1>(bnd));
+  }
   return bnd;
 }
 
@@ -211,8 +236,18 @@ inline __device__ bool write_updated_bounds(typename problem_t<i_t, f_t>::view_t
 {
   auto new_lb = thrust::get<0>(bnd);
   auto new_ub = thrust::get<1>(bnd);
-  new_lb      = is_int ? ceil(new_lb - pb.tolerances.integrality_tolerance) : new_lb;
-  new_ub      = is_int ? floor(new_ub + pb.tolerances.integrality_tolerance) : new_ub;
+  // TODO: check int correction.
+
+  auto tmp_lb_updated = (abs(new_lb - thrust::get<0>(old_bnd)) > 0);
+  auto tmp_ub_updated = (abs(new_ub - thrust::get<1>(old_bnd)) > 0);
+  // if (var_idx == 0) {
+  //   printf("Variable %d : old lb %f old ub %f, new lb %f new ub %f, lb unchanged %i ub unchanged
+  //            % i\n ", var_idx, old_bnd.first, old_bnd.second, new_lb, new_ub, old_bnd.first ==
+  //            new_lb,
+  //          old_bnd.second == new_ub);
+  // }
+  new_lb = is_int ? ceil(new_lb - pb.tolerances.integrality_tolerance) : new_lb;
+  new_ub = is_int ? floor(new_ub + pb.tolerances.integrality_tolerance) : new_ub;
 
   auto lb_updated =
     (abs(new_lb - thrust::get<0>(old_bnd)) > 1e3 * pb.tolerances.absolute_tolerance);
@@ -254,16 +289,19 @@ __device__ void update_bounds(typename problem_t<i_t, f_t>::view_t pb,
     auto a        = pb.reverse_coefficients[var_offset + i];
     auto cnst_ub  = pb.constraint_upper_bounds[cnst_idx];
     auto cnst_lb  = pb.constraint_lower_bounds[cnst_idx];
+    auto debug    = var_idx == 0 && cnst_idx == 0;
     if (var_changed_0) {
       bool cstr_changed_0 = upd_0.changed_constraints[cnst_idx] == 1;
       if (cstr_changed_0) {
-        bnd_0 = update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd_0, bnd_0, old_bnd_0);
+        bnd_0 =
+          update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd_0, bnd_0, old_bnd_0, debug);
       }
     }
     if (var_changed_1) {
       bool cstr_changed_1 = upd_1.changed_constraints[cnst_idx] == 1;
       if (cstr_changed_1) {
-        bnd_1 = update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd_1, bnd_1, old_bnd_1);
+        bnd_1 =
+          update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd_1, bnd_1, old_bnd_1, debug);
       }
     }
   }
@@ -319,7 +357,8 @@ __device__ void update_bounds(typename problem_t<i_t, f_t>::view_t pb,
     auto a       = pb.reverse_coefficients[var_offset + i];
     auto cnst_ub = pb.constraint_upper_bounds[cnst_idx];
     auto cnst_lb = pb.constraint_lower_bounds[cnst_idx];
-    bnd          = update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd, bnd, old_bnd);
+    auto debug   = var_idx == 0 && cnst_idx == 0;
+    bnd = update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd, bnd, old_bnd, debug);
   }
 
   thrust::get<0>(bnd) = BlockReduce(temp_storage).Reduce(thrust::get<0>(bnd), cuda::maximum());
