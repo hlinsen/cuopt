@@ -36,21 +36,27 @@ inline __device__ f_t max_act_of_var(f_t coeff, f_t var_lb, f_t var_ub)
 }
 
 template <typename f_t>
-inline __device__ f_t
-update_lb(f_t curr_lb, f_t coeff, f_t delta_min_act, f_t delta_max_act, bool debug = false)
+inline __device__ f_t get_implied_lb(f_t coeff, f_t delta_min_act, f_t delta_max_act)
 {
-  auto comp_bnd = (coeff < 0.) ? delta_min_act / coeff : delta_max_act / coeff;
-  if (debug) { printf("lb comp_bnd %f\n", comp_bnd); }
-  return max(curr_lb, comp_bnd);
+  return (coeff < 0.) ? delta_min_act / coeff : delta_max_act / coeff;
 }
 
 template <typename f_t>
-inline __device__ f_t
-update_ub(f_t curr_ub, f_t coeff, f_t delta_min_act, f_t delta_max_act, bool debug = false)
+inline __device__ f_t get_implied_ub(f_t coeff, f_t delta_min_act, f_t delta_max_act)
 {
-  auto comp_bnd = (coeff < 0.) ? delta_max_act / coeff : delta_min_act / coeff;
-  if (debug) { printf("ub comp_bnd %f\n", comp_bnd); }
-  return min(curr_ub, comp_bnd);
+  return (coeff < 0.) ? delta_max_act / coeff : delta_min_act / coeff;
+}
+
+template <typename f_t>
+inline __device__ f_t update_lb(f_t curr_lb, f_t implied_lb)
+{
+  return max(curr_lb, implied_lb);
+}
+
+template <typename f_t>
+inline __device__ f_t update_ub(f_t curr_ub, f_t implied_ub)
+{
+  return min(curr_ub, implied_ub);
 }
 
 template <typename i_t, typename f_t, i_t BDIM>
@@ -181,6 +187,7 @@ template <typename i_t, typename f_t>
 inline __device__ thrust::pair<f_t, f_t> update_bounds_per_cnst(
   typename problem_t<i_t, f_t>::view_t pb,
   f_t coeff,
+  i_t var_idx,
   i_t cnst_idx,
   f_t cnst_lb,
   f_t cnst_ub,
@@ -214,8 +221,12 @@ inline __device__ thrust::pair<f_t, f_t> update_bounds_per_cnst(
   auto delta_min_act = cnst_ub - min_a;
   auto delta_max_act = cnst_lb - max_a;
   if (debug) { printf("delta_min_act %f delta_max_act %f\n", delta_min_act, delta_max_act); }
-  thrust::get<0>(bnd) = update_lb(thrust::get<0>(bnd), coeff, delta_min_act, delta_max_act, debug);
-  thrust::get<1>(bnd) = update_ub(thrust::get<1>(bnd), coeff, delta_min_act, delta_max_act, debug);
+  auto implied_lb         = get_implied_lb(coeff, delta_min_act, delta_max_act);
+  auto implied_ub         = get_implied_ub(coeff, delta_min_act, delta_max_act);
+  upd.implied_lb[var_idx] = implied_lb;
+  upd.implied_ub[var_idx] = implied_ub;
+  thrust::get<0>(bnd)     = update_lb(thrust::get<0>(bnd), implied_lb);
+  thrust::get<1>(bnd)     = update_ub(thrust::get<1>(bnd), implied_ub);
   if (debug) {
     printf("old lb %f old ub %f new lb %f new ub %f\n",
            thrust::get<0>(old_bnd),
@@ -289,19 +300,20 @@ __device__ void update_bounds(typename problem_t<i_t, f_t>::view_t pb,
     auto a        = pb.reverse_coefficients[var_offset + i];
     auto cnst_ub  = pb.constraint_upper_bounds[cnst_idx];
     auto cnst_lb  = pb.constraint_lower_bounds[cnst_idx];
-    auto debug    = var_idx == 0 && cnst_idx == 0;
+    auto debug    = false;  // var_idx == 13;  // && cnst_idx == 0;
+    if (debug) { printf("Debugging col %d row %d\n", var_idx, cnst_idx); }
     if (var_changed_0) {
       bool cstr_changed_0 = upd_0.changed_constraints[cnst_idx] == 1;
       if (cstr_changed_0) {
-        bnd_0 =
-          update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd_0, bnd_0, old_bnd_0, debug);
+        bnd_0 = update_bounds_per_cnst(
+          pb, a, var_idx, cnst_idx, cnst_lb, cnst_ub, upd_0, bnd_0, old_bnd_0, debug);
       }
     }
     if (var_changed_1) {
       bool cstr_changed_1 = upd_1.changed_constraints[cnst_idx] == 1;
       if (cstr_changed_1) {
-        bnd_1 =
-          update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd_1, bnd_1, old_bnd_1, debug);
+        bnd_1 = update_bounds_per_cnst(
+          pb, a, var_idx, cnst_idx, cnst_lb, cnst_ub, upd_1, bnd_1, old_bnd_1, debug);
       }
     }
   }
@@ -357,8 +369,10 @@ __device__ void update_bounds(typename problem_t<i_t, f_t>::view_t pb,
     auto a       = pb.reverse_coefficients[var_offset + i];
     auto cnst_ub = pb.constraint_upper_bounds[cnst_idx];
     auto cnst_lb = pb.constraint_lower_bounds[cnst_idx];
-    auto debug   = var_idx == 0 && cnst_idx == 0;
-    bnd = update_bounds_per_cnst(pb, a, cnst_idx, cnst_lb, cnst_ub, upd, bnd, old_bnd, debug);
+    auto debug   = false;  // var_idx == 9;  // && cnst_idx == 0;
+    if (debug) { printf("Debugging var_idx %d cnst_idx %d\n", var_idx, cnst_idx); }
+    bnd =
+      update_bounds_per_cnst(pb, a, var_idx, cnst_idx, cnst_lb, cnst_ub, upd, bnd, old_bnd, debug);
   }
 
   thrust::get<0>(bnd) = BlockReduce(temp_storage).Reduce(thrust::get<0>(bnd), cuda::maximum());

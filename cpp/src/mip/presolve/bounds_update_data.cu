@@ -15,10 +15,12 @@
  * limitations under the License.
  */
 
-#include <mip/mip_constants.hpp>
-
-#include <utilities/copy_helpers.hpp>
 #include "bounds_update_data.cuh"
+
+#include <mip/mip_constants.hpp>
+#include <utilities/copy_helpers.hpp>
+
+#include <thrust/uninitialized_fill.h>
 
 namespace cuopt::linear_programming::detail {
 
@@ -31,8 +33,18 @@ bounds_update_data_t<i_t, f_t>::bounds_update_data_t(problem_t<i_t, f_t>& proble
     ub(problem.n_variables, problem.handle_ptr->get_stream()),
     changed_constraints(problem.n_constraints, problem.handle_ptr->get_stream()),
     next_changed_constraints(problem.n_constraints, problem.handle_ptr->get_stream()),
-    changed_variables(problem.n_variables, problem.handle_ptr->get_stream())
+    changed_variables(problem.n_variables, problem.handle_ptr->get_stream()),
+    implied_lb(problem.n_variables, problem.handle_ptr->get_stream()),
+    implied_ub(problem.n_variables, problem.handle_ptr->get_stream())
 {
+  thrust::uninitialized_fill(problem.handle_ptr->get_thrust_policy(),
+                             implied_lb.begin(),
+                             implied_lb.end(),
+                             -std::numeric_limits<f_t>::infinity());
+  thrust::uninitialized_fill(problem.handle_ptr->get_thrust_policy(),
+                             implied_ub.begin(),
+                             implied_ub.end(),
+                             std::numeric_limits<f_t>::infinity());
 }
 
 template <typename i_t, typename f_t>
@@ -45,6 +57,8 @@ void bounds_update_data_t<i_t, f_t>::resize(problem_t<i_t, f_t>& problem)
   changed_constraints.resize(problem.n_constraints, problem.handle_ptr->get_stream());
   next_changed_constraints.resize(problem.n_constraints, problem.handle_ptr->get_stream());
   changed_variables.resize(problem.n_variables, problem.handle_ptr->get_stream());
+  implied_lb.resize(problem.n_variables, problem.handle_ptr->get_stream());
+  implied_ub.resize(problem.n_variables, problem.handle_ptr->get_stream());
 }
 
 template <typename i_t, typename f_t>
@@ -59,6 +73,8 @@ typename bounds_update_data_t<i_t, f_t>::view_t bounds_update_data_t<i_t, f_t>::
   v.changed_constraints      = make_span(changed_constraints);
   v.next_changed_constraints = make_span(next_changed_constraints);
   v.changed_variables        = make_span(changed_variables);
+  v.implied_lb               = make_span(implied_lb);
+  v.implied_ub               = make_span(implied_ub);
   return v;
 }
 

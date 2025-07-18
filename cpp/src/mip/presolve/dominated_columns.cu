@@ -27,55 +27,48 @@ namespace cuopt::linear_programming::detail {
 
 template <typename i_t, typename f_t>
 dominated_columns_t<i_t, f_t>::dominated_columns_t(problem_t<i_t, f_t>& problem_)
-  : problem(problem_), stream(problem.handle_ptr->get_stream())
+  : problem(problem_),
+    stream(problem.handle_ptr->get_stream()),
+    h_implied_lb(problem.n_variables, false),
+    h_implied_ub(problem.n_variables, false)
 {
 }
 
 template <typename i_t, typename f_t>
 std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
   typename problem_t<i_t, f_t>::host_view_t& host_problem,
-  bound_presolve_t<i_t, f_t>& bounds_presolve,
-  std::vector<f_t> const& lb_bars,
-  std::vector<f_t> const& ub_bars)
+  bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
-  // std::cout << "Identifying candidate variables" << std::endl;
   auto lb = cuopt::host_copy(problem.variable_lower_bounds, stream);
   auto ub = cuopt::host_copy(problem.variable_upper_bounds, stream);
   std::vector<i_t> candidates;
-  // auto changed_variables = cuopt::host_copy(bounds_presolve.upd.changed_variables, stream);
-  // Tolerance for determining significant bound changes
-  auto variable_names   = problem.original_problem_ptr->get_variable_names();
-  auto variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
+  auto changed_variables = cuopt::host_copy(bounds_presolve.upd.changed_variables, stream);
+  auto h_implied_lb      = cuopt::host_copy(bounds_presolve.upd.implied_lb, stream);
+  auto h_implied_ub      = cuopt::host_copy(bounds_presolve.upd.implied_ub, stream);
+  auto variable_names    = problem.original_problem_ptr->get_variable_names();
+  auto variable_mapping  = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
   for (int i = 0; i < problem.n_variables; ++i) {
-    // if (candidates.size() > 10) { break; }
-    f_t lb_bar      = lb_bars[i];
-    f_t ub_bar      = ub_bars[i];
     f_t original_lb = host_problem.original_variable_lower_bounds[i];
     f_t original_ub = host_problem.original_variable_upper_bounds[i];
-
-    auto is_lower_implied = lb_bar >= original_lb - problem.tolerances.absolute_tolerance;
-    auto is_upper_implied = ub_bar <= original_ub + problem.tolerances.absolute_tolerance;
-
-    // if (i == 0) {
-    // std::cout << "col: " << i << " (" << variable_names[i] << ")" << std::endl;
-    // std::cout << "lb_updated: " << lb_updated << ", ub_updated: " << ub_updated << std::endl;
-    // std::cout << "Variable " << i << " has bounds " << original_lb << " " << original_ub
-    //           << " and strengthened bounds " << lb_bar << " " << ub_bar << std::endl;
-    // std::cout << "Implied free: " << implied_free << std::endl;
-    // }
-    if (is_lower_implied || is_upper_implied) {
-      std::cout << "col " << i << " (" << variable_names[variable_mapping[i]]
-                << ") is lower implied: " << is_lower_implied
-                << " is upper implied: " << is_upper_implied << std::endl;
-      candidates.push_back(i);
-    }
     // One of the bounds is infinite we can apply theorem 1.
-    else if (lb[i] == -std::numeric_limits<f_t>::infinity() ||
-             ub[i] == std::numeric_limits<f_t>::infinity()) {
+    if (lb[i] == -std::numeric_limits<f_t>::infinity() ||
+        ub[i] == std::numeric_limits<f_t>::infinity()) {
       candidates.push_back(i);
+      continue;
     }
+    // Check if the bound is implied by the constraints.
+    f_t implied_lb = h_implied_lb[i];
+    f_t implied_ub = h_implied_ub[i];
+
+    auto is_lower_implied = h_implied_lb[i] != -std::numeric_limits<f_t>::infinity() &&
+                            implied_lb - original_lb >= -problem.tolerances.absolute_tolerance;
+    auto is_upper_implied = h_implied_ub[i] != std::numeric_limits<f_t>::infinity() &&
+                            implied_ub - original_ub <= problem.tolerances.absolute_tolerance;
+    h_implied_lb[i] = is_lower_implied;
+    h_implied_ub[i] = is_upper_implied;
+
+    if (is_lower_implied || is_upper_implied) { candidates.push_back(i); }
   }
-  // std::cout << "Candidate variables identified" << std::endl;
   return candidates;
 }
 
@@ -218,8 +211,6 @@ bool dominated_columns_t<i_t, f_t>::dominates(
 template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   typename problem_t<i_t, f_t>::host_view_t& host_problem,
-  std::vector<f_t> const& lb_bars,
-  std::vector<f_t> const& ub_bars,
   std::vector<i_t> const& h_variable_mapping,
   std::vector<f_t>& h_fixed_var_assignment,
   i_t xj,
@@ -233,13 +224,8 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   f_t lk = host_problem.variable_lower_bounds[xk];
   f_t uk = host_problem.variable_upper_bounds[xk];
 
-  f_t lj_bar = lb_bars[xj];
-  f_t uj_bar = ub_bars[xj];
-  f_t lk_bar = lb_bars[xk];
-  f_t uk_bar = ub_bars[xk];
-
-  auto xj_is_implied_free = lj_bar >= lj && uj_bar <= uj;
-  auto xk_is_implied_free = lk_bar >= lk && uk_bar <= uk;
+  auto xj_is_implied_free = h_implied_lb[xj];
+  auto xk_is_implied_free = h_implied_ub[xk];
 
   if (order == domination_order_t::REGULAR) {
     if (uj == std::numeric_limits<f_t>::infinity() || xj_is_implied_free) {
@@ -270,22 +256,22 @@ template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_presolve)
 {
   auto host_problem = problem.to_host();
-  auto lb_bars      = cuopt::host_copy(bounds_presolve.upd.lb, stream);
-  auto ub_bars      = cuopt::host_copy(bounds_presolve.upd.ub, stream);
 
-  auto candidates = identify_candidate_variables(host_problem, bounds_presolve, lb_bars, ub_bars);
-  // cuopt::print("candidates", candidates);
+  auto candidates         = identify_candidate_variables(host_problem, bounds_presolve);
+  auto h_variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
   std::cout << "candidates size: " << candidates.size() << std::endl;
   if (candidates.empty()) { return; }
+
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    auto xj      = candidates[i];
+    auto xj_name = problem.original_problem_ptr->get_variable_names()[h_variable_mapping[xj]];
+    std::cout << "Processing candidate variable " << xj << " (" << xj_name << ")" << std::endl;
+  }
+  exit(1);
+
   compute_signatures(host_problem);
-  auto shortest_rows      = find_shortest_rows(host_problem, candidates);
-  auto variable_names     = problem.original_problem_ptr->get_variable_names();
-  auto h_variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
-  // for (const auto& [xj, pair] : shortest_rows) {
-  //   std::cout << "processing col " << xj << " (" << variable_names[h_variable_mapping[xj]] << ")"
-  //             << std::endl;
-  // }
-  // std::cout << "shortest_rows size: " << shortest_rows.size() << std::endl;
+  auto shortest_rows  = find_shortest_rows(host_problem, candidates);
+  auto variable_names = problem.original_problem_ptr->get_variable_names();
 
   // Track variables that have been fixed by domination
   std::vector<i_t> dominated_vars(problem.n_variables, 0);
@@ -309,8 +295,6 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
         std::cout << "Domination " << xj << "(" << xj_name << ") -> " << xk << "(" << xk_name << ")"
                   << std::endl;
         update_variable_bounds(host_problem,
-                               lb_bars,
-                               ub_bars,
                                h_variable_mapping,
                                h_fixed_var_assignment,
                                xj,
