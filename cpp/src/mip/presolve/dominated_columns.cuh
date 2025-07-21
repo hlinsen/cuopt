@@ -52,10 +52,10 @@ template <typename i_t, typename f_t>
 struct dominated_columns_t {
   dominated_columns_t(problem_t<i_t, f_t>& problem_);
 
-  /**
-   * @brief Identify implied free and infinite bounds
-   *
-   */
+  bool is_ranged_or_equality(f_t row_lb, f_t row_ub);
+  bool is_ge_inequality(f_t row_lb, f_t row_ub);
+  bool is_le_inequality(f_t row_lb, f_t row_ub);
+
   std::vector<i_t> identify_candidate_variables(
     typename problem_t<i_t, f_t>::host_view_t& host_problem,
     bound_presolve_t<i_t, f_t>& bounds_presolve);
@@ -65,17 +65,19 @@ struct dominated_columns_t {
   bool dominates(typename problem_t<i_t, f_t>::host_view_t& host_problem,
                  i_t xj,
                  i_t xk,
-                 domination_order_t order);
+                 domination_order_t xj_order,
+                 domination_order_t xk_order);
   void update_variable_bounds(typename problem_t<i_t, f_t>::host_view_t& host_problem,
                               std::vector<i_t> const& h_variable_mapping,
                               std::vector<f_t>& h_fixed_var_assignment,
                               i_t xj,
                               i_t xk,
-                              domination_order_t order);
+                              domination_order_t xj_order,
+                              domination_order_t xk_order);
   void presolve(bound_presolve_t<i_t, f_t>& bounds_presolve);
 
   problem_t<i_t, f_t>& problem;
-  std::vector<std::bitset<signature_size>> signatures;
+  std::vector<std::pair<std::bitset<signature_size>, std::bitset<signature_size>>> signatures;
   std::vector<bool> h_implied_lb;
   std::vector<bool> h_implied_ub;
   rmm::cuda_stream_view stream;
