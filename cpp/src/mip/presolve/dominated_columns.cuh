@@ -45,7 +45,7 @@
 
 namespace cuopt::linear_programming::detail {
 
-enum class domination_order_t { REGULAR, NEGATED_XJ, NEGATED_XK, SIZE };
+enum class domination_order_t { REGULAR = 0, NEGATED_XJ, NEGATED_XK, SIZE };
 
 auto constexpr signature_size = 32;
 template <typename i_t, typename f_t>

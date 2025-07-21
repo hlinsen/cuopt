@@ -243,39 +243,48 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   domination_order_t xj_order,
   domination_order_t xk_order)
 {
-  f_t lj = host_problem.variable_lower_bounds[xj];
-  f_t uj = host_problem.variable_upper_bounds[xj];
-  f_t lk = host_problem.variable_lower_bounds[xk];
-  f_t uk = host_problem.variable_upper_bounds[xk];
+  f_t lj = host_problem.original_variable_lower_bounds[xj];
+  f_t uj = host_problem.original_variable_upper_bounds[xj];
+  f_t lk = host_problem.original_variable_lower_bounds[xk];
+  f_t uk = host_problem.original_variable_upper_bounds[xk];
 
   auto xj_is_ub_implied = h_implied_ub[xj];
-  auto xk_is_lb_implied = h_implied_lb[xk];
+  auto xj_is_lb_implied = h_implied_lb[xj];
 
   if (xj_order == domination_order_t::REGULAR && xk_order == domination_order_t::REGULAR) {
     if (uj == std::numeric_limits<f_t>::infinity() || xj_is_ub_implied) {
       // case i: xk can be set to lk
       h_fixed_var_assignment[h_variable_mapping[xk]] = lk;
-      std::cout << "Fixing variable " << xk << " to lower bound value: " << lk << std::endl;
-    } else if (lk == -std::numeric_limits<f_t>::infinity() || xk_is_lb_implied) {
-      // case iii: xj can be set to uk
-      h_fixed_var_assignment[h_variable_mapping[xj]] = uk;
-      std::cout << "Fixing variable " << xj << " to upper bound value: " << uk << std::endl;
+      // std::cout << "Fixing variable " << xk << " to lower bound value: " << lk << std::endl;
     }
   } else if (xj_order == domination_order_t::REGULAR &&
              xk_order == domination_order_t::NEGATED_XK) {
     if (uj == std::numeric_limits<f_t>::infinity() || xj_is_ub_implied) {
       // case ii: xk can be set to uk
       h_fixed_var_assignment[h_variable_mapping[xk]] = uk;
-      std::cout << "Fixing variable " << xk << " to upper bound value: " << uk << std::endl;
+      // std::cout << "Fixing variable " << xk << " to upper bound value: " << uk << std::endl;
     }
   } else if (xj_order == domination_order_t::NEGATED_XJ &&
              xk_order == domination_order_t::REGULAR) {
-    if (lk == -std::numeric_limits<f_t>::infinity() || xk_is_lb_implied) {
+    if (lj == -std::numeric_limits<f_t>::infinity() || xj_is_lb_implied) {
+      // case iii: xj can be set to lj
+      h_fixed_var_assignment[h_variable_mapping[xk]] = uk;
+      // std::cout << "Fixing variable " << xj << " to lower bound value: " << lj << std::endl;
+    }
+  } else if (xj_order == domination_order_t::NEGATED_XJ &&
+             xk_order == domination_order_t::NEGATED_XK) {
+    if (lj == -std::numeric_limits<f_t>::infinity() || xj_is_lb_implied) {
       // case iv: xj can be set to lj
-      h_fixed_var_assignment[h_variable_mapping[xj]] = lj;
-      std::cout << "Fixing variable " << xj << " to lower bound value: " << lj << std::endl;
+      h_fixed_var_assignment[h_variable_mapping[xk]] = uk;
+      // std::cout << "Fixing variable " << xj << " to lower bound value: " << lj << std::endl;
     }
   } else {
+    // std::cout << "xj_order: " << static_cast<int>(xj_order)
+    //           << ", xk_order: " << static_cast<int>(xk_order) << ", lj: " << lj << ", uj: " << uj
+    //           << ", lk: " << lk << ", uk: " << uk << ", xj_is_lb_implied: " << xj_is_lb_implied
+    //           << ", xj_is_ub_implied: " << xj_is_ub_implied
+    //           << ", xk_is_lb_implied: " << xk_is_lb_implied
+    //           << ", xk_is_ub_implied: " << xk_is_ub_implied << std::endl;
     cuopt_assert(false, "Domination is not possible");
   }
 }
@@ -310,17 +319,20 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
                        host_problem.original_constraint_upper_bounds[row]);
     auto xj_order =
       is_ge_inequality_cstr ? domination_order_t::NEGATED_XJ : domination_order_t::REGULAR;
+
     // All the variables in this row are the candidates to be dominated by xj
     for (int j = 0; j < nnz_in_row; ++j) {
       auto xk = host_problem.variables[row_offset + j];
       if (xj == xk || dominated_vars[xk] == 1) { continue; }
       for (auto xk_order : {domination_order_t::REGULAR, domination_order_t::NEGATED_XK}) {
+        auto xj_name = variable_names[h_variable_mapping[xj]];
+        auto xk_name = variable_names[h_variable_mapping[xk]];
+        std::cout << "Checking domination " << h_variable_mapping[xj] << "(" << xj_name << ") -> "
+                  << h_variable_mapping[xk] << "(" << xk_name << ")" << std::endl;
         if (dominates(host_problem, xj, xk, xj_order, xk_order)) {
           // Print domination relationship with variable names
-          auto xj_name = variable_names[xj];
-          auto xk_name = variable_names[xk];
-          std::cout << "Domination " << xj << "(" << xj_name << ") -> " << xk << "(" << xk_name
-                    << ")" << std::endl;
+          std::cout << "Domination " << h_variable_mapping[xj] << "(" << xj_name << ") -> "
+                    << h_variable_mapping[xk] << "(" << xk_name << ")" << std::endl;
           update_variable_bounds(
             host_problem, h_variable_mapping, h_fixed_var_assignment, xj, xk, xj_order, xk_order);
           dominated_vars[xk] = 1;
