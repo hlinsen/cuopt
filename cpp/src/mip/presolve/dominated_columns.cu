@@ -76,41 +76,37 @@ template <typename i_t, typename f_t>
 void dominated_columns_t<i_t, f_t>::compute_signatures(
   typename problem_t<i_t, f_t>::host_view_t& host_problem)
 {
-  // std::cout << "Computing signatures" << std::endl;
   signatures.resize(problem.n_variables);
   for (int i = 0; i < problem.n_constraints; ++i) {
-    // std::cout << "Computing signature for constraint " << i << std::endl;
     auto row_offset = host_problem.offsets[i];
     auto nnz_in_row = host_problem.offsets[i + 1] - row_offset;
-    // std::cout << "NNZ in row " << i << " is " << nnz_in_row << std::endl;
     for (int j = 0; j < nnz_in_row; ++j) {
       auto col = host_problem.variables[row_offset + j];
-      // std::cout << "Setting signature for variable " << col << std::endl;
       signatures[col].set(i % signature_size);
     }
   }
-  // std::cout << "Signatures computed" << std::endl;
 }
 
 template <typename i_t, typename f_t>
 std::map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find_shortest_rows(
   typename problem_t<i_t, f_t>::host_view_t& host_problem, std::vector<i_t> const& candidates)
 {
-  // std::cout << "Finding shortest rows" << std::endl;
   std::map<i_t, std::pair<i_t, i_t>> shortest_rows;
   for (auto col : candidates) {
     auto col_offset    = host_problem.reverse_offsets[col];
     auto nnz_in_col    = host_problem.reverse_offsets[col + 1] - col_offset;
     shortest_rows[col] = {std::numeric_limits<i_t>::max(), -1};
     for (int j = 0; j < nnz_in_col; ++j) {
-      auto row      = host_problem.reverse_constraints[col_offset + j];
-      auto row_size = host_problem.offsets[row + 1] - host_problem.offsets[row];
-      // std::cout << "constraint: " << row << ", lower: " << original_lower_bounds[row]
-      //           << ", upper: " << original_upper_bounds[row] << std::endl;
-      auto is_inequality =
-        host_problem.original_constraint_lower_bounds[row] ==
-          -std::numeric_limits<f_t>::infinity() &&
-        host_problem.original_constraint_upper_bounds[row] != std::numeric_limits<f_t>::infinity();
+      auto row           = host_problem.reverse_constraints[col_offset + j];
+      auto row_size      = host_problem.offsets[row + 1] - host_problem.offsets[row];
+      auto is_inequality = (host_problem.original_constraint_lower_bounds[row] ==
+                              -std::numeric_limits<f_t>::infinity() &&
+                            host_problem.original_constraint_upper_bounds[row] !=
+                              std::numeric_limits<f_t>::infinity()) ||
+                           (host_problem.original_constraint_lower_bounds[row] !=
+                              -std::numeric_limits<f_t>::infinity() &&
+                            host_problem.original_constraint_upper_bounds[row] ==
+                              std::numeric_limits<f_t>::infinity());
       auto is_ranged_or_equality =
         host_problem.original_constraint_lower_bounds[row] !=
           -std::numeric_limits<f_t>::infinity() &&
@@ -121,7 +117,6 @@ std::map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find_shortest_
       }
     }
   }
-  // std::cout << "Shortest rows found" << std::endl;
   return shortest_rows;
 }
 
@@ -224,8 +219,8 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   f_t lk = host_problem.variable_lower_bounds[xk];
   f_t uk = host_problem.variable_upper_bounds[xk];
 
-  auto xj_is_implied_free = h_implied_lb[xj];
-  auto xk_is_implied_free = h_implied_ub[xk];
+  auto xj_is_implied_free = h_implied_lb[xj] && h_implied_ub[xj];
+  auto xk_is_implied_free = h_implied_lb[xk] && h_implied_ub[xk];
 
   if (order == domination_order_t::REGULAR) {
     if (uj == std::numeric_limits<f_t>::infinity() || xj_is_implied_free) {
@@ -259,15 +254,8 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
 
   auto candidates         = identify_candidate_variables(host_problem, bounds_presolve);
   auto h_variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
-  std::cout << "candidates size: " << candidates.size() << std::endl;
   if (candidates.empty()) { return; }
-
-  for (size_t i = 0; i < candidates.size(); ++i) {
-    auto xj      = candidates[i];
-    auto xj_name = problem.original_problem_ptr->get_variable_names()[h_variable_mapping[xj]];
-    std::cout << "Processing candidate variable " << xj << " (" << xj_name << ")" << std::endl;
-  }
-  exit(1);
+  std::cout << "Number of candidates: " << candidates.size() << std::endl;
 
   compute_signatures(host_problem);
   auto shortest_rows  = find_shortest_rows(host_problem, candidates);
