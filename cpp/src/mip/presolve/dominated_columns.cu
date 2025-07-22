@@ -29,8 +29,8 @@ template <typename i_t, typename f_t>
 dominated_columns_t<i_t, f_t>::dominated_columns_t(problem_t<i_t, f_t>& problem_)
   : problem(problem_),
     stream(problem.handle_ptr->get_stream()),
-    h_implied_lb(problem.n_variables, false),
-    h_implied_ub(problem.n_variables, false)
+    h_is_implied_lb(problem.n_variables, false),
+    h_is_implied_ub(problem.n_variables, false)
 {
 }
 
@@ -82,8 +82,8 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
                             implied_lb - original_lb >= -problem.tolerances.absolute_tolerance;
     auto is_upper_implied = h_implied_ub[i] != std::numeric_limits<f_t>::infinity() &&
                             implied_ub - original_ub <= problem.tolerances.absolute_tolerance;
-    h_implied_lb[i] = is_lower_implied;
-    h_implied_ub[i] = is_upper_implied;
+    h_is_implied_lb[i] = is_lower_implied;
+    h_is_implied_ub[i] = is_upper_implied;
 
     if (is_lower_implied || is_upper_implied) { candidates.push_back(i); }
   }
@@ -243,29 +243,24 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   domination_order_t xj_order,
   domination_order_t xk_order)
 {
-  auto variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
-  std::cout << "original var size: " << host_problem.original_variable_lower_bounds.size()
-            << std::endl;
-  f_t lj              = host_problem.original_variable_lower_bounds[variable_mapping[xj]];
-  f_t uj              = host_problem.original_variable_upper_bounds[variable_mapping[xj]];
-  f_t lk              = host_problem.original_variable_lower_bounds[variable_mapping[xk]];
-  f_t uk              = host_problem.original_variable_upper_bounds[variable_mapping[xk]];
+  f_t lj              = host_problem.original_variable_lower_bounds[h_variable_mapping[xj]];
+  f_t uj              = host_problem.original_variable_upper_bounds[h_variable_mapping[xj]];
+  f_t lk              = host_problem.original_variable_lower_bounds[h_variable_mapping[xk]];
+  f_t uk              = host_problem.original_variable_upper_bounds[h_variable_mapping[xk]];
   auto variable_names = problem.original_problem_ptr->get_variable_names();
 
-  auto xj_is_ub_implied = h_implied_ub[xj];
-  auto xj_is_lb_implied = h_implied_lb[xj];
-  std::cout << "uj: " << uj << ", lj: " << lj << std::endl;
-  std::cout << "xj_is_ub_implied: " << xj_is_ub_implied
-            << ", xj_is_lb_implied: " << xj_is_lb_implied << std::endl;
-  auto var_fixed = false;
+  auto xj_is_lb_implied = h_is_implied_lb[xj];
+  auto xj_is_ub_implied = h_is_implied_ub[xj];
+  auto var_fixed        = false;
 
   if (xj_order == domination_order_t::REGULAR && xk_order == domination_order_t::REGULAR) {
     if (uj == std::numeric_limits<f_t>::infinity() || xj_is_ub_implied) {
       // case i: xk can be set to lk
       h_fixed_var_assignment[h_variable_mapping[xk]] = lk;
       cuopt_func_call(var_fixed = true);
-      std::cout << "Fixing variable " << variable_mapping[xk] << "(" << variable_names[xk]
-                << ") to lower bound value: " << lk << std::endl;
+      // std::cout << "Fixing variable " << h_variable_mapping[xk] << "("
+      //           << variable_names[h_variable_mapping[xk]] << ") to lower bound value: " << lk
+      //           << std::endl;
     }
   } else if (xj_order == domination_order_t::REGULAR &&
              xk_order == domination_order_t::NEGATED_XK) {
@@ -273,8 +268,9 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
       // case ii: xk can be set to uk
       h_fixed_var_assignment[h_variable_mapping[xk]] = uk;
       cuopt_func_call(var_fixed = true);
-      std::cout << "Fixing variable " << variable_mapping[xk] << "(" << variable_names[xk]
-                << ") to upper bound value: " << uk << std::endl;
+      // std::cout << "Fixing variable " << h_variable_mapping[xk] << "("
+      //           << variable_names[h_variable_mapping[xk]] << ") to upper bound value: " << uk
+      //           << std::endl;
     }
   } else if (xj_order == domination_order_t::NEGATED_XJ &&
              xk_order == domination_order_t::REGULAR) {
@@ -282,8 +278,9 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
       // case iii: xj can be set to lj
       h_fixed_var_assignment[h_variable_mapping[xj]] = lj;
       cuopt_func_call(var_fixed = true);
-      std::cout << "Fixing variable " << variable_mapping[xj] << "(" << variable_names[xj]
-                << ") to lower bound value: " << lj << std::endl;
+      // std::cout << "Fixing variable " << h_variable_mapping[xj] << "("
+      //           << variable_names[h_variable_mapping[xj]] << ") to lower bound value: " << lj
+      //           << std::endl;
     }
   } else if (xj_order == domination_order_t::NEGATED_XJ &&
              xk_order == domination_order_t::NEGATED_XK) {
@@ -291,8 +288,9 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
       // case iv: xj can be set to lj
       h_fixed_var_assignment[h_variable_mapping[xj]] = uk;
       cuopt_func_call(var_fixed = true);
-      std::cout << "Fixing variable " << variable_mapping[xj] << "(" << variable_names[xj]
-                << ") to upper bound value: " << uk << std::endl;
+      // std::cout << "Fixing variable " << h_variable_mapping[xj] << "("
+      //           << variable_names[h_variable_mapping[xj]] << ") to upper bound value: " << uk
+      //           << std::endl;
     }
   } else {
     // std::cout << "xj_order: " << static_cast<int>(xj_order)
@@ -350,6 +348,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
         // << h_variable_mapping[xk] << "(" << xk_name << ")" << std::endl;
         if (dominates(host_problem, xj, xk, xj_order, xk_order)) {
           // Print domination relationship with variable names
+          std::cout << "xj: " << xj << ", xk: " << xk << std::endl;
           std::cout << "Domination " << h_variable_mapping[xj] << "(" << xj_name << ") -> "
                     << h_variable_mapping[xk] << "(" << xk_name << ")" << std::endl;
           update_variable_bounds(

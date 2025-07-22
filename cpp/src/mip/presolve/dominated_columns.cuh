@@ -78,8 +78,8 @@ struct dominated_columns_t {
 
   problem_t<i_t, f_t>& problem;
   std::vector<std::pair<std::bitset<signature_size>, std::bitset<signature_size>>> signatures;
-  std::vector<bool> h_implied_lb;
-  std::vector<bool> h_implied_ub;
+  std::vector<bool> h_is_implied_lb;
+  std::vector<bool> h_is_implied_ub;
   rmm::cuda_stream_view stream;
 };
 
