@@ -71,20 +71,17 @@ std::vector<i_t> dominated_columns_t<i_t, f_t>::identify_candidate_variables(
     if (original_var_idx >= problem.original_problem_ptr->get_n_variables()) { continue; }
     f_t original_lb = host_problem.original_variable_lower_bounds[variable_mapping[i]];
     f_t original_ub = host_problem.original_variable_upper_bounds[variable_mapping[i]];
-    // One of the bounds is infinite we can apply theorem 1.
-    if (original_lb == -std::numeric_limits<f_t>::infinity() ||
-        original_ub == std::numeric_limits<f_t>::infinity()) {
-      candidates.push_back(i);
-      continue;
-    }
+
     // Check if the bound is implied by the constraints.
     f_t implied_lb = h_implied_lb[i];
     f_t implied_ub = h_implied_ub[i];
 
-    auto is_lower_implied = h_implied_lb[i] != -std::numeric_limits<f_t>::infinity() &&
-                            implied_lb - original_lb >= -problem.tolerances.absolute_tolerance;
-    auto is_upper_implied = h_implied_ub[i] != std::numeric_limits<f_t>::infinity() &&
-                            implied_ub - original_ub <= problem.tolerances.absolute_tolerance;
+    auto is_lower_implied = (h_implied_lb[i] != -std::numeric_limits<f_t>::infinity() &&
+                             implied_lb - original_lb >= -problem.tolerances.absolute_tolerance) ||
+                            (original_lb == -std::numeric_limits<f_t>::infinity());
+    auto is_upper_implied = (h_implied_ub[i] != std::numeric_limits<f_t>::infinity() &&
+                             implied_ub - original_ub <= problem.tolerances.absolute_tolerance) ||
+                            (original_ub == std::numeric_limits<f_t>::infinity());
     h_is_implied_lb[i] = is_lower_implied;
     h_is_implied_ub[i] = is_upper_implied;
 
@@ -257,7 +254,7 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
   auto var_fixed        = false;
 
   if (xj_order == domination_order_t::REGULAR && xk_order == domination_order_t::REGULAR) {
-    if (uj == std::numeric_limits<f_t>::infinity() || xj_is_ub_implied) {
+    if (xj_is_ub_implied) {
       // case i: xk can be set to lk
       h_fixed_var_assignment[h_variable_mapping[xk]] = lk;
       cuopt_func_call(var_fixed = true);
@@ -267,7 +264,7 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
     }
   } else if (xj_order == domination_order_t::REGULAR &&
              xk_order == domination_order_t::NEGATED_XK) {
-    if (uj == std::numeric_limits<f_t>::infinity() || xj_is_ub_implied) {
+    if (xj_is_ub_implied) {
       // case ii: xk can be set to uk
       h_fixed_var_assignment[h_variable_mapping[xk]] = uk;
       cuopt_func_call(var_fixed = true);
@@ -277,7 +274,7 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
     }
   } else if (xj_order == domination_order_t::NEGATED_XJ &&
              xk_order == domination_order_t::REGULAR) {
-    if (lj == -std::numeric_limits<f_t>::infinity() || xj_is_lb_implied) {
+    if (xj_is_lb_implied) {
       // case iii: xj can be set to lj
       h_fixed_var_assignment[h_variable_mapping[xj]] = lj;
       cuopt_func_call(var_fixed = true);
@@ -287,7 +284,7 @@ void dominated_columns_t<i_t, f_t>::update_variable_bounds(
     }
   } else if (xj_order == domination_order_t::NEGATED_XJ &&
              xk_order == domination_order_t::NEGATED_XK) {
-    if (lj == -std::numeric_limits<f_t>::infinity() || xj_is_lb_implied) {
+    if (xj_is_lb_implied) {
       // case iv: xj can be set to lj
       h_fixed_var_assignment[h_variable_mapping[xj]] = uk;
       cuopt_func_call(var_fixed = true);
