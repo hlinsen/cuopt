@@ -323,6 +323,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   auto h_fixed_var_assignment =
     cuopt::host_copy(problem.presolve_data.fixed_var_assignment, stream);
 
+  std::cout << "variable_names: " << variable_names.size() << std::endl;
   auto num_dominated_vars = 0;
   for (const auto& [xj, pair] : shortest_rows) {
     // if (dominated_vars[xj] == 1) { continue; }
@@ -345,10 +346,12 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
         auto xk_name = variable_names[h_variable_mapping[xk]];
         // std::cout << "Checking domination " << h_variable_mapping[xj] << "(" << xj_name << ") ->
         // "
-        // << h_variable_mapping[xk] << "(" << xk_name << ")" << std::endl;
+        //           << h_variable_mapping[xk] << "(" << xk_name << ")" << std::endl;
         if (dominates(host_problem, xj, xk, xj_order, xk_order)) {
           // Print domination relationship with variable names
           std::cout << "xj: " << xj << ", xk: " << xk << std::endl;
+          std::cout << "order: " << static_cast<int>(xj_order) << ", " << static_cast<int>(xk_order)
+                    << std::endl;
           std::cout << "Domination " << h_variable_mapping[xj] << "(" << xj_name << ") -> "
                     << h_variable_mapping[xk] << "(" << xk_name << ")" << std::endl;
           update_variable_bounds(
@@ -360,7 +363,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     }
   }
   std::cout << "Number of dominated variables: " << num_dominated_vars << std::endl;
-  exit(1);
+  // exit(1);
 
   raft::copy(problem.presolve_data.fixed_var_assignment.data(),
              h_fixed_var_assignment.data(),
