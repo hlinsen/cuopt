@@ -367,10 +367,10 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   std::cout << "Number of dominated variables: " << num_dominated_vars << std::endl;
 
   auto has_free_vars = false;
-  for (auto const& var : dominated_vars) {
-    if (problem.presolve_data.additional_var_used[var]) {
-      has_free_vars                                                        = true;
-      dominated_vars[problem.presolve_data.additional_var_id_per_var[var]] = 1;
+  for (size_t var_idx = 0; var_idx < dominated_vars.size(); ++var_idx) {
+    if (dominated_vars[var_idx] && problem.presolve_data.additional_var_used[var_idx]) {
+      has_free_vars                                                            = true;
+      dominated_vars[problem.presolve_data.additional_var_id_per_var[var_idx]] = 1;
       ++num_dominated_vars;
     }
   }
