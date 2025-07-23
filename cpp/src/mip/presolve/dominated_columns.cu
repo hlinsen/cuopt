@@ -404,13 +404,11 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
     auto const& [row_size, row] = pair;
     auto row_offset             = host_problem.offsets[row];
     auto nnz_in_row             = host_problem.offsets[row + 1] - row_offset;
-    auto is_ge_inequality_cstr =
-      is_ge_inequality(host_problem.original_constraint_lower_bounds[row],
-                       host_problem.original_constraint_upper_bounds[row]);
+    f_t original_lb = host_problem.original_variable_lower_bounds[h_variable_mapping[xj]];
+    f_t original_ub = host_problem.original_variable_upper_bounds[h_variable_mapping[xj]];
     auto xj_order =
-      is_ge_inequality_cstr ? domination_order_t::NEGATED_XJ : domination_order_t::REGULAR;
-    if (xj_order == domination_order_t::REGULAR && !h_is_implied_ub[xj]) { continue; }
-    if (xj_order == domination_order_t::NEGATED_XJ && !h_is_implied_lb[xj]) { continue; }
+      h_is_implied_lb[xj] ? domination_order_t::NEGATED_XJ : domination_order_t::REGULAR;
+    cuopt_assert(h_is_implied_lb[xj] || h_is_implied_ub[xj], "Variable is not implied");
 
     // All the variables in this row are the candidates to be dominated by xj
     for (int j = 0; j < nnz_in_row; ++j) {
