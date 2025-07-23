@@ -207,11 +207,19 @@ bool dominated_columns_t<i_t, f_t>::dominates(
     if (xk_order == domination_order_t::NEGATED_XK) { coeff_xk = -coeff_xk; }
 
     // Check the original row bounds to determine constraint type
+    // FIXME: Map to the original bounds
     f_t row_lb = host_problem.original_constraint_lower_bounds[row_xj];
     f_t row_ub = host_problem.original_constraint_upper_bounds[row_xj];
 
     // Check if this is an equality constraint
     bool is_ranged_or_equality_cstr = is_ranged_or_equality(row_lb, row_ub);
+    bool is_ge_inequality_cstr      = is_ge_inequality(row_lb, row_ub);
+
+    if (is_ge_inequality_cstr) {
+      coeff_xk = -coeff_xk;
+      coeff_xj = -coeff_xj;
+    }
+
     // std::cout << "row_lb: " << row_lb << ", row_ub: " << row_ub << std::endl;
     // std::cout << "is_ranged_or_equality: " << is_ranged_or_equality << std::endl;
     // std::cout << "row: " << row1 << ", coeff1: " << coeff1 << ", coeff2: " << coeff2 <<
@@ -225,6 +233,10 @@ bool dominated_columns_t<i_t, f_t>::dominates(
       if (coeff_xj > coeff_xk + COEFF_EPSILON) { return false; }
     }
   }
+
+  auto variable_names     = problem.original_problem_ptr->get_variable_names();
+  auto h_variable_mapping = cuopt::host_copy(problem.presolve_data.variable_mapping, stream);
+  auto debug              = h_variable_mapping[xj] == 287 && h_variable_mapping[xk] == 288;
 
   // Check rows occuring in xk but not in xj
   f_t coeff_xj = 0;
@@ -247,22 +259,50 @@ bool dominated_columns_t<i_t, f_t>::dominates(
     if (xj_order == domination_order_t::NEGATED_XJ) { coeff_xj = -coeff_xj; }
 
     // Check the original row bounds to determine constraint type
+    // FIXME: Map to the original bounds
     f_t row_lb = host_problem.original_constraint_lower_bounds[row_xk];
     f_t row_ub = host_problem.original_constraint_upper_bounds[row_xk];
 
     // Check if this is an equality constraint
     bool is_ranged_or_equality_cstr = is_ranged_or_equality(row_lb, row_ub);
-    // std::cout << "row_lb: " << row_lb << ", row_ub: " << row_ub << std::endl;
-    // std::cout << "is_ranged_or_equality: " << is_ranged_or_equality << std::endl;
+    bool is_ge_inequality_cstr      = is_ge_inequality(row_lb, row_ub);
+
+    if (is_ge_inequality_cstr) {
+      coeff_xk = -coeff_xk;
+      coeff_xj = -coeff_xj;
+    }
+
+    // if (debug) {
+    //   std::cout << "xj: " << xj << "(" << variable_names[h_variable_mapping[xj]] << "), xk: " <<
+    //   xk
+    //             << "(" << variable_names[h_variable_mapping[xk]] << ")" << std::endl;
+    //   std::cout << "row_xk: " << row_xk << std::endl;
+    //   std::cout << "row_lb: " << row_lb << ", row_ub: " << row_ub << std::endl;
+    //   std::cout << "is_ranged_or_equality: " << is_ranged_or_equality_cstr << std::endl;
+    //   std::cout << "is_ge_inequality: " << is_ge_inequality_cstr << std::endl;
+    //   std::cout << "xj_order: " << static_cast<int>(xj_order)
+    //             << ", xk_order: " << static_cast<int>(xk_order) << std::endl;
+    // }
     // std::cout << "row: " << row1 << ", coeff1: " << coeff1 << ", coeff2: " << coeff2 <<
     // std::endl;
 
     if (is_ranged_or_equality_cstr) {
       // For equality constraints, coefficients must be equal (within epsilon)
-      if (std::abs(coeff_xj - coeff_xk) > COEFF_EPSILON) { return false; }
+      if (std::abs(coeff_xj - coeff_xk) > COEFF_EPSILON) {
+        // if (debug) {
+        //   std::cout << "Coefficients are not equal: " << coeff_xj << " != " << coeff_xk
+        //             << std::endl;
+        // }
+        return false;
+      }
     } else {
       // For inequality constraints, compare coefficients as before
-      if (coeff_xj > coeff_xk + COEFF_EPSILON) { return false; }
+      if (coeff_xj > coeff_xk + COEFF_EPSILON) {
+        // if (debug) {
+        //   std::cout << "coeff_xj: " << coeff_xj << " > coeff_xk: " << coeff_xk << std::endl;
+        // }
+        return false;
+      }
     }
   }
 
@@ -360,7 +400,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
   // std::cout << "variable_names: " << variable_names.size() << std::endl;
   auto num_dominated_vars = 0;
   for (const auto& [xj, pair] : shortest_rows) {
-    if (dominated_vars[xj] == 1) { continue; }
+    // if (dominated_vars[xj] == 1) { continue; }
     auto const& [row_size, row] = pair;
     auto row_offset             = host_problem.offsets[row];
     auto nnz_in_row             = host_problem.offsets[row + 1] - row_offset;
@@ -379,7 +419,7 @@ void dominated_columns_t<i_t, f_t>::presolve(bound_presolve_t<i_t, f_t>& bounds_
       // Skip free vars
       if (original_var_idx >= problem.original_problem_ptr->get_n_variables()) { continue; }
       if (xj == xk) { continue; }
-      if (dominated_vars[xk] == 1) { continue; }
+      // if (dominated_vars[xk] == 1) { continue; }
       for (auto xk_order : {domination_order_t::REGULAR, domination_order_t::NEGATED_XK}) {
         auto xj_name = variable_names[h_variable_mapping[xj]];
         auto xk_name = variable_names[h_variable_mapping[xk]];
