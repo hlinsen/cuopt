@@ -222,7 +222,7 @@ bool dominated_columns_t<i_t, f_t>::dominates(
       if (std::abs(coeff_xj - coeff_xk) > COEFF_EPSILON) { return false; }
     } else {
       // For inequality constraints, compare coefficients as before
-      if (coeff_xj > coeff_xk) { return false; }
+      if (coeff_xj > coeff_xk + COEFF_EPSILON) { return false; }
     }
   }
 
@@ -244,6 +244,7 @@ bool dominated_columns_t<i_t, f_t>::dominates(
     if (row_occcurs_in_xj) { continue; }
 
     if (xk_order == domination_order_t::NEGATED_XK) { coeff_xk = -coeff_xk; }
+    if (xj_order == domination_order_t::NEGATED_XJ) { coeff_xj = -coeff_xj; }
 
     // Check the original row bounds to determine constraint type
     f_t row_lb = host_problem.original_constraint_lower_bounds[row_xk];
@@ -261,7 +262,7 @@ bool dominated_columns_t<i_t, f_t>::dominates(
       if (std::abs(coeff_xj - coeff_xk) > COEFF_EPSILON) { return false; }
     } else {
       // For inequality constraints, compare coefficients as before
-      if (coeff_xj > coeff_xk) { return false; }
+      if (coeff_xj > coeff_xk + COEFF_EPSILON) { return false; }
     }
   }
 
