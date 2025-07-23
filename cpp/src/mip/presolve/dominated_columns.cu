@@ -187,30 +187,28 @@ bool dominated_columns_t<i_t, f_t>::dominates(
   // host_problem.print_transposed();
 
   for (int i = 0; i < xj_nnz; ++i) {
-    auto found_in_row = false;
-    auto row1         = host_problem.reverse_constraints[xj_offset + i];
-    f_t coeff1        = host_problem.reverse_coefficients[xj_offset + i];
+    auto row_xj  = host_problem.reverse_constraints[xj_offset + i];
+    f_t coeff_xj = host_problem.reverse_coefficients[xj_offset + i];
     // std::cout << "cst: " << row1 << ", coeff: " << coeff1 << std::endl;
-    f_t coeff2 = 0;
+    f_t coeff_xk = 0;
 
     for (int j = 0; j < xk_nnz; ++j) {
-      auto row2 = host_problem.reverse_constraints[xk_offset + j];
+      auto row_xk = host_problem.reverse_constraints[xk_offset + j];
       // std::cout << "cst: " << row2
       //           << ", coeff: " << host_problem.reverse_coefficients[xk_offset + j] << std::endl;
-      if (row1 == row2) {
-        coeff2 = host_problem.reverse_coefficients[xk_offset + j];
+      if (row_xj == row_xk) {
+        coeff_xk = host_problem.reverse_coefficients[xk_offset + j];
         // std::cout << xk << " found in row " << row2 << " with coefficient " << coeff2 <<
         // std::endl;
-        found_in_row = true;
         break;
       }
     }
-    if (xj_order == domination_order_t::NEGATED_XJ) { coeff1 = -coeff1; }
-    if (xk_order == domination_order_t::NEGATED_XK) { coeff2 = -coeff2; }
+    if (xj_order == domination_order_t::NEGATED_XJ) { coeff_xj = -coeff_xj; }
+    if (xk_order == domination_order_t::NEGATED_XK) { coeff_xk = -coeff_xk; }
 
     // Check the original row bounds to determine constraint type
-    f_t row_lb = host_problem.original_constraint_lower_bounds[row1];
-    f_t row_ub = host_problem.original_constraint_upper_bounds[row1];
+    f_t row_lb = host_problem.original_constraint_lower_bounds[row_xj];
+    f_t row_ub = host_problem.original_constraint_upper_bounds[row_xj];
 
     // Check if this is an equality constraint
     bool is_ranged_or_equality_cstr = is_ranged_or_equality(row_lb, row_ub);
@@ -219,12 +217,51 @@ bool dominated_columns_t<i_t, f_t>::dominates(
     // std::cout << "row: " << row1 << ", coeff1: " << coeff1 << ", coeff2: " << coeff2 <<
     // std::endl;
 
-    if (found_in_row && is_ranged_or_equality_cstr) {
+    if (is_ranged_or_equality_cstr) {
       // For equality constraints, coefficients must be equal (within epsilon)
-      if (std::abs(coeff1 - coeff2) > COEFF_EPSILON) { return false; }
+      if (std::abs(coeff_xj - coeff_xk) > COEFF_EPSILON) { return false; }
     } else {
       // For inequality constraints, compare coefficients as before
-      if (coeff1 > coeff2) { return false; }
+      if (coeff_xj > coeff_xk) { return false; }
+    }
+  }
+
+  // Check rows occuring in xk but not in xj
+  f_t coeff_xj = 0;
+  for (int i = 0; i < xk_nnz; ++i) {
+    auto row_xk            = host_problem.reverse_constraints[xk_offset + i];
+    f_t coeff_xk           = host_problem.reverse_coefficients[xk_offset + i];
+    auto row_occcurs_in_xj = false;
+    for (int j = 0; j < xj_nnz; ++j) {
+      auto row_xj = host_problem.reverse_constraints[xj_offset + j];
+      if (row_xj == row_xk) {
+        row_occcurs_in_xj = true;
+        break;
+      }
+    }
+
+    // Checked in first loop already
+    if (row_occcurs_in_xj) { continue; }
+
+    if (xk_order == domination_order_t::NEGATED_XK) { coeff_xk = -coeff_xk; }
+
+    // Check the original row bounds to determine constraint type
+    f_t row_lb = host_problem.original_constraint_lower_bounds[row_xk];
+    f_t row_ub = host_problem.original_constraint_upper_bounds[row_xk];
+
+    // Check if this is an equality constraint
+    bool is_ranged_or_equality_cstr = is_ranged_or_equality(row_lb, row_ub);
+    // std::cout << "row_lb: " << row_lb << ", row_ub: " << row_ub << std::endl;
+    // std::cout << "is_ranged_or_equality: " << is_ranged_or_equality << std::endl;
+    // std::cout << "row: " << row1 << ", coeff1: " << coeff1 << ", coeff2: " << coeff2 <<
+    // std::endl;
+
+    if (is_ranged_or_equality_cstr) {
+      // For equality constraints, coefficients must be equal (within epsilon)
+      if (std::abs(coeff_xj - coeff_xk) > COEFF_EPSILON) { return false; }
+    } else {
+      // For inequality constraints, compare coefficients as before
+      if (coeff_xj > coeff_xk) { return false; }
     }
   }
 

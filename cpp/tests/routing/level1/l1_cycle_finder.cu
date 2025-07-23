@@ -167,9 +167,10 @@ class cycle_finder_test_t : public routing_test_t<i_t, f_t>,
 typedef cycle_finder_test_t<int, float, request_t::PDP> float_cycle_finder_test_pdp;
 typedef cycle_finder_test_t<int, float, request_t::VRP> float_cycle_finder_test_vrp;
 TEST_P(float_cycle_finder_test_pdp, CYCLE_FINDER_FLOAT_PDP) { test_pdptw(); }
-INSTANTIATE_TEST_SUITE_P(float_test,
-                         float_cycle_finder_test_pdp,
-                         ::testing::Values(file_params("pdptw/LR2_10_2.pdptw")));
+INSTANTIATE_TEST_SUITE_P(
+  float_test,
+  float_cycle_finder_test_pdp,
+  ::testing::Values(file_params("/home/hugo/rapids/cuopt/datasets/pdptw/LR2_10_2.pdptw")));
 TEST_P(float_cycle_finder_test_vrp, CYCLE_FINDER_FLOAT_VRP) { test_pdptw(); }
 INSTANTIATE_TEST_SUITE_P(float_test,
                          float_cycle_finder_test_vrp,
