@@ -55,6 +55,11 @@ struct dominated_columns_t {
   bool is_ranged_or_equality(f_t row_lb, f_t row_ub);
   bool is_ge_inequality(f_t row_lb, f_t row_ub);
   bool is_le_inequality(f_t row_lb, f_t row_ub);
+  bool skip_domination(typename problem_t<i_t, f_t>::host_view_t& host_problem,
+                       i_t xj,
+                       i_t xk,
+                       domination_order_t xj_order,
+                       domination_order_t xk_order);
 
   std::vector<i_t> identify_candidate_variables(
     typename problem_t<i_t, f_t>::host_view_t& host_problem,
