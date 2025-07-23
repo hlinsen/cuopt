@@ -84,6 +84,7 @@ void problem_t<i_t, f_t>::op_problem_cstr_body(const optimization_problem_t<i_t,
     is_binary_variable.resize(n_variables, handle_ptr->get_stream());
     compute_n_integer_vars();
     compute_binary_var_table();
+    compute_row_types();
   }
 
   compute_transpose_of_problem();
@@ -119,6 +120,7 @@ problem_t<i_t, f_t>::problem_t(const optimization_problem_t<i_t, f_t>& problem_)
                             problem_.get_handle_ptr()->get_stream()),
     constraint_upper_bounds(problem_.get_constraint_upper_bounds(),
                             problem_.get_handle_ptr()->get_stream()),
+    row_types(0, problem_.get_handle_ptr()->get_stream()),
     combined_bounds(problem_.get_n_constraints(), problem_.get_handle_ptr()->get_stream()),
     variable_types(0, problem_.get_handle_ptr()->get_stream()),
     integer_indices(0, problem_.get_handle_ptr()->get_stream()),
@@ -163,6 +165,7 @@ problem_t<i_t, f_t>::problem_t(const problem_t<i_t, f_t>& problem_)
     variable_upper_bounds(problem_.variable_upper_bounds, handle_ptr->get_stream()),
     constraint_lower_bounds(problem_.constraint_lower_bounds, handle_ptr->get_stream()),
     constraint_upper_bounds(problem_.constraint_upper_bounds, handle_ptr->get_stream()),
+    row_types(problem_.row_types, handle_ptr->get_stream()),
     combined_bounds(problem_.combined_bounds, handle_ptr->get_stream()),
     variable_types(problem_.variable_types, handle_ptr->get_stream()),
     integer_indices(problem_.integer_indices, handle_ptr->get_stream()),
@@ -248,6 +251,10 @@ problem_t<i_t, f_t>::problem_t(const problem_t<i_t, f_t>& problem_, bool no_deep
         ? rmm::device_uvector<f_t>(problem_.constraint_upper_bounds, handle_ptr->get_stream())
         : rmm::device_uvector<f_t>(problem_.constraint_upper_bounds.size(),
                                    handle_ptr->get_stream())),
+    row_types(
+      (!no_deep_copy)
+        ? rmm::device_uvector<row_type_t>(problem_.row_types, handle_ptr->get_stream())
+        : rmm::device_uvector<row_type_t>(problem_.row_types.size(), handle_ptr->get_stream())),
     combined_bounds(
       (!no_deep_copy)
         ? rmm::device_uvector<f_t>(problem_.combined_bounds, handle_ptr->get_stream())
@@ -702,6 +709,35 @@ void problem_t<i_t, f_t>::recompute_auxilliary_data(bool check_representation)
 }
 
 template <typename i_t, typename f_t>
+void problem_t<i_t, f_t>::compute_row_types()
+{
+  auto pb_view = view();
+  row_types.resize(n_constraints, handle_ptr->get_stream());
+  thrust::tabulate(handle_ptr->get_thrust_policy(),
+                   row_types.begin(),
+                   row_types.end(),
+                   [pb_view] __device__(i_t i) {
+                     auto row_lb = pb_view.constraint_lower_bounds[i];
+                     auto row_ub = pb_view.constraint_upper_bounds[i];
+                     if (row_lb == -std::numeric_limits<f_t>::infinity() &&
+                         row_ub == std::numeric_limits<f_t>::infinity()) {
+                       return row_type_t::FREE;
+                     }
+                     if (row_lb != -std::numeric_limits<f_t>::infinity() &&
+                         row_ub != std::numeric_limits<f_t>::infinity()) {
+                       return row_type_t::RANGED_OR_EQUALITY;
+                     }
+                     if (row_lb == -std::numeric_limits<f_t>::infinity()) {
+                       return row_type_t::LE_INEQUALITY;
+                     }
+                     if (row_ub == std::numeric_limits<f_t>::infinity()) {
+                       return row_type_t::GE_INEQUALITY;
+                     }
+                     return row_type_t::FREE;
+                   });
+}
+
+template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_n_integer_vars()
 {
   cuopt_assert(n_variables == variable_types.size(), "size mismatch");
@@ -902,6 +938,7 @@ typename problem_t<i_t, f_t>::view_t problem_t<i_t, f_t>::view()
     raft::device_span<f_t>{constraint_lower_bounds.data(), constraint_lower_bounds.size()};
   v.constraint_upper_bounds =
     raft::device_span<f_t>{constraint_upper_bounds.data(), constraint_upper_bounds.size()};
+  v.row_types      = raft::device_span<row_type_t>{row_types.data(), row_types.size()};
   v.variable_types = raft::device_span<var_t>{variable_types.data(), variable_types.size()};
   v.is_binary_variable =
     raft::device_span<i_t>{is_binary_variable.data(), is_binary_variable.size()};
@@ -946,6 +983,7 @@ typename problem_t<i_t, f_t>::host_view_t problem_t<i_t, f_t>::to_host()
     cuopt::host_copy(original_problem_ptr->get_constraint_upper_bounds());
   h.constraint_lower_bounds   = cuopt::host_copy(constraint_lower_bounds);
   h.constraint_upper_bounds   = cuopt::host_copy(constraint_upper_bounds);
+  h.row_types                 = cuopt::host_copy(row_types);
   h.variable_types            = cuopt::host_copy(variable_types);
   h.is_binary_variable        = cuopt::host_copy(is_binary_variable);
   h.integer_indices           = cuopt::host_copy(integer_indices);
@@ -984,6 +1022,7 @@ void problem_t<i_t, f_t>::resize_constraints(size_t matrix_size,
   cuopt_assert(offsets.size() == constraint_lower_bounds.size() + 1, "size mismatch");
   constraint_lower_bounds.resize(constraint_size, handle_ptr->get_stream());
   constraint_upper_bounds.resize(constraint_size, handle_ptr->get_stream());
+  row_types.resize(constraint_size, handle_ptr->get_stream());
   combined_bounds.resize(constraint_size, handle_ptr->get_stream());
   offsets.resize(constraint_size + 1, handle_ptr->get_stream());
   reverse_offsets.resize(n_variables + 1, handle_ptr->get_stream());
@@ -1124,8 +1163,8 @@ problem_t<i_t, f_t> problem_t<i_t, f_t>::get_problem_after_fixing_vars(
   RAFT_CHECK_CUDA(handle_ptr->get_stream());
   problem.remove_given_variables(*this, assignment, variable_map, handle_ptr);
   // if we are fixing on the original problem, the variable_map is what we want in
-  // problem.original_ids but considering the case that we are fixing some variables multiple times,
-  // do an assignment from the original_ids of the current problem
+  // problem.original_ids but considering the case that we are fixing some variables multiple
+  // times, do an assignment from the original_ids of the current problem
   problem.original_ids.resize(variable_map.size());
   std::fill(problem.reverse_original_ids.begin(), problem.reverse_original_ids.end(), -1);
   auto h_variable_map = cuopt::host_copy(variable_map);

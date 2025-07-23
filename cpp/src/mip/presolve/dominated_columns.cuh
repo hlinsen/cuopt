@@ -51,10 +51,9 @@ auto constexpr signature_size = 32;
 template <typename i_t, typename f_t>
 struct dominated_columns_t {
   dominated_columns_t(problem_t<i_t, f_t>& problem_);
-
-  bool is_ranged_or_equality(f_t row_lb, f_t row_ub);
-  bool is_ge_inequality(f_t row_lb, f_t row_ub);
-  bool is_le_inequality(f_t row_lb, f_t row_ub);
+  bool is_ranged_or_equality(f_t lb, f_t ub);
+  bool is_ge_inequality(f_t lb, f_t ub);
+  bool is_le_inequality(f_t lb, f_t ub);
   bool skip_domination(typename problem_t<i_t, f_t>::host_view_t& host_problem,
                        i_t xj,
                        i_t xk,

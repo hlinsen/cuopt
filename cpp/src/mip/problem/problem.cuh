@@ -44,6 +44,8 @@ namespace cuopt {
 
 namespace linear_programming::detail {
 
+enum row_type_t { RANGED_OR_EQUALITY, GE_INEQUALITY, LE_INEQUALITY, FREE };
+
 template <typename i_t, typename f_t>
 class solution_t;
 
@@ -79,6 +81,7 @@ class problem_t {
   void recompute_auxilliary_data(bool check_representation = true);
   void compute_n_integer_vars();
   void compute_binary_var_table();
+  void compute_row_types();
   void compute_related_variables(double time_limit);
   void fix_given_variables(problem_t<i_t, f_t>& original_problem,
                            rmm::device_uvector<f_t>& assignment,
@@ -179,6 +182,7 @@ class problem_t {
     raft::device_span<f_t> variable_upper_bounds;
     raft::device_span<f_t> constraint_lower_bounds;
     raft::device_span<f_t> constraint_upper_bounds;
+    raft::device_span<row_type_t> row_types;
     raft::device_span<var_t> variable_types;
     raft::device_span<i_t> is_binary_variable;
     raft::device_span<i_t> integer_indices;
@@ -215,6 +219,7 @@ class problem_t {
     std::vector<f_t> original_constraint_upper_bounds;
     std::vector<f_t> constraint_lower_bounds;
     std::vector<f_t> constraint_upper_bounds;
+    std::vector<row_type_t> row_types;
     std::vector<var_t> variable_types;
     std::vector<i_t> is_binary_variable;
     std::vector<i_t> integer_indices;
@@ -300,6 +305,7 @@ class problem_t {
   rmm::device_uvector<f_t> variable_upper_bounds;
   rmm::device_uvector<f_t> constraint_lower_bounds;
   rmm::device_uvector<f_t> constraint_upper_bounds;
+  rmm::device_uvector<row_type_t> row_types;
   /* biggest between cstr lower and upper */
   rmm::device_uvector<f_t> combined_bounds;
   /** Type of each variable */

@@ -59,22 +59,28 @@ void cleanup_vectors(problem_t<i_t, f_t>& pb,
                      const rmm::device_uvector<i_t>& cnst_map,
                      const rmm::device_uvector<i_t>& var_map)
 {
-  auto handle_ptr   = pb.handle_ptr;
-  auto cnst_lb_iter = thrust::remove_if(handle_ptr->get_thrust_policy(),
+  auto handle_ptr    = pb.handle_ptr;
+  auto cnst_lb_iter  = thrust::remove_if(handle_ptr->get_thrust_policy(),
                                         pb.constraint_lower_bounds.begin(),
                                         pb.constraint_lower_bounds.end(),
                                         cnst_map.begin(),
                                         is_zero_t<i_t>{});
-  auto cnst_ub_iter = thrust::remove_if(handle_ptr->get_thrust_policy(),
+  auto cnst_ub_iter  = thrust::remove_if(handle_ptr->get_thrust_policy(),
                                         pb.constraint_upper_bounds.begin(),
                                         pb.constraint_upper_bounds.end(),
                                         cnst_map.begin(),
                                         is_zero_t<i_t>{});
+  auto row_type_iter = thrust::remove_if(handle_ptr->get_thrust_policy(),
+                                         pb.row_types.begin(),
+                                         pb.row_types.end(),
+                                         cnst_map.begin(),
+                                         is_zero_t<i_t>{});
   handle_ptr->sync_stream();
   pb.constraint_lower_bounds.resize(cnst_lb_iter - pb.constraint_lower_bounds.begin(),
                                     handle_ptr->get_stream());
   pb.constraint_upper_bounds.resize(cnst_ub_iter - pb.constraint_upper_bounds.begin(),
                                     handle_ptr->get_stream());
+  pb.row_types.resize(row_type_iter - pb.row_types.begin(), handle_ptr->get_stream());
 
   handle_ptr->sync_stream();
   auto lb_iter     = thrust::remove_if(handle_ptr->get_thrust_policy(),
