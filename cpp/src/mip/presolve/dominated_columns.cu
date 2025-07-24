@@ -98,13 +98,27 @@ void dominated_columns_t<i_t, f_t>::compute_signatures(
   for (int i = 0; i < problem.n_constraints; ++i) {
     auto row_offset = host_problem.offsets[i];
     auto nnz_in_row = host_problem.offsets[i + 1] - row_offset;
+    auto row_type   = host_problem.row_types[i];
     for (int j = 0; j < nnz_in_row; ++j) {
       auto col       = host_problem.variables[row_offset + j];
       auto col_coeff = host_problem.coefficients[row_offset + j];
-      if (col_coeff > 0) {
+      if (row_type == row_type_t::RANGED_OR_EQUALITY) {
         signatures[col].first.set(i % signature_size);
-      } else {
         signatures[col].second.set(i % signature_size);
+      } else if (row_type == row_type_t::GE_INEQUALITY) {
+        if (col_coeff > 0) {
+          signatures[col].first.set(i % signature_size);
+        } else {
+          signatures[col].second.set(i % signature_size);
+        }
+      } else if (row_type == row_type_t::LE_INEQUALITY) {
+        if (col_coeff < 0) {
+          signatures[col].first.set(i % signature_size);
+        } else {
+          signatures[col].second.set(i % signature_size);
+        }
+      } else {
+        cuopt_assert(false, "Invalid row type");
       }
     }
   }
@@ -114,6 +128,7 @@ template <typename i_t, typename f_t>
 std::map<i_t, std::pair<i_t, i_t>> dominated_columns_t<i_t, f_t>::find_shortest_rows(
   typename problem_t<i_t, f_t>::host_view_t& host_problem, std::vector<i_t> const& candidates)
 {
+  // Sorted map to add dominated columns in topological order
   std::map<i_t, std::pair<i_t, i_t>> shortest_rows;
   for (auto col : candidates) {
     auto col_offset    = host_problem.reverse_offsets[col];
