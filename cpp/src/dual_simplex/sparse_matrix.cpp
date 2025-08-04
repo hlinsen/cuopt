@@ -379,6 +379,20 @@ void csc_matrix_t<i_t, f_t>::print_matrix() const
 }
 
 template <typename i_t, typename f_t>
+void csc_matrix_t<i_t, f_t>::scale_columns(const std::vector<f_t>& scale)
+{
+  const i_t n = this->n;
+  assert(scale.size() == n);
+  for (i_t j = 0; j < n; ++j) {
+    const i_t col_start = this->col_start[j];
+    const i_t col_end   = this->col_start[j + 1];
+    for (i_t p = col_start; p < col_end; ++p) {
+      this->x[p] *= scale[j];
+    }
+  }
+}
+
+template <typename i_t, typename f_t>
 i_t scatter(const csc_matrix_t<i_t, f_t>& A,
             i_t j,
             f_t beta,

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 set(DUAL_SIMPLEX_SRC_FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/barrier.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/basis_solves.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/basis_updates.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/bound_flipping_ratio_test.cpp

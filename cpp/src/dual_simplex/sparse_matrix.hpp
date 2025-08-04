@@ -90,6 +90,9 @@ class csc_matrix_t {
   // Compute || A ||_1 = max_j (sum {i = 1 to m} | A(i, j) | )
   f_t norm1() const;
 
+  // Perform column scaling of the matrix
+  void scale_columns(const std::vector<f_t>& scale);
+
   i_t nz_max;                  // maximum number of entries
   i_t m;                       // number of rows
   i_t n;                       // number of columns
