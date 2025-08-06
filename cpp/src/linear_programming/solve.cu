@@ -306,6 +306,7 @@ run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   dual_simplex_settings.time_limit      = settings.time_limit;
   dual_simplex_settings.iteration_limit = settings.iteration_limit;
   dual_simplex_settings.concurrent_halt = settings.concurrent_halt;
+  dual_simplex_settings.use_cudss       = settings.use_cudss;
   if (dual_simplex_settings.concurrent_halt != nullptr) {
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
     dual_simplex_settings.log.log = false;

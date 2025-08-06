@@ -50,6 +50,7 @@
 #define CUOPT_LOG_FILE                    "log_file"
 #define CUOPT_LOG_TO_CONSOLE              "log_to_console"
 #define CUOPT_CROSSOVER                   "crossover"
+#define CUOPT_USE_CUDSS                   "use_cudss"
 #define CUOPT_MIP_ABSOLUTE_TOLERANCE      "mip_absolute_tolerance"
 #define CUOPT_MIP_RELATIVE_TOLERANCE      "mip_relative_tolerance"
 #define CUOPT_MIP_INTEGRALITY_TOLERANCE   "mip_integrality_tolerance"

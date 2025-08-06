@@ -203,6 +203,7 @@ class pdlp_solver_settings_t {
   std::string user_problem_file{""};
   bool per_constraint_residual{false};
   bool crossover{false};
+  bool use_cudss{false};
   bool save_best_primal_so_far{false};
   bool first_primal_feasible{false};
   method_t method{method_t::Concurrent};

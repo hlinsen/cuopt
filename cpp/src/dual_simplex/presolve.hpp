@@ -59,6 +59,8 @@ struct presolve_info_t {
   std::vector<f_t> removed_values;
   // values of the removed reduced costs
   std::vector<f_t> removed_reduced_costs;
+  // Free variable pairs
+  std::vector<i_t> free_variable_pairs;
 };
 
 template <typename i_t, typename f_t>

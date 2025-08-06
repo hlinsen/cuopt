@@ -27,6 +27,9 @@ include(rapids-find)
 
 rapids_cuda_init_architectures(CUOPT)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
+message(STATUS "CMAKE_MODULE_PATH = ${CMAKE_MODULE_PATH}")
+
 project(
   CUOPT
   VERSION 25.08.00
@@ -162,6 +165,9 @@ include(${rapids-cmake-dir}/cpm/rapids_logger.cmake)
 rapids_cpm_rapids_logger(BUILD_EXPORT_SET cuopt-exports INSTALL_EXPORT_SET cuopt-exports)
 create_logger_macros(CUOPT "cuopt::default_logger()" include/cuopt)
 
+find_package(CHOLMOD REQUIRED)
+find_package(CUDSS REQUIRED)
+
 if(BUILD_TESTS)
   include(cmake/thirdparty/get_gtest.cmake)
 endif()
@@ -204,6 +210,8 @@ target_link_options(cuopt PRIVATE "${CUOPT_BINARY_DIR}/fatbin.ld")
 add_library(cuopt::cuopt ALIAS cuopt)
 # ##################################################################################################
 # - include paths ---------------------------------------------------------------------------------
+message(STATUS "target include directories CHOLMOD_INCLUDES = ${CHOLMOD_INCLUDES}")
+message(STATUS "target include directories CUDSS_INCLUDES = ${CUDSS_INCLUDES}")
 target_include_directories(cuopt
   PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty"
@@ -213,6 +221,8 @@ target_include_directories(cuopt
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libmps_parser/include>"
   "$<INSTALL_INTERFACE:include>"
+  ${CHOLMOD_INCLUDES}
+  ${CUDSS_INCLUDE}
 )
 
 # ##################################################################################################
@@ -238,6 +248,8 @@ target_link_libraries(cuopt
   CCCL::CCCL
   raft::raft
   cuopt::mps_parser
+  ${CHOLMOD_LIBRARIES}
+  ${CUDSS_LIBRARIES}
   PRIVATE
   ${CUOPT_PRIVATE_CUDA_LIBS}
   )

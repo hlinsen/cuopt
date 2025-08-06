@@ -17,6 +17,7 @@
 
 #include <dual_simplex/solve.hpp>
 
+#include <dual_simplex/barrier.hpp>
 #include <dual_simplex/branch_and_bound.hpp>
 #include <dual_simplex/initial_basis.hpp>
 #include <dual_simplex/phase1.hpp>
@@ -242,6 +243,20 @@ lp_status_t solve_linear_program(const user_problem_t<i_t, f_t>& user_problem,
                                  lp_solution_t<i_t, f_t>& solution)
 {
   f_t start_time = tic();
+  {
+    lp_problem_t<i_t, f_t> original_lp(1, 1, 1);
+    std::vector<i_t> new_slacks;
+    simplex_solver_settings_t<i_t, f_t> barrier_settings = settings;
+    barrier_settings.barrier_presolve = true;
+    convert_user_problem(user_problem, barrier_settings, original_lp, new_slacks);
+    presolve_info_t<i_t, f_t> presolve_info;
+    lp_problem_t<i_t, f_t> barrier_lp(1, 1, 1);
+    const i_t ok = presolve(original_lp, barrier_settings, barrier_lp, presolve_info);
+    if (ok == -1) { return lp_status_t::INFEASIBLE; }
+    barrier_solver_t<i_t, f_t> barrier_solver(barrier_lp, presolve_info, barrier_settings);
+    barrier_solver_settings_t<i_t, f_t> barrier_solver_settings;
+    barrier_solver.solve(barrier_solver_settings);
+  }
   lp_problem_t<i_t, f_t> original_lp(1, 1, 1);
   std::vector<i_t> new_slacks;
   convert_user_problem(user_problem, settings, original_lp, new_slacks);
