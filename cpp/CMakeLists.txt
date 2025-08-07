@@ -166,7 +166,7 @@ endif()
 FetchContent_Declare(
   papilo
   GIT_REPOSITORY "https://github.com/scipopt/papilo.git"
-  GIT_TAG "main"
+  GIT_TAG "v2.4.3"
 )
 
 set(BUILD_TESTING OFF CACHE BOOL "Disable test build for papilo")
@@ -225,13 +225,13 @@ target_include_directories(cuopt
   PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty"
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "$<BUILD_INTERFACE:${papilo_SOURCE_DIR}/src>"
+  "$<BUILD_INTERFACE:${papilo_BINARY_DIR}>"
   PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libmps_parser/include>"
   "$<INSTALL_INTERFACE:include>"
-  "$<BUILD_INTERFACE:${papilo_SOURCE_DIR}/src>"
-  "$<BUILD_INTERFACE:${papilo_BINARY_DIR}>"
 )
 
 # ##################################################################################################
@@ -257,7 +257,6 @@ target_link_libraries(cuopt
   CCCL::CCCL
   raft::raft
   cuopt::mps_parser
-  #TBB::tbb
   PRIVATE
   ${CUOPT_PRIVATE_CUDA_LIBS}
   )
