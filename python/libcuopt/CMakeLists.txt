@@ -1,3 +1,4 @@
+
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -50,14 +51,33 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(argparse)
 
-FetchContent_Declare(
-  boost
-  GIT_REPOSITORY https://github.com/boostorg/boost.git
-  GIT_TAG boost-1.85.0
-)
-FetchContent_MakeAvailable(boost)
+set(BOOST_ROOT "/opt/boost-1.85")
+find_package(Boost REQUIRED COMPONENTS filesystem regex log thread system iostreams serialization program_options)
+include_directories(${Boost_INCLUDE_DIRS})
 
-find_package(Boost REQUIRED)
+#FetchContent_Declare(
+#  boost
+#  GIT_REPOSITORY https://github.com/boostorg/boost.git
+#  GIT_TAG boost-1.85.0
+#)
+#FetchContent_MakeAvailable(boost)
+
+#set(Boost_DIR "${boost_SOURCE_DIR}/tools/boost_install/")
+
+#find_package(Boost REQUIRED)
+
+#include(FetchContent)
+
+#FetchContent_Declare(
+#  boost_cmake
+#  GIT_REPOSITORY https://github.com/boostorg/boost-cmake.git
+#  GIT_TAG boost-1.85.0
+#)
+#FetchContent_MakeAvailable(boost_cmake)
+
+# Then use target_link_libraries with Boost::X targets
+
+
 
 set(TBB OFF CACHE BOOL "Disable TBB")
 
@@ -72,7 +92,8 @@ target_link_libraries(cuopt PRIVATE
     argparse 
 )
 target_link_libraries(cuopt_cli PRIVATE 
-    argparse Boost::regex Boost::program_options Boost::iostreams Boost::serialization)
+    argparse
+)
 
 set(rpaths
   "$ORIGIN/../lib64"
