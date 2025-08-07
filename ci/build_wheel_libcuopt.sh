@@ -31,6 +31,15 @@ else
     echo "Building in release mode"
 fi
 
+# Install cudss
+if command -v dnf &> /dev/null; then
+    dnf install libcudss-dev -y
+else
+    echo "dnf not found, skipping cudss installation"
+    exit 1
+fi
+
+
 rapids-logger "Generating build requirements"
 
 CUOPT_MPS_PARSER_WHEELHOUSE=$(RAPIDS_PY_WHEEL_NAME="cuopt_mps_parser" rapids-download-wheels-from-github python)
