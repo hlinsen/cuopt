@@ -43,7 +43,6 @@ set(PAPILO_COMMAND_LINE_AVAILABLE ON)
 set(PAPILO_SERIALIZATION_AVAILABLE ON)
 
 include(FetchContent)
-# Fetch dependencies
 FetchContent_Declare(
   argparse
   GIT_REPOSITORY https://github.com/p-ranav/argparse.git
@@ -55,31 +54,8 @@ set(BOOST_ROOT "/opt/boost-1.85")
 find_package(Boost REQUIRED COMPONENTS filesystem regex log thread system iostreams serialization program_options)
 include_directories(${Boost_INCLUDE_DIRS})
 
-#FetchContent_Declare(
-#  boost
-#  GIT_REPOSITORY https://github.com/boostorg/boost.git
-#  GIT_TAG boost-1.85.0
-#)
-#FetchContent_MakeAvailable(boost)
-
-#set(Boost_DIR "${boost_SOURCE_DIR}/tools/boost_install/")
-
-#find_package(Boost REQUIRED)
-
-#include(FetchContent)
-
-#FetchContent_Declare(
-#  boost_cmake
-#  GIT_REPOSITORY https://github.com/boostorg/boost-cmake.git
-#  GIT_TAG boost-1.85.0
-#)
-#FetchContent_MakeAvailable(boost_cmake)
-
-# Then use target_link_libraries with Boost::X targets
-
-
-
 set(TBB OFF CACHE BOOL "Disable TBB")
+set(BUILD_TESTING OFF CACHE BOOL "Disable test build for papilo")
 
 set(BUILD_TESTS OFF)
 set(BUILD_BENCHMARKS OFF)
