@@ -16,7 +16,7 @@
 
 cmake_minimum_required(VERSION 3.30.4 FATAL_ERROR)
 
-set(cuopt_version 25.08.00)
+set(cuopt_version 25.10.00)
 
 include(../../cmake/rapids_config.cmake)
 include(rapids-cuda)
@@ -88,10 +88,10 @@ set(CUDA_STATIC_RUNTIME ON)
 
 add_subdirectory(../../cpp cuopt-cpp)
 
-target_link_libraries(cuopt PRIVATE 
-    argparse 
+target_link_libraries(cuopt PRIVATE
+    argparse
 )
-target_link_libraries(cuopt_cli PRIVATE 
+target_link_libraries(cuopt_cli PRIVATE
     argparse
 )
 
