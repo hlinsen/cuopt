@@ -108,11 +108,8 @@ class iteration_data_t {
     settings.log.printf("AAT time %.2fs\n", aat_time);
     settings.log.printf("AAT nonzeros %e\n", static_cast<float64_t>(ADAT.col_start[lp.num_rows]));
 
-    if (!settings.use_cudss) {
-      chol = std::make_unique<sparse_cholesky_cholmod_t<i_t, f_t>>(settings, lp.num_rows);
-    } else {
-      chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(settings, lp.num_rows);
-    }
+
+    chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(settings, lp.num_rows);
     chol->set_positive_definite(false);
 
     // Perform symbolic analysis
@@ -945,7 +942,6 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
 #ifdef DUAL_SIMPLEX_INSTANTIATE_DOUBLE
 template class barrier_solver_t<int, double>;
 template class sparse_cholesky_base_t<int, double>;
-template class sparse_cholesky_cholmod_t<int, double>;
 template class sparse_cholesky_cudss_t<int, double>;
 template class iteration_data_t<int, double>;
 template class barrier_solver_settings_t<int, double>;

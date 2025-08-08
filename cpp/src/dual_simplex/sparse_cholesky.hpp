@@ -24,7 +24,6 @@
 
 #include <cuda_runtime.h>
 
-#include "cholmod.h"
 #include "cudss.h"
 
 namespace cuopt::linear_programming::dual_simplex {
@@ -40,130 +39,6 @@ class sparse_cholesky_base_t {
     virtual void set_positive_definite(bool positive_definite) = 0;
 };
 
-
-template <typename i_t, typename f_t>
-class sparse_cholesky_cholmod_t : public sparse_cholesky_base_t<i_t, f_t> {
- public:
-    sparse_cholesky_cholmod_t(const simplex_solver_settings_t<i_t, f_t>& settings, i_t size) : n(size), first_factor(true) {
-        cholmod_start(&common);
-        int version[3];
-        cholmod_version(version);
-        settings.log.printf("Using CHOLMOD %d.%d.%d\n", version[0], version[1], version[2]);
-        A = nullptr;
-        L = nullptr;
-    }
-    ~sparse_cholesky_cholmod_t() override{
-        cholmod_free_factor(&L, &common);
-        cholmod_free_sparse(&A, &common);
-        cholmod_finish(&common);
-    }
-    i_t analyze(const csc_matrix_t<i_t, f_t>& A_in) override
-    {
-        A = to_cholmod(A_in);
-        // Perform symbolic analysis
-        f_t start_symbolic = tic();
-        common.nmethods = 1;
-        common.method[0].ordering = CHOLMOD_AMD;
-        L = cholmod_analyze(A, &common);
-        f_t symbolic_time = toc(start_symbolic);
-        printf("Symbolic method used %d\n", L->ordering);
-        printf("Symbolic time %.2fs\n", symbolic_time);
-        printf("Symbolic nonzeros in factor %e\n", common.method[common.selected].lnz);
-        printf("Symbolic flops %e\n", common.method[common.selected].fl);
-        return 0;
-    }
-    i_t factorize(const csc_matrix_t<i_t, f_t>& A_in) override
-    {
-        cholmod_free_sparse(&A, &common);
-        A = to_cholmod(A_in);
-        f_t start_numeric = tic();
-        cholmod_factorize(A, L, &common);
-        f_t numeric_time = toc(start_numeric);
-        if (first_factor) {
-            printf("Factor nonzeros %e\n", common.method[common.selected].lnz);
-            printf("Factor time %.2fs\n", numeric_time);
-            first_factor = false;
-        }
-        if (common.status < CHOLMOD_OK) {
-            printf("Factorization failed\n");
-            exit(1);
-        }
-        if (((int32_t) L->minor) != A_in.m) {
-            printf("AA' not positive definite %ld minors versus %d\n", L->minor, A_in.m);
-            return -1;
-        }
-        return 0;
-    }
-    i_t solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) override
-    {
-        cholmod_dense *b_cholmod = cholmod_zeros(n, 1, CHOLMOD_REAL, &common);
-        for (i_t i = 0; i < n; i++) {
-            ((float64_t *)b_cholmod->x)[i] = b[i];
-        }
-        cholmod_dense *x_cholmod = cholmod_solve(CHOLMOD_A, L, b_cholmod, &common);
-        for (i_t i = 0; i < n; i++) {
-            x[i] = ((float64_t *)x_cholmod->x)[i];
-        }
-
-#ifdef CHECK_SOLVE
-        int32_t no_transpose = 0;
-        float64_t alpha[2] = {1.0, 0.0};
-        float64_t beta[2] = {0.0, 0.0};
-        cholmod_dense *residual = cholmod_zeros(n, 1, CHOLMOD_REAL, &common);
-
-        cholmod_sdmult(A, no_transpose, alpha, beta, x_cholmod, residual, &common);
-        for (i_t i = 0; i < n; i++) {
-            f_t err = std::abs(((float64_t *)residual->x)[i] - b[i]);
-            if (err > 1e-6) {
-                printf("Error: L*L'*x[%d] - b[%d] = %e, x[%d] = %e, b[%d] = %e cholmod_b[%d] = %e\n", i, i, err, i, x[i], i, b[i], i, ((float64_t *)b_cholmod->x)[i]);
-            }
-        }
-        beta[0] = -1.0;
-        cholmod_sdmult(A, no_transpose, alpha, beta, x_cholmod, b_cholmod, &common);
-
-
-        printf("|| L*L'*x - b || = %e\n", cholmod_norm_dense(b_cholmod, 0, &common));
-#endif
-
-        cholmod_free_dense(&x_cholmod, &common);
-        cholmod_free_dense(&b_cholmod, &common);
-        return 0;
-    }
-
-    void set_positive_definite(bool positive_definite) override
-    {
-        // Do nothing
-    }
-
-  private:
-
-    cholmod_sparse *to_cholmod(const csc_matrix_t<i_t, f_t>& A_in)
-    {
-        i_t nnz = A_in.col_start[A_in.n];
-        cholmod_sparse *A = cholmod_allocate_sparse(A_in.m, A_in.n, nnz, 0, 0, 0, CHOLMOD_REAL, &common);
-        for (i_t j = 0; j <= A_in.n; j++) {
-            ((int32_t *)A->p)[j] = A_in.col_start[j];
-        }
-        for (i_t j = 0; j < A_in.n; j++) {
-            ((int32_t *)A->nz)[j] = A_in.col_start[j + 1] - A_in.col_start[j];
-        }
-        for (i_t p = 0; p < nnz; p++) {
-            ((int32_t *)A->i)[p] = A_in.i[p];
-        }
-        for (i_t p = 0; p < nnz; p++) {
-            ((float64_t *)A->x)[p] = A_in.x[p];
-        }
-        A->nzmax = nnz;
-        A->stype = 1;
-        cholmod_check_sparse(A, &common);
-        return A;
-    }
-    i_t n;
-    bool first_factor;
-    cholmod_sparse *A;
-    cholmod_factor *L;
-    cholmod_common common;
-};
 
 #define CUDSS_EXAMPLE_FREE do {} while(0)
 
