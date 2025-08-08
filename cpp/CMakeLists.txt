@@ -221,12 +221,13 @@ target_link_options(cuopt PRIVATE "${CUOPT_BINARY_DIR}/fatbin.ld")
 add_library(cuopt::cuopt ALIAS cuopt)
 # ##################################################################################################
 # - include paths ---------------------------------------------------------------------------------
+
+target_include_directories(cuopt SYSTEM PRIVATE "${papilo_SOURCE_DIR}/src" "${papilo_BINARY_DIR}")
+
 target_include_directories(cuopt
   PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty"
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
-  "$<BUILD_INTERFACE:${papilo_SOURCE_DIR}/src>"
-  "$<BUILD_INTERFACE:${papilo_BINARY_DIR}>"
   PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
