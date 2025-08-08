@@ -782,7 +782,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(
     const optimization_problem_t<int, F_TYPE>& op_problem,                             \
     detail::problem_t<int, F_TYPE>& problem,                                           \
     pdlp_solver_settings_t<int, F_TYPE> const& settings,                               \
-    bool is_batch_mode = false);                                                       \
+    bool is_batch_mode);                                                               \
                                                                                        \
   template optimization_problem_t<int, F_TYPE> mps_data_model_to_optimization_problem( \
     raft::handle_t const* handle_ptr,                                                  \
