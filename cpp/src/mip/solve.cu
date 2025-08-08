@@ -18,7 +18,7 @@
 #include <cuopt/error.hpp>
 
 #include <mip/mip_constants.hpp>
-#include <mip/presolve/third_party_presolve.cuh>
+#include <mip/presolve/third_party_presolve.hpp>
 #include <mip/presolve/trivial_presolve.cuh>
 #include <mip/solver.cuh>
 #include <mip/utils.cuh>
@@ -193,12 +193,12 @@ mip_solution_t<i_t, f_t> solve_mip(optimization_problem_t<i_t, f_t>& op_problem,
       // Note that this is not the presolve time, but the time limit for presolve.
       const double presolve_time_limit = 0.1 * time_limit;
       presolver = std::make_unique<detail::third_party_presolve_t<i_t, f_t>>();
-      auto [reduced_op_problem, postsolve_status] =
+      auto [reduced_op_problem, feasible] =
         presolver->apply(op_problem,
                          cuopt::linear_programming::problem_category_t::MIP,
                          settings.tolerances.absolute_tolerance,
                          presolve_time_limit);
-      if (postsolve_status == papilo::PresolveStatus::kInfeasible) {
+      if (!feasible) {
         return mip_solution_t<i_t, f_t>(mip_termination_status_t::Infeasible,
                                         solver_stats_t<i_t, f_t>{},
                                         op_problem.get_handle_ptr()->get_stream());
@@ -231,6 +231,14 @@ mip_solution_t<i_t, f_t> solve_mip(optimization_problem_t<i_t, f_t>& op_problem,
                       cuopt::linear_programming::problem_category_t::MIP,
                       op_problem.get_handle_ptr()->get_stream());
 
+      thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
+                   dual_solution.data(),
+                   dual_solution.data() + dual_solution.size(),
+                   std::numeric_limits<f_t>::signaling_NaN());
+      thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
+                   reduced_costs.data(),
+                   reduced_costs.data() + reduced_costs.size(),
+                   std::numeric_limits<f_t>::signaling_NaN());
       detail::problem_t<i_t, f_t> full_problem(op_problem);
       detail::solution_t<i_t, f_t> full_sol(full_problem);
       full_sol.copy_new_assignment(cuopt::host_copy(primal_solution));

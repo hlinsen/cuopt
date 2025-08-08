@@ -25,7 +25,7 @@
 #include <linear_programming/utils.cuh>
 
 #include <mip/mip_constants.hpp>
-#include <mip/presolve/third_party_presolve.cuh>
+#include <mip/presolve/third_party_presolve.hpp>
 #include <mip/presolve/trivial_presolve.cuh>
 #include <mip/solver.cuh>
 
@@ -603,12 +603,12 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
       // Note that this is not the presolve time, but the time limit for presolve.
       const double presolve_time_limit = 0.1 * settings.time_limit;
       presolver = std::make_unique<detail::third_party_presolve_t<i_t, f_t>>();
-      auto [reduced_problem, postsolve_status] =
+      auto [reduced_problem, feasible] =
         presolver->apply(op_problem,
                          cuopt::linear_programming::problem_category_t::LP,
                          settings.tolerances.absolute_primal_tolerance,
                          presolve_time_limit);
-      if (postsolve_status == papilo::PresolveStatus::kInfeasible) {
+      if (!feasible) {
         return optimization_problem_solution_t<i_t, f_t>(
           pdlp_termination_status_t::PrimalInfeasible, op_problem.get_handle_ptr()->get_stream());
       }
@@ -647,6 +647,15 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
                       reduced_costs,
                       cuopt::linear_programming::problem_category_t::LP,
                       op_problem.get_handle_ptr()->get_stream());
+
+      thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
+                   dual_solution.data(),
+                   dual_solution.data() + dual_solution.size(),
+                   std::numeric_limits<f_t>::signaling_NaN());
+      thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
+                   reduced_costs.data(),
+                   reduced_costs.data() + reduced_costs.size(),
+                   std::numeric_limits<f_t>::signaling_NaN());
 
       auto full_stats = solution.get_additional_termination_information();
       // add third party presolve time to cuopt presolve time

@@ -167,6 +167,7 @@ FetchContent_Declare(
   papilo
   GIT_REPOSITORY "https://github.com/scipopt/papilo.git"
   GIT_TAG "v2.4.3"
+  SYSTEM
 )
 
 set(BUILD_TESTING OFF CACHE BOOL "Disable test build for papilo")
@@ -236,6 +237,7 @@ target_include_directories(cuopt
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libmps_parser/include>"
+  INTERFACE
   "$<INSTALL_INTERFACE:include>"
 )
 
