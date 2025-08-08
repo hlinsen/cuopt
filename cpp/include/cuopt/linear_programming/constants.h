@@ -104,6 +104,7 @@
 #define CUOPT_METHOD_CONCURRENT   0
 #define CUOPT_METHOD_PDLP         1
 #define CUOPT_METHOD_DUAL_SIMPLEX 2
+#define CUOPT_METHOD_BARRIER       3
 
 /* @brief Status codes constants */
 #define CUOPT_SUCCESS          0

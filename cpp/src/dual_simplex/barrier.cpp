@@ -44,7 +44,7 @@ class iteration_data_t {
       inv_diag(lp.num_cols),
       inv_sqrt_diag(lp.num_cols),
       AD(lp.num_cols, lp.num_rows, 0),
-      DAT(lp.num_rows, lp.num_cols, 0),
+      AT(lp.num_rows, lp.num_cols, 0),
       ADAT(lp.num_rows, lp.num_rows, 0),
       primal_residual(lp.num_rows),
       bound_residual(num_upper_bounds),
@@ -76,6 +76,7 @@ class iteration_data_t {
             upper_bounds[n_upper_bounds++] = j;
         }
     }
+    settings.log.printf("n_upper_bounds %d\n", n_upper_bounds);
     // Form A*Dinv*A'
     diag.set_scalar(1.0);
     if (n_upper_bounds > 0) {
@@ -95,23 +96,24 @@ class iteration_data_t {
 
     // Copy A into AD
     AD = lp.A;
-    // Perform column scaling on A to get AD^(-1/2)
-    AD.scale_columns(inv_sqrt_diag);
+    // Perform column scaling on A to get AD^(-1)
+    AD.scale_columns(inv_diag);
 
     // Form A*Dinv*A'
     float64_t start_form_aat = tic();
-    csc_matrix_t<i_t, f_t> DAT(lp.num_cols, lp.num_rows, 0);
-    AD.transpose(DAT);
-    multiply(AD, DAT, ADAT);
+    lp.A.transpose(AT);
+    multiply(AD, AT, ADAT);
+
     float64_t aat_time = toc(start_form_aat);
     settings.log.printf("AAT time %.2fs\n", aat_time);
     settings.log.printf("AAT nonzeros %e\n", static_cast<float64_t>(ADAT.col_start[lp.num_rows]));
 
     if (!settings.use_cudss) {
-      chol = std::make_unique<sparse_cholesky_cholmod_t<i_t, f_t>>(lp.num_rows);
+      chol = std::make_unique<sparse_cholesky_cholmod_t<i_t, f_t>>(settings, lp.num_rows);
     } else {
-      chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(lp.num_rows);
+      chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(settings, lp.num_rows);
     }
+    chol->set_positive_definite(false);
 
     // Perform symbolic analysis
     chol->analyze(ADAT);
@@ -153,7 +155,7 @@ class iteration_data_t {
    dense_vector_t<i_t, f_t> inv_sqrt_diag;
 
    csc_matrix_t<i_t, f_t> AD;
-   csc_matrix_t<i_t, f_t> DAT;
+   csc_matrix_t<i_t, f_t> AT;
    csc_matrix_t<i_t, f_t> ADAT;
 
    std::unique_ptr<sparse_cholesky_base_t<i_t, f_t>> chol;
@@ -191,7 +193,11 @@ template <typename i_t, typename f_t>
 void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 {
     // Perform a numerical factorization
-    data.chol->factorize(data.ADAT);
+    i_t status = data.chol->factorize(data.ADAT);
+    if (status != 0) {
+      settings.log.printf("Initial factorization failed\n");
+      return;
+    }
 
     // rhs_x <- b
     dense_vector_t<i_t, f_t> rhs_x(lp.rhs);
@@ -208,7 +214,10 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 
     // Solve A*Dinv*A'*q = A*Dinv*F*u - b
     dense_vector_t<i_t, f_t> q(lp.num_rows);
-    data.chol->solve(rhs_x, q);
+    settings.log.printf("||rhs_x|| = %e\n", vector_norm2<i_t, f_t>(rhs_x));
+    i_t solve_status = data.chol->solve(rhs_x, q);
+    settings.log.printf("Initial solve status %d\n", solve_status);
+    settings.log.printf("||q|| = %e\n", vector_norm2<i_t, f_t>(q));
 
     // rhs_x <- A*Dinv*A'*q - rhs_x
     matrix_vector_multiply(data.ADAT, 1.0, q, -1.0, rhs_x);
@@ -283,56 +292,96 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 }
 
 template <typename i_t, typename f_t>
-void barrier_solver_t<i_t, f_t>::compute_residuals(iteration_data_t<i_t, f_t>& data)
+void barrier_solver_t<i_t, f_t>::compute_residuals(const dense_vector_t<i_t, f_t>& w,
+                                                   const dense_vector_t<i_t, f_t>& x,
+                                                   const dense_vector_t<i_t, f_t>& y,
+                                                   const dense_vector_t<i_t, f_t>& v,
+                                                   const dense_vector_t<i_t, f_t>& z,
+                                                   iteration_data_t<i_t, f_t>& data)
 {
     // Compute primal_residual = b - A*x
     data.primal_residual = lp.rhs;
-    matrix_vector_multiply(lp.A, -1.0, data.x, 1.0, data.primal_residual);
+    matrix_vector_multiply(lp.A, -1.0, x, 1.0, data.primal_residual);
 
     // Compute bound_residual = E'*u - w - E'*x
     if (data.n_upper_bounds > 0) {
         for (i_t k = 0; k < data.n_upper_bounds; k++) {
             i_t j = data.upper_bounds[k];
-            data.bound_residual[k] = lp.upper[j] - data.w[k] - data.x[j];
+            data.bound_residual[k] = lp.upper[j] - w[k] - x[j];
         }
     }
 
     // Compute dual_residual = c - A'*y - z + E*v
-    data.c.pairwise_subtract(data.z, data.dual_residual);
-    matrix_transpose_vector_multiply(lp.A, -1.0, data.y, 1.0, data.dual_residual);
+    data.c.pairwise_subtract(z, data.dual_residual);
+    matrix_transpose_vector_multiply(lp.A, -1.0, y, 1.0, data.dual_residual);
     if (data.n_upper_bounds > 0) {
         for (i_t k = 0; k < data.n_upper_bounds; k++) {
             i_t j = data.upper_bounds[k];
-            data.dual_residual[j] += data.v[k];
+            data.dual_residual[j] += v[k];
         }
     }
 
     // Compute complementarity_xz_residual = x.*z
-    data.x.pairwise_product(data.z, data.complementarity_xz_residual);
+    x.pairwise_product(z, data.complementarity_xz_residual);
 
     // Compute complementarity_wv_residual = w.*v
-    data.w.pairwise_product(data.v, data.complementarity_wv_residual);
+    w.pairwise_product(v, data.complementarity_wv_residual);
 }
 
 template <typename i_t, typename f_t>
-f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f_t>& x, const dense_vector_t<i_t, f_t>& dx) const
+void barrier_solver_t<i_t, f_t>::compute_residual_norms(const dense_vector_t<i_t, f_t>& w,
+                                                        const dense_vector_t<i_t, f_t>& x,
+                                                        const dense_vector_t<i_t, f_t>& y,
+                                                        const dense_vector_t<i_t, f_t>& v,
+                                                        const dense_vector_t<i_t, f_t>& z,
+                                                        iteration_data_t<i_t, f_t>& data,
+                                                        f_t& primal_residual_norm,
+                                                        f_t& dual_residual_norm,
+                                                        f_t& complementarity_residual_norm)
+{
+    compute_residuals(w, x, y, v, z, data);
+    primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual),
+                                    vector_norm_inf<i_t, f_t>(data.bound_residual));
+    dual_residual_norm = vector_norm_inf<i_t, f_t>(data.dual_residual);
+    complementarity_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.complementarity_xz_residual),
+                                             vector_norm_inf<i_t, f_t>(data.complementarity_wv_residual));
+}
+
+template <typename i_t, typename f_t>
+f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f_t>& x, const dense_vector_t<i_t, f_t>& dx, i_t& index) const
 {
     float64_t max_step = 1.0;
+    index = -1;
     for (i_t i = 0; i < x.size(); i++) {
+        // x_i + alpha * dx_i >= 0, x_i >= 0, alpha >= 0
+        // We only need to worry about the case where dx_i < 0
+        // alpha * dx_i >= -x_i => alpha <= -x_i / dx_i
         if (dx[i] < 0.0) {
-            max_step = std::min(max_step, -x[i]/dx[i]);
+            const f_t ratio = -x[i]/dx[i];
+            if (ratio < max_step) {
+                max_step = ratio;
+                index = i;
+            }
         }
     }
     return max_step;
 }
 
 template <typename i_t, typename f_t>
-void barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f_t>& data,
+f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f_t>& x, const dense_vector_t<i_t, f_t>& dx) const
+{
+    i_t index;
+    return max_step_to_boundary(x, dx, index);
+}
+
+template <typename i_t, typename f_t>
+i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                                           dense_vector_t<i_t, f_t>& dw,
                                                           dense_vector_t<i_t, f_t>& dx,
                                                           dense_vector_t<i_t, f_t>& dy,
                                                           dense_vector_t<i_t, f_t>& dv,
-                                                          dense_vector_t<i_t, f_t>& dz)
+                                                          dense_vector_t<i_t, f_t>& dz,
+                                                          f_t& max_residual)
 {
   const bool debug = true;
   // Solves the linear system
@@ -344,6 +393,7 @@ void barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, 
   // [ 0 Z  0   0  X ] [ dv ]   [ rxz ]
   // [ V 0  0   W  0 ] [ dz ]   [ rwv ]
 
+  max_residual = 0.0;
   // diag = z ./ x
   data.z.pairwise_divide(data.x, data.diag);
   // diag = z ./ x + E * (v ./ w) * E'
@@ -362,30 +412,17 @@ void barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, 
 
   // Form A*D*A'
   if (!data.has_factorization) {
-    // copy A into AD
     data.AD = lp.A;
-    // Perform column scaling on A to get AD^(1/2)
-    data.AD.scale_columns(data.inv_sqrt_diag);
-    data.AD.transpose(data.DAT);
-    // compute ADAT = AD^(1/2) * (AD^(1/2))^T
-    multiply(data.AD, data.DAT, data.ADAT);
-    const f_t regularization = 1e-4;
-    f_t applied_regularization = 0.0;
-    for (i_t j = 0; j < lp.num_rows; j++) {
-      const i_t col_start = data.ADAT.col_start[j];
-      const i_t col_end   = data.ADAT.col_start[j + 1];
-      for (i_t p = col_start; p < col_end; p++) {
-        if (data.ADAT.i[p] == j && data.ADAT.x[p] < regularization) {
-          data.ADAT.x[p] = regularization;
-          applied_regularization += regularization;
-        }
-      }
-    }
-    if (applied_regularization > 0.0) {
-      settings.log.printf("Applied regularization %.2e\n", applied_regularization);
-    }
+    data.AD.scale_columns(data.inv_diag);
+    // compute ADAT = A Dinv * A^T
+    multiply(data.AD, data.AT, data.ADAT);
+
     // factorize
-    data.chol->factorize(data.ADAT);
+    i_t status = data.chol->factorize(data.ADAT);
+    if (status < 0) {
+        settings.log.printf("Factorization failed.\n");
+        return -1;
+    }
     data.has_factorization = true;
   }
 
@@ -398,9 +435,11 @@ void barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, 
 
   // tmp2 <- v .* bound_rhs
   data.v.pairwise_product(data.bound_rhs, tmp2);
+  // tmp2 <- complementarity_wv_rhs - v .* bound_rhs
   tmp2.axpy(1.0, data.complementarity_wv_rhs, -1.0);
-  tmp2.pairwise_divide(data.w, tmp1);
   // tmp1 <- (complementarity_wv_rhs - v .* bound_rhs) ./ w
+  tmp2.pairwise_divide(data.w, tmp1);
+  tmp3.set_scalar(0.0);
   // tmp3 <- E * tmp1
   data.scatter_upper_bounds(tmp1, tmp3);
 
@@ -414,38 +453,132 @@ void barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, 
   // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
   // ./ w)
   dense_vector_t<i_t, f_t> r1 = tmp3;
+  dense_vector_t<i_t, f_t> r1_prime = r1;
   // tmp4 <- inv_diag * ( dual_rhs -complementarity_xz_rhs ./ x + E *((complementarity_wv_rhs - v .*
   // bound_rhs) ./ w))
   data.inv_diag.pairwise_product(tmp3, tmp4);
 
   dense_vector_t<i_t, f_t> h = data.primal_rhs;
-  // h <- 1.0 * A * tmp4 + h
+  // h <- 1.0 * A * tmp4 + primal_rhs
   matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
 
   // Solve A D^{-1} A^T dy = h
-  data.chol->solve(h, dy);
+  i_t solve_status = data.chol->solve(h, dy);
+  if (solve_status < 0) {
+    settings.log.printf("Linear solve failed\n");
+    return -1;
+  }
 
   // y_residual <- ADAT*dy - h
   dense_vector_t<i_t, f_t> y_residual = h;
   matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
-  if (debug) {
-    const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
-    if (y_residual_norm > 1e-2) {
-      settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
-    }
-}
+  const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
+  max_residual = std::max(max_residual, y_residual_norm);
+  if (y_residual_norm > 1e-2) {
+    settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h));
+    settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
+  }
+  if (y_residual_norm > 10)
+  {
+    return -1;
+  }
 
   // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs - v
-  // .* bound_rhs) ./ w)) r1 <- A'*dy - r1
+  // .* bound_rhs) ./ w))
+  //r1 <- A'*dy - r1
   matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, r1);
   // dx <- dinv .* r1
   data.inv_diag.pairwise_product(r1, dx);
+
+  // dx_residual <- D * dx - A'*dy - r1
+  dense_vector_t<i_t, f_t> dx_residual(lp.num_cols);
+  // dx_residual <- D*dx
+  data.diag.pairwise_product(dx, dx_residual);
+  // dx_residual <- -A'*dy + D*dx
+  matrix_transpose_vector_multiply(lp.A, -1.0, dy, 1.0, dx_residual);
+  // dx_residual <- D*dx - A'*dy + r1
+  dx_residual.axpy(1.0, r1_prime, 1.0);
+  if (debug) {
+    const f_t dx_residual_norm = vector_norm_inf<i_t, f_t>(dx_residual);
+    max_residual = std::max(max_residual, dx_residual_norm);
+    if (dx_residual_norm > 1e-2) {
+      settings.log.printf("|| D * dx - A'*y + r1 || = %.2e\n", dx_residual_norm);
+    }
+  }
+
+  dense_vector_t<i_t, f_t> dx_residual_2(lp.num_cols);
+  // dx_residual_2 <- D^-1 * (A'*dy - r1)
+  data.inv_diag.pairwise_product(r1, dx_residual_2);
+  // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
+  dx_residual_2.axpy(-1.0, dx, 1.0);
+  // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
+  const f_t dx_residual_2_norm = vector_norm_inf<i_t, f_t>(dx_residual_2);
+  max_residual = std::max(max_residual, dx_residual_2_norm);
+  if (dx_residual_2_norm > 1e-2) {
+    settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
+  }
+
+  dense_vector_t<i_t, f_t> dx_residual_5(lp.num_cols);
+  dense_vector_t<i_t, f_t> dx_residual_6(lp.num_rows);
+  // dx_residual_5 <- D^-1 * (A'*dy - r1)
+  data.inv_diag.pairwise_product(r1, dx_residual_5);
+  // dx_residual_6 <- A * D^-1 (A'*dy - r1)
+  matrix_vector_multiply(lp.A, 1.0, dx_residual_5, 0.0, dx_residual_6);
+  // dx_residual_6 <- A * D^-1 (A'*dy - r1) - A * dx
+  matrix_vector_multiply(lp.A, -1.0, dx, 1.0, dx_residual_6);
+  const f_t dx_residual_6_norm = vector_norm_inf<i_t, f_t>(dx_residual_6);
+  max_residual = std::max(max_residual, dx_residual_6_norm);
+  if (dx_residual_6_norm > 1e-2) {
+    settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
+  }
+
+  dense_vector_t<i_t, f_t> dx_residual_3(lp.num_cols);
+  // dx_residual_3 <- D^-1 * r1
+  data.inv_diag.pairwise_product(r1_prime, dx_residual_3);
+  dense_vector_t<i_t, f_t> dx_residual_4(lp.num_rows);
+  // dx_residual_4 <- A * D^-1 * r1
+  matrix_vector_multiply(lp.A, 1.0, dx_residual_3, 0.0, dx_residual_4);
+  // dx_residual_4 <-  A * D^-1 * r1 + A * dx
+  matrix_vector_multiply(lp.A, 1.0, dx, 1.0, dx_residual_4);
+  // dx_residual_4 <- - A * D^-1 * r1 - A * dx + ADAT * dy
+
+#if CHECK_FORM_ADAT
+  csc_matrix_t<i_t, f_t> ADinv = lp.A;
+  ADinv.scale_columns(data.inv_diag);
+  csc_matrix_t<i_t, f_t> ADinvAT(lp.num_rows, lp.num_rows, 1);
+  csc_matrix_t<i_t, f_t> Atranspose(1, 1, 0);
+  lp.A.transpose(Atranspose);
+  multiply(ADinv, Atranspose, ADinvAT);
+  matrix_vector_multiply(ADinvAT, 1.0, dy, -1.0, dx_residual_4);
+  const f_t dx_residual_4_norm = vector_norm_inf<i_t, f_t>(dx_residual_4);
+  max_residual = std::max(max_residual, dx_residual_4_norm);
+  if (dx_residual_4_norm > 1e-2) {
+    settings.log.printf("|| ADAT * dy - A * D^-1 * r1 - A * dx || = %.2e\n", dx_residual_4_norm);
+  }
+
+  csc_matrix_t<i_t, f_t> C(lp.num_rows, lp.num_rows, 1);
+  add(ADinvAT, data.ADAT, 1.0, -1.0, C);
+  const f_t matrix_residual = C.norm1();
+  max_residual = std::max(max_residual, matrix_residual);
+  if (matrix_residual > 1e-2) {
+    settings.log.printf("|| AD^{-1/2} D^{-1} A^T + E - A D^{-1} A^T|| = %.2e\n", matrix_residual);
+  }
+#endif
+
+  dense_vector_t<i_t, f_t> dx_residual_7 = h;
+  matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
+  const f_t dx_residual_7_norm = vector_norm_inf<i_t, f_t>(dx_residual_7);
+  max_residual = std::max(max_residual, dx_residual_7_norm);
+  if (dx_residual_7_norm > 1e-2) {
+    settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
+  }
 
   // x_residual <- A * dx - primal_rhs
   dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
   matrix_vector_multiply(lp.A, 1.0, dx, -1.0, x_residual);
   if (debug) {
     const f_t x_residual_norm = vector_norm_inf<i_t, f_t>(x_residual);
+    max_residual = std::max(max_residual, x_residual_norm);
     if (x_residual_norm > 1e-2) {
       settings.log.printf("|| A * dx - rp || = %.2e\n", x_residual_norm);
     }
@@ -469,6 +602,7 @@ void barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, 
   xz_residual.axpy(1.0, xdz, 1.0);
   if (debug) {
     const f_t xz_residual_norm = vector_norm_inf<i_t, f_t>(xz_residual);
+    max_residual = std::max(max_residual, xz_residual_norm);
     if (xz_residual_norm > 1e-2) {
       settings.log.printf("|| Z dx + X dz - rxz || = %.2e\n", xz_residual_norm);
     }
@@ -488,10 +622,67 @@ void barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, 
   // dv <- tmp1 ./ w
   tmp1.pairwise_divide(data.w, dv);
 
-  // dw = bound_rhs - E'*dx
+  dense_vector_t<i_t, f_t> dv_residual(data.n_upper_bounds);
+  dense_vector_t<i_t, f_t> dv_residual_2(data.n_upper_bounds);
+  // dv_residual <- E'*dx
+  data.gather_upper_bounds(dx, dv_residual);
+  // dv_residual_2 <- v .* E' * dx
+  data.v.pairwise_product(dv_residual, dv_residual_2);
+  // dv_residual_2 <- -v .* E' * dx
+  dv_residual_2.multiply_scalar(-1.0);
+  // dv_residual_ <- W .* dv
+  data.w.pairwise_product(dv, dv_residual);
+  // dv_residual <- -v .* E' * dx + w .* dv
+  dv_residual.axpy(1.0, dv_residual_2, 1.0);
+  // dv_residual <- -v .* E' * dx + w .* dv - complementarity_wv_rhs
+  dv_residual.axpy(-1.0, data.complementarity_wv_rhs, 1.0);
+  // dv_residual_2 <- V * bound_rhs
+  data.v.pairwise_product(data.bound_rhs, dv_residual_2);
+  // dv_residual <- -v .* E' * dx + w .* dv - complementarity_wv_rhs + v .* bound_rhs
+  dv_residual.axpy(1.0, dv_residual_2, 1.0);
+  if (debug) {
+    const f_t dv_residual_norm = vector_norm_inf<i_t, f_t>(dv_residual);
+    max_residual = std::max(max_residual, dv_residual_norm);
+    if (dv_residual_norm > 1e-2) {
+      settings.log.printf("|| -v .* E' * dx + w .* dv - complementarity_wv_rhs - v .* bound_rhs || = %.2e\n", dv_residual_norm);
+    }
+  }
+
+
+  // dual_residual <- A' * dy - E * dv  + dz -  dual_rhs
+  dense_vector_t<i_t, f_t> dual_residual(lp.num_cols);
+  // dual_residual <- E * dv
+  data.scatter_upper_bounds(dv, dual_residual);
+  // dual_residual <- A' * dy - E * dv
+  matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, dual_residual);
+  // dual_residual <- A' * dy - E * dv + dz
+  dual_residual.axpy(1.0, dz, 1.0);
+  // dual_residual <- A' * dy - E * dv + dz - dual_rhs
+  dual_residual.axpy(-1.0, data.dual_rhs, 1.0);
+  if (debug) {
+    const f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_residual);
+    max_residual = std::max(max_residual, dual_residual_norm);
+    if (dual_residual_norm > 1e-2) {
+      settings.log.printf("|| A' * dy - E * dv  + dz -  dual_rhs || = %.2e\n", dual_residual_norm);
+    }
+  }
+
+    // dw = bound_rhs - E'*dx
   data.gather_upper_bounds(dx, tmp1);
   dw = data.bound_rhs;
   dw.axpy(-1.0, tmp1, 1.0);
+  // dw_residual <- dw + E'*dx - bound_rhs
+  dense_vector_t<i_t, f_t> dw_residual(data.n_upper_bounds);
+  data.gather_upper_bounds(dx, dw_residual);
+  dw_residual.axpy(1.0, dw, 1.0);
+  dw_residual.axpy(-1.0, data.bound_rhs, 1.0);
+  if (debug) {
+    const f_t dw_residual_norm = vector_norm_inf<i_t, f_t>(dw_residual);
+    max_residual = std::max(max_residual, dw_residual_norm);
+    if (dw_residual_norm > 1e-2) {
+      settings.log.printf("|| dw + E'*dx - bound_rhs || = %.2e\n", dw_residual_norm);
+    }
+  }
 
   // wv_residual <- v .* dw + w .* dv - complementarity_wv_rhs
   dense_vector_t<i_t, f_t> wv_residual = data.complementarity_wv_rhs;
@@ -503,14 +694,17 @@ void barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, 
   wv_residual.axpy(1.0, wdv, 1.0);
   if (debug) {
     const f_t wv_residual_norm = vector_norm_inf<i_t, f_t>(wv_residual);
+    max_residual = std::max(max_residual, wv_residual_norm);
     if (wv_residual_norm > 1e-2) {
       settings.log.printf("|| V dw + W dv - rwv || = %.2e\n", wv_residual_norm);
     }
   }
+
+  return 0;
 }
 
 template <typename i_t, typename f_t>
-void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>& options)
+i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>& options)
 {
 
     float64_t start_time = tic();
@@ -535,7 +729,7 @@ void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>
     settings.log.printf("%d finite upper bounds\n", num_upper_bounds);
 
     initial_point(data);
-    compute_residuals(data);
+    compute_residuals(data.w, data.x, data.y, data.v, data.z, data);
 
     f_t primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual),
                                         vector_norm_inf<i_t, f_t>(data.bound_residual));
@@ -560,6 +754,12 @@ void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>
 
     bool converged = primal_residual_norm < options.feasibility_tol && dual_residual_norm < options.optimality_tol && complementarity_residual_norm < options.complementarity_tol;
 
+    dense_vector_t<i_t, f_t> w_save = data.w;
+    dense_vector_t<i_t, f_t> x_save = data.x;
+    dense_vector_t<i_t, f_t> y_save = data.y;
+    dense_vector_t<i_t, f_t> v_save = data.v;
+    dense_vector_t<i_t, f_t> z_save = data.z;
+
     while (iter < options.iteration_limit) {
         // Compute the affine step
         data.primal_rhs = data.primal_residual;
@@ -572,12 +772,36 @@ void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>
         // w.*v -> -w .* v
         data.complementarity_wv_rhs.multiply_scalar(-1.0);
 
-        compute_search_direction(data, data.dw_aff, data.dx_aff, data.dy_aff, data.dv_aff, data.dz_aff);
+        f_t max_affine_residual = 0.0;
+        i_t status = compute_search_direction(data, data.dw_aff, data.dx_aff, data.dy_aff, data.dv_aff, data.dz_aff, max_affine_residual);
+        if (status < 0) {
+          if (primal_residual_norm < 100 * options.feasibility_tol &&
+              dual_residual_norm < 100 * options.optimality_tol &&
+              complementarity_residual_norm < 100 * options.complementarity_tol) {
+            settings.log.printf("Suboptimal solution found\n");
+            return 1;
+          }
+          compute_residual_norms(w_save, x_save, y_save, v_save, z_save, data, primal_residual_norm, dual_residual_norm, complementarity_residual_norm);
+          if (primal_residual_norm < 100 * options.feasibility_tol &&
+              dual_residual_norm < 100 * options.optimality_tol &&
+              complementarity_residual_norm < 100 * options.complementarity_tol) {
+            settings.log.printf("Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n", primal_residual_norm, dual_residual_norm, complementarity_residual_norm);
+            data.w = w_save;
+            data.x = x_save;
+            data.y = y_save;
+            data.v = v_save;
+            data.z = z_save;
+            settings.log.printf("Suboptimal solution found\n");
+            return 1;
+          }
+          settings.log.printf("Search direction computation failed\n");
+          return -1;
+        }
 
         f_t step_primal_aff = std::min(max_step_to_boundary(data.w, data.dw_aff), max_step_to_boundary(data.x, data.dx_aff));
         f_t step_dual_aff   = std::min(max_step_to_boundary(data.v, data.dv_aff), max_step_to_boundary(data.z, data.dz_aff));
 
-        // w_aff = w + step_primalaff * dw_aff
+        // w_aff = w + step_primal_aff * dw_aff
         // x_aff = x + step_primal_aff * dx_aff
         // v_aff = v + step_dual_aff * dv_aff
         // z_aff = z + step_dual_aff * dz_aff
@@ -595,14 +819,7 @@ void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>
         x_aff.pairwise_product(z_aff, complementarity_xz_aff);
         w_aff.pairwise_product(v_aff, complementarity_wv_aff);
         f_t mu_aff = (complementarity_xz_aff.sum() + complementarity_wv_aff.sum()) / (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
-        //settings.log.printf("mu aff %e\n", mu_aff);
-        if (mu_aff < 0.0 || mu_aff != mu_aff) {
-            settings.log.printf("mu aff bad %e\n", mu_aff);
-            exit(1);
-        }
-
         f_t sigma = std::max(0.0, std::min(1.0, std::pow(mu_aff / mu, 3.0)));
-        //settings.log.printf("sigma %e\n", sigma);
 
         // Compute the combined centering corrector step
         data.primal_rhs.set_scalar(0.0);
@@ -618,7 +835,18 @@ void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>
         data.complementarity_wv_rhs.multiply_scalar(-1.0);
         data.complementarity_wv_rhs.add_scalar(sigma * mu);
 
-        compute_search_direction(data, data.dw, data.dx, data.dy, data.dv, data.dz);
+        f_t max_corrector_residual = 0.0;
+        status = compute_search_direction(data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
+        if (status < 0) {
+            if (primal_residual_norm < 100 * options.feasibility_tol &&
+                dual_residual_norm < 100 * options.optimality_tol &&
+                complementarity_residual_norm < 100 * options.complementarity_tol) {
+              settings.log.printf("Suboptimal solution found\n");
+              return 1;
+            }
+            settings.log.printf("Search direction computation failed\n");
+            return -1;
+        }
         data.has_factorization = false;
 
         // dw = dw_aff + dw_cc
@@ -633,14 +861,17 @@ void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>
         data.dv.axpy(1.0, data.dv_aff, 1.0);
         data.dz.axpy(1.0, data.dz_aff, 1.0);
 
-        f_t step_primal = std::min(max_step_to_boundary(data.w, data.dw), max_step_to_boundary(data.x, data.dx));
-        f_t step_dual   = std::min(max_step_to_boundary(data.v, data.dv), max_step_to_boundary(data.z, data.dz));
+        f_t max_step_primal = std::min(max_step_to_boundary(data.w, data.dw), max_step_to_boundary(data.x, data.dx));
+        f_t max_step_dual   = std::min(max_step_to_boundary(data.v, data.dv), max_step_to_boundary(data.z, data.dz));
 
-        data.w.axpy(options.step_scale * step_primal, data.dw, 1.0);
-        data.x.axpy(options.step_scale * step_primal, data.dx, 1.0);
-        data.y.axpy(options.step_scale * step_dual, data.dy, 1.0);
-        data.v.axpy(options.step_scale * step_dual, data.dv, 1.0);
-        data.z.axpy(options.step_scale * step_dual, data.dz, 1.0);
+        f_t step_primal = options.step_scale * max_step_primal;
+        f_t step_dual = options.step_scale * max_step_dual;
+
+        data.w.axpy(step_primal, data.dw, 1.0);
+        data.x.axpy(step_primal, data.dx, 1.0);
+        data.y.axpy(step_dual, data.dy, 1.0);
+        data.v.axpy(step_dual, data.dv, 1.0);
+        data.z.axpy(step_dual, data.dz, 1.0);
 
         // Handle free variables
         if (num_free_variables > 0)
@@ -658,32 +889,43 @@ void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>
             }
         }
 
-        f_t min_w = data.w.minimum();
-        f_t min_x = data.x.minimum();
-        f_t min_v = data.v.minimum();
-        f_t min_z = data.z.minimum();
-        if (min_w < 0.0 || min_x < 0.0 || min_v < 0.0 || min_z < 0.0) {
-            settings.log.printf("Violated bounds\n");
+        compute_residual_norms(data.w, data.x, data.y, data.v, data.z, data, primal_residual_norm, dual_residual_norm, complementarity_residual_norm);
+
+        if (primal_residual_norm < 100 * options.feasibility_tol &&
+            dual_residual_norm < 100 * options.optimality_tol &&
+            complementarity_residual_norm < 100 * options.complementarity_tol) {
+            w_save = data.w;
+            x_save = data.x;
+            y_save = data.y;
+            v_save = data.v;
+            z_save = data.z;
         }
 
-        compute_residuals(data);
-
         mu = (data.complementarity_xz_residual.sum()  + data.complementarity_wv_residual.sum()) / (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
-        //settings.log.printf("mu %e\n", mu);
-
-        primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual),
-                                        vector_norm_inf<i_t, f_t>(data.bound_residual));
-        dual_residual_norm = vector_norm_inf<i_t, f_t>(data.dual_residual);
-        complementarity_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.complementarity_xz_residual),
-                                                 vector_norm_inf<i_t, f_t>(data.complementarity_wv_residual));
 
         primal_objective = data.c.inner_product(data.x);
         dual_objective = data.b.inner_product(data.y) - restrict_u.inner_product(data.v);
         iter++;
         elapsed_time = toc(start_time);
 
-        settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e %.2e %.2e %.2e %.1f\n", \
-            iter, primal_objective, dual_objective, primal_residual_norm, dual_residual_norm, complementarity_residual_norm, step_primal, step_dual, mu, elapsed_time);
+        if (primal_objective != primal_objective || dual_objective != dual_objective) {
+            settings.log.printf("Numerical error in objective\n");
+            return -1;
+        }
+
+        settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e %.2e %.2e %.2e %.2e %.2e %.1f\n",
+                            iter,
+                            primal_objective + lp.obj_constant,
+                            dual_objective + lp.obj_constant,
+                            primal_residual_norm,
+                            dual_residual_norm,
+                            complementarity_residual_norm,
+                            step_primal,
+                            step_dual,
+                            std::min(data.complementarity_xz_residual.minimum(), data.complementarity_wv_residual.minimum()),
+                            mu,
+                            std::max(max_affine_residual, max_corrector_residual),
+                            elapsed_time);
 
         bool primal_feasible = primal_residual_norm < options.feasibility_tol;
         bool dual_feasible = dual_residual_norm < options.optimality_tol;
@@ -693,11 +935,11 @@ void barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>
 
         if (converged) {
             settings.log.printf("Optimal solution found\n");
-            settings.log.printf("Optimal objective value %.12e with constant %.12e\n", primal_objective, primal_objective + lp.obj_constant);
-            settings.log.printf("|| x* ||_inf %e\n", vector_norm_inf<i_t, f_t>(data.x));
-            break;
+            settings.log.printf("Optimal objective value %.12e\n", primal_objective + lp.obj_constant);
+            return 0;
         }
     }
+    return 1;
 }
 
 #ifdef DUAL_SIMPLEX_INSTANTIATE_DOUBLE

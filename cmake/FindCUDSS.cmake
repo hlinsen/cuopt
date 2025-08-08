@@ -1,0 +1,29 @@
+
+if (CUDSS_INCLUDE AND CUDSS_LIBRARIES)
+  set(CUDSS_FIND_QUIETLY TRUE)
+endif (CUDSS_INCLUDE AND CUDSS_LIBRARIES)
+
+message(STATUS "CUDSS DIR = $ENV{CUDSS_DIR}")
+
+
+find_path(CUDSS_INCLUDE
+  NAMES
+  cudss.h
+  PATHS
+  $ENV{CUDSS_DIR}/include
+  ${INCLUDE_INSTALL_DIR}
+  PATH_SUFFIXES
+  cudss
+)
+
+
+find_library(CUDSS_LIBRARIES cudss PATHS $ENV{CUDSS_DIR}/lib ${LIB_INSTALL_DIR})
+
+message(STATUS "CUDSS_INCLUDE = ${CUDSS_INCLUDE}")
+message(STATUS "CUDSS_LIBRARIES = ${CUDSS_LIBRARIES}")
+
+include(FindPackageHandleStandardArgs)
+find_package_handle_standard_args(CHOLMOD DEFAULT_MSG
+                                  CUDSS_INCLUDE CUDSS_LIBRARIES)
+
+mark_as_advanced(CUDSS_INCLUDE CUDSS_LIBRARIES)

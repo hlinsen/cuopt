@@ -216,9 +216,10 @@ template <typename i_t, typename f_t>
 i_t remove_rows(lp_problem_t<i_t, f_t>& problem,
                 const std::vector<char>& row_sense,
                 csr_matrix_t<i_t, f_t>& Arow,
-                std::vector<i_t>& row_marker)
+                std::vector<i_t>& row_marker,
+                bool error_on_nonzero_rhs)
 {
-  constexpr bool verbose = false;
+  constexpr bool verbose = true;
   if (verbose) { printf("Removing rows %d %ld\n", Arow.m, row_marker.size()); }
   csr_matrix_t<i_t, f_t> Aout;
   Arow.remove_rows(row_marker, Aout);
@@ -233,7 +234,7 @@ i_t remove_rows(lp_problem_t<i_t, f_t>& problem,
       new_rhs[row_count]       = problem.rhs[i];
       row_count++;
     } else {
-      if (problem.rhs[i] != 0.0) {
+      if (error_on_nonzero_rhs && problem.rhs[i] != 0.0) {
         if (verbose) {
           printf(
             "Error nonzero rhs %e for zero row %d sense %c\n", problem.rhs[i], i, row_sense[i]);
@@ -270,7 +271,7 @@ i_t remove_empty_rows(lp_problem_t<i_t, f_t>& problem,
       row_marker[i] = 0;
     }
   }
-  const i_t retval = remove_rows(problem, row_sense, Arow, row_marker);
+  const i_t retval = remove_rows(problem, row_sense, Arow, row_marker, true);
   return retval;
 }
 
@@ -519,14 +520,11 @@ i_t find_dependent_rows(lp_problem_t<i_t, f_t>& problem,
   csc_matrix_t<i_t, f_t> U(m, m, nz);
   std::vector<i_t> pinv(n);
   std::vector<i_t> q(m);
-  for (i_t i = 0; i < m; ++i) {
-    q[i] = i;
-  }
-  std::optional<std::vector<i_t>> optional_q = q;
-  // TODO: Replace with right looking LU in crossover PR
-  // i_t pivots = left_looking_lu(C, settings, 1e-13, optional_q, L, U, pinv);
-  i_t pivots = 0;
+
+  i_t pivots = right_looking_lu_row_permutation_only(C, settings, 1e-13, tic(), q, pinv);
+
   if (pivots < m) {
+    settings.log.printf("Found %d dependent rows\n", m - pivots);
     const i_t num_dependent = m - pivots;
     std::vector<f_t> independent_rhs(pivots);
     std::vector<f_t> dependent_rhs(num_dependent);
@@ -534,7 +532,7 @@ i_t find_dependent_rows(lp_problem_t<i_t, f_t>& problem,
     i_t ind_count = 0;
     i_t dep_count = 0;
     for (i_t i = 0; i < m; ++i) {
-      i_t row = (*optional_q)[i];
+      i_t row = q[i];
       if (i < pivots) {
         dependent_rows[row]          = 0;
         independent_rhs[ind_count++] = problem.rhs[row];
@@ -545,6 +543,7 @@ i_t find_dependent_rows(lp_problem_t<i_t, f_t>& problem,
       }
     }
 
+#if 0
     std::vector<f_t> z = independent_rhs;
     // Solve U1^T z = independent_rhs
     for (i_t k = 0; k < pivots; ++k) {
@@ -576,6 +575,9 @@ i_t find_dependent_rows(lp_problem_t<i_t, f_t>& problem,
         problem.rhs[dependent_row_list[k]] = 0.0;
       }
     }
+#endif
+  } else {
+    settings.log.printf("No dependent rows found\n");
   }
   return pivots;
 }
@@ -697,7 +699,9 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   }
 
   // Add artifical variables
-  add_artifical_variables(problem, equality_rows, new_slacks);
+  if (!settings.barrier_presolve) {
+    add_artifical_variables(problem, equality_rows, new_slacks);
+  }
 }
 
 template <typename i_t, typename f_t>
@@ -821,6 +825,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
         }
     }
     assert(problem.A.p[num_cols] == nnz);
+    problem.A.n = num_cols;
     problem.num_cols = num_cols;
   }
 
@@ -852,7 +857,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   }
 
   // Check for dependent rows
-  constexpr bool check_dependent_rows = false;
+  bool check_dependent_rows = settings.barrier;
   if (check_dependent_rows) {
     std::vector<i_t> dependent_rows;
     constexpr i_t kOk = -1;
@@ -868,7 +873,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
       settings.log.printf("%d dependent rows\n", num_dependent_rows);
       csr_matrix_t<i_t, f_t> Arow;
       problem.A.to_compressed_row(Arow);
-      remove_rows(problem, row_sense, Arow, dependent_rows);
+      remove_rows(problem, row_sense, Arow, dependent_rows, false);
     }
     settings.log.printf("Dependent row check in %.2fs\n", toc(dependent_row_start));
   }

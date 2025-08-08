@@ -294,6 +294,63 @@ optimization_problem_solution_t<i_t, f_t> convert_dual_simplex_sol(
 
 template <typename i_t, typename f_t>
 std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>
+run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
+            pdlp_solver_settings_t<i_t, f_t> const& settings)
+{
+  auto start_solver = std::chrono::high_resolution_clock::now();
+
+  f_t norm_user_objective = dual_simplex::vector_norm2<i_t, f_t>(user_problem.objective);
+  f_t norm_rhs            = dual_simplex::vector_norm2<i_t, f_t>(user_problem.rhs);
+
+  dual_simplex::simplex_solver_settings_t<i_t, f_t> dual_simplex_settings;
+  dual_simplex_settings.time_limit      = settings.time_limit;
+  dual_simplex_settings.iteration_limit = settings.iteration_limit;
+  dual_simplex_settings.concurrent_halt = settings.concurrent_halt;
+  dual_simplex_settings.use_cudss       = settings.use_cudss;
+  dual_simplex_settings.barrier         = true;
+  if (dual_simplex_settings.concurrent_halt != nullptr) {
+    // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
+    dual_simplex_settings.log.log = false;
+  }
+
+  dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
+  auto status =
+    dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(user_problem, dual_simplex_settings, solution);
+
+  auto end      = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_solver);
+
+  CUOPT_LOG_INFO("Barrier finished in %.2f seconds", duration.count() / 1000.0);
+
+  if (settings.concurrent_halt != nullptr && (status == dual_simplex::lp_status_t::OPTIMAL ||
+                                              status == dual_simplex::lp_status_t::UNBOUNDED ||
+                                              status == dual_simplex::lp_status_t::INFEASIBLE)) {
+    // We finished. Tell PDLP to stop if it is still running.
+    settings.concurrent_halt->store(1, std::memory_order_release);
+  }
+
+  return {std::move(solution), status, duration.count() / 1000.0, norm_user_objective, norm_rhs};
+}
+
+template <typename i_t, typename f_t>
+optimization_problem_solution_t<i_t, f_t> run_barrier(
+  detail::problem_t<i_t, f_t>& problem, pdlp_solver_settings_t<i_t, f_t> const& settings)
+{
+  // Convert data structures to dual simplex format and back
+  dual_simplex::user_problem_t<i_t, f_t> dual_simplex_problem =
+    cuopt_problem_to_simplex_problem<i_t, f_t>(problem);
+  auto sol_dual_simplex = run_barrier(dual_simplex_problem, settings);
+  return convert_dual_simplex_sol(problem,
+                                  std::get<0>(sol_dual_simplex),
+                                  std::get<1>(sol_dual_simplex),
+                                  std::get<2>(sol_dual_simplex),
+                                  std::get<3>(sol_dual_simplex),
+                                  std::get<4>(sol_dual_simplex));
+}
+
+
+template <typename i_t, typename f_t>
+std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>
 run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
                  pdlp_solver_settings_t<i_t, f_t> const& settings)
 {
@@ -548,6 +605,8 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_with_method(
 {
   if (settings.method == method_t::DualSimplex) {
     return run_dual_simplex(problem, settings);
+  } else if (settings.method == method_t::Barrier) {
+    return run_barrier(problem, settings);
   } else if (settings.method == method_t::Concurrent) {
     return run_concurrent(op_problem, problem, settings, is_batch_mode);
   } else {
