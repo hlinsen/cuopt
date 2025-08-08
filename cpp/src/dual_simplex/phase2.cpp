@@ -1604,8 +1604,20 @@ i_t compute_delta_x(const lp_problem_t<i_t, f_t>& lp,
   f_t scale = scaled_delta_xB_sparse.find_coefficient(basic_leaving_index);
   if (scale != scale) {
     // We couldn't find a coefficient for the basic leaving index.
-    // Either this is a bug or the primal step length is inf.
-    return -1;
+    // The coefficient might be very small. Switch to a regular solve and try to recover.
+    std::vector<f_t> rhs;
+    rhs_sparse.to_dense(rhs);
+    const i_t m = basic_list.size();
+    std::vector<f_t> scaled_delta_xB(m);
+    ft.b_solve(rhs, scaled_delta_xB);
+    if (scaled_delta_xB[basic_leaving_index] != 0.0 &&
+        !std::isnan(scaled_delta_xB[basic_leaving_index])) {
+      scaled_delta_xB_sparse.from_dense(scaled_delta_xB);
+      scaled_delta_xB_sparse.negate();
+      scale = -scaled_delta_xB[basic_leaving_index];
+    } else {
+      return -1;
+    }
   }
   const f_t primal_step_length = delta_x_leaving / scale;
   const i_t scaled_delta_xB_nz = scaled_delta_xB_sparse.i.size();
@@ -2856,26 +2868,56 @@ dual::status_t dual_phase2(i_t phase,
     phase2::check_basic_infeasibilities(basic_list, basic_mark, infeasibility_indices, 6);
 #endif
     if (should_refactor) {
+      bool should_recompute_x = false;
       if (factorize_basis(lp.A, settings, basic_list, L, U, p, pinv, q, deficient, slacks_needed) ==
           -1) {
+        should_recompute_x = true;
+        settings.log.printf("Failed to factorize basis. Iteration %d\n", iter);
         if (toc(start_time) > settings.time_limit) { return dual::status_t::TIME_LIMIT; }
         basis_repair(lp.A, settings, deficient, slacks_needed, basic_list, nonbasic_list, vstatus);
         i_t count = 0;
         while (factorize_basis(
                  lp.A, settings, basic_list, L, U, p, pinv, q, deficient, slacks_needed) == -1) {
-          settings.log.printf("Failed to repair basis. %d deficient columns.\n",
+          settings.log.printf("Failed to repair basis. Iteration %d. %d deficient columns.\n",
+                              iter,
                               static_cast<int>(deficient.size()));
           if (toc(start_time) > settings.time_limit) { return dual::status_t::TIME_LIMIT; }
           settings.threshold_partial_pivoting_tol = 1.0;
           count++;
-          if (count > 100) { return dual::status_t::NUMERICAL; }
+          if (count > 10) { return dual::status_t::NUMERICAL; }
           basis_repair(
             lp.A, settings, deficient, slacks_needed, basic_list, nonbasic_list, vstatus);
+
+#ifdef CHECK_BASIS_REPAIR
+          csc_matrix_t<i_t, f_t> B(m, m, 0);
+          form_b(lp.A, basic_list, B);
+          for (i_t k = 0; k < deficient.size(); ++k) {
+            const i_t j         = deficient[k];
+            const i_t col_start = B.col_start[j];
+            const i_t col_end   = B.col_start[j + 1];
+            const i_t col_nz    = col_end - col_start;
+            if (col_nz != 1) {
+              settings.log.printf("Deficient column %d has %d nonzeros\n", j, col_nz);
+            }
+            const i_t i = B.i[col_start];
+            if (i != slacks_needed[k]) {
+              settings.log.printf("Slack %d needed but found %d instead\n", slacks_needed[k], i);
+            }
+          }
+#endif
         }
+
+        settings.log.printf("Successfully repaired basis. Iteration %d\n", iter);
       }
       reorder_basic_list(q, basic_list);
       ft.reset(L, U, p);
       phase2::reset_basis_mark(basic_list, nonbasic_list, basic_mark, nonbasic_mark);
+      if (should_recompute_x) {
+        std::vector<f_t> unperturbed_x(n);
+        phase2::compute_primal_solution_from_basis(
+          lp, ft, basic_list, nonbasic_list, vstatus, unperturbed_x);
+        x = unperturbed_x;
+      }
       phase2::compute_initial_primal_infeasibilities(
         lp, settings, basic_list, x, squared_infeasibilities, infeasibility_indices);
     }

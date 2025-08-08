@@ -32,12 +32,12 @@ message(STATUS "CMAKE_MODULE_PATH = ${CMAKE_MODULE_PATH}")
 
 project(
   CUOPT
-  VERSION 25.08.00
+  VERSION 25.10.00
   LANGUAGES CXX CUDA C
 )
 
 set(DEPENDENT_LIB_MAJOR_VERSION "25")
-set(DEPENDENT_LIB_MINOR_VERSION "08")
+set(DEPENDENT_LIB_MINOR_VERSION "10")
 
 rapids_cmake_write_version_file(include/cuopt/version_config.hpp)
 # ##################################################################################################
