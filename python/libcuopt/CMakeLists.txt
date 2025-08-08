@@ -38,10 +38,6 @@ endif()
 
 unset(cuopt_FOUND)
 
-set(PAPILO_HAVE_BOOST_IOSTREAMS ON)
-set(PAPILO_COMMAND_LINE_AVAILABLE ON)
-set(PAPILO_SERIALIZATION_AVAILABLE ON)
-
 include(FetchContent)
 FetchContent_Declare(
   argparse
