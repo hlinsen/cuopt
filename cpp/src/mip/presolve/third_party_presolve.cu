@@ -313,7 +313,8 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
                  papilo_problem.getNRows(),
                  papilo_problem.getConstraintMatrix().getNnz());
 
-  return std::make_pair(build_optimization_problem<i_t, f_t>(papilo_problem, true), result.status);
+  return std::make_pair(
+    build_optimization_problem<i_t, f_t>(papilo_problem, op_problem.get_handle_ptr()), true);
 }
 
 template <typename i_t, typename f_t>
