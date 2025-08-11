@@ -22,11 +22,11 @@ if [ -f /etc/os-release ]; then
     . /etc/os-release
     if [[ "$ID" == "rocky" ]]; then
         echo "Detected Rocky Linux. Installing Boost and TBB via dnf..."
-        dnf install -y boost-devel tbb-devel
+        dnf install -y boost-devel tbb-devel gcc-toolset-14-libquadmath-devel
     elif [[ "$ID" == "ubuntu" ]]; then
         echo "Detected Ubuntu. Installing Boost and TBB via apt..."
         apt-get update
-        apt-get install -y libboost-dev libtbb-dev
+        apt-get install -y libboost-dev libtbb-dev gcc-14 libquadmath-dev
     else
         echo "Unknown OS: $ID. Please install Boost development libraries manually."
         exit 1
