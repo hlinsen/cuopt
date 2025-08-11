@@ -25,7 +25,7 @@
 #include <linear_programming/utils.cuh>
 
 #include <mip/mip_constants.hpp>
-#include <mip/presolve/third_party_presolve.hpp>
+#include <mip/presolve/third_party_presolve.cuh>
 #include <mip/presolve/trivial_presolve.cuh>
 #include <mip/solver.cuh>
 
