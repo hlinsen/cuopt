@@ -16,12 +16,17 @@
  */
 
 #include <mip/mip_constants.hpp>
-#include <mip/presolve/third_party_presolve.cuh>
+#include <mip/presolve/third_party_presolve.hpp>
 #include <papilo/core/Presolve.hpp>
 #include <papilo/core/ProblemBuilder.hpp>
-#include <utilities/copy_helpers.hpp>
+// #include <utilities/copy_helpers.hpp>
+#include <cuopt/error.hpp>
+#include <cuopt/logger.hpp>
 
 namespace cuopt::linear_programming::detail {
+
+static papilo::PostsolveStorage<double> post_solve_storage_;
+static int presolve_calls = 0;
 
 template <typename i_t, typename f_t>
 papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>& op_problem)
@@ -54,17 +59,29 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
   const auto& var_types    = op_problem.get_variable_types();
 
   // Copy data to host
-  std::vector<f_t> h_coefficients = cuopt::host_copy(coefficients);
-  std::vector<i_t> h_offsets      = cuopt::host_copy(offsets);
-  std::vector<i_t> h_variables    = cuopt::host_copy(variables);
-  std::vector<f_t> h_obj_coeffs   = cuopt::host_copy(obj_coeffs);
-  std::vector<f_t> h_var_lb       = cuopt::host_copy(var_lb);
-  std::vector<f_t> h_var_ub       = cuopt::host_copy(var_ub);
-  std::vector<f_t> h_bounds       = cuopt::host_copy(bounds);
-  std::vector<char> h_row_types   = cuopt::host_copy(row_types);
-  std::vector<f_t> h_constr_lb    = cuopt::host_copy(constr_lb);
-  std::vector<f_t> h_constr_ub    = cuopt::host_copy(constr_ub);
-  std::vector<var_t> h_var_types  = cuopt::host_copy(var_types);
+  std::vector<f_t> h_coefficients(coefficients.size());
+  auto stream_view = op_problem.get_handle_ptr()->get_stream();
+  raft::copy(h_coefficients.data(), coefficients.data(), coefficients.size(), stream_view);
+  std::vector<i_t> h_offsets(offsets.size());
+  raft::copy(h_offsets.data(), offsets.data(), offsets.size(), stream_view);
+  std::vector<i_t> h_variables(variables.size());
+  raft::copy(h_variables.data(), variables.data(), variables.size(), stream_view);
+  std::vector<f_t> h_obj_coeffs(obj_coeffs.size());
+  raft::copy(h_obj_coeffs.data(), obj_coeffs.data(), obj_coeffs.size(), stream_view);
+  std::vector<f_t> h_var_lb(var_lb.size());
+  raft::copy(h_var_lb.data(), var_lb.data(), var_lb.size(), stream_view);
+  std::vector<f_t> h_var_ub(var_ub.size());
+  raft::copy(h_var_ub.data(), var_ub.data(), var_ub.size(), stream_view);
+  std::vector<f_t> h_bounds(bounds.size());
+  raft::copy(h_bounds.data(), bounds.data(), bounds.size(), stream_view);
+  std::vector<char> h_row_types(row_types.size());
+  raft::copy(h_row_types.data(), row_types.data(), row_types.size(), stream_view);
+  std::vector<f_t> h_constr_lb(constr_lb.size());
+  raft::copy(h_constr_lb.data(), constr_lb.data(), constr_lb.size(), stream_view);
+  std::vector<f_t> h_constr_ub(constr_ub.size());
+  raft::copy(h_constr_ub.data(), constr_ub.data(), constr_ub.size(), stream_view);
+  std::vector<var_t> h_var_types(var_types.size());
+  raft::copy(h_var_types.data(), var_types.data(), var_types.size(), stream_view);
 
   auto constr_bounds_empty = h_constr_lb.empty() && h_constr_ub.empty();
   if (constr_bounds_empty) {
@@ -287,6 +304,10 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
   f_t absolute_tolerance,
   double time_limit)
 {
+  cuopt_expects(
+    presolve_calls == 0, error_type_t::ValidationError, "Presolve can only be called once");
+  presolve_calls++;
+
   papilo::Problem<f_t> papilo_problem = build_papilo_problem(op_problem);
 
   CUOPT_LOG_INFO("Unpresolved problem:: Num variables: %d Num constraints: %d, NNZ: %d",
@@ -305,6 +326,7 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
   check_presolve_status(result.status);
   if (result.status == papilo::PresolveStatus::kInfeasible ||
       result.status == papilo::PresolveStatus::kUnbndOrInfeas) {
+    --presolve_calls;
     return std::make_pair(optimization_problem_t<i_t, f_t>(op_problem.get_handle_ptr()), false);
   }
   post_solve_storage_ = result.postsolve;
@@ -324,9 +346,15 @@ void third_party_presolve_t<i_t, f_t>::undo(rmm::device_uvector<f_t>& primal_sol
                                             problem_category_t category,
                                             rmm::cuda_stream_view stream_view)
 {
-  auto primal_sol_vec_h    = cuopt::host_copy(primal_solution, stream_view);
-  auto dual_sol_vec_h      = cuopt::host_copy(dual_solution, stream_view);
-  auto reduced_costs_vec_h = cuopt::host_copy(reduced_costs, stream_view);
+  --presolve_calls;
+  cuopt_expects(
+    presolve_calls == 0, error_type_t::ValidationError, "Postsolve can only be called once");
+  std::vector<f_t> primal_sol_vec_h(primal_solution.size());
+  raft::copy(primal_sol_vec_h.data(), primal_solution.data(), primal_solution.size(), stream_view);
+  std::vector<f_t> dual_sol_vec_h(dual_solution.size());
+  raft::copy(dual_sol_vec_h.data(), dual_solution.data(), dual_solution.size(), stream_view);
+  std::vector<f_t> reduced_costs_vec_h(reduced_costs.size());
+  raft::copy(reduced_costs_vec_h.data(), reduced_costs.data(), reduced_costs.size(), stream_view);
 
   papilo::Solution<f_t> reduced_sol(primal_sol_vec_h);
   papilo::Solution<f_t> full_sol;
@@ -343,14 +371,14 @@ void third_party_presolve_t<i_t, f_t>::undo(rmm::device_uvector<f_t>& primal_sol
   dual_solution.resize(full_sol.primal.size(), stream_view);
   reduced_costs.resize(full_sol.primal.size(), stream_view);
   raft::copy(primal_solution.data(), full_sol.primal.data(), full_sol.primal.size(), stream_view);
-  thrust::fill(rmm::exec_policy(stream_view),
-               dual_solution.data(),
-               dual_solution.data() + dual_solution.size(),
-               std::numeric_limits<f_t>::signaling_NaN());
-  thrust::fill(rmm::exec_policy(stream_view),
-               reduced_costs.data(),
-               reduced_costs.data() + reduced_costs.size(),
-               std::numeric_limits<f_t>::signaling_NaN());
+  // thrust::fill(rmm::exec_policy(stream_view),
+  //              dual_solution.data(),
+  //              dual_solution.data() + dual_solution.size(),
+  //              std::numeric_limits<f_t>::signaling_NaN());
+  // thrust::fill(rmm::exec_policy(stream_view),
+  //              reduced_costs.data(),
+  //              reduced_costs.data() + reduced_costs.size(),
+  //              std::numeric_limits<f_t>::signaling_NaN());
 }
 
 #if MIP_INSTANTIATE_FLOAT

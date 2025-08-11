@@ -18,10 +18,10 @@
 #pragma once
 
 #include <cuopt/linear_programming/optimization_problem.hpp>
-#include <mip/problem/problem.cuh>
-#include <mip/solution/solution.cuh>
+// #include <mip/problem/problem.cuh>
+// #include <mip/solution/solution.cuh>
 
-#include <papilo/core/Presolve.hpp>
+// #include <papilo/core/Presolve.hpp>
 
 namespace cuopt::linear_programming::detail {
 
@@ -42,8 +42,8 @@ class third_party_presolve_t {
             problem_category_t category,
             rmm::cuda_stream_view stream_view);
 
- private:
-  papilo::PostsolveStorage<f_t> post_solve_storage_;
+  //  private:
+  // papilo::PostsolveStorage<f_t> post_solve_storage_;
 };
 
 }  // namespace cuopt::linear_programming::detail

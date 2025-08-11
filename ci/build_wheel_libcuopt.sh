@@ -22,47 +22,47 @@ package_name="libcuopt"
 package_dir="python/libcuopt"
 
 # Install Boost and TBB
-#bash ci/utils/install_boost_tbb.sh
+bash ci/utils/install_boost_tbb.sh
 
-BOOST_VERSION="1.85"
-BOOST_INSTALL_DIR="/opt/boost-${BOOST_VERSION}"
-BOOST_SRC_DIR="/tmp/boost"
+# BOOST_VERSION="1.85"
+# BOOST_INSTALL_DIR="/opt/boost-${BOOST_VERSION}"
+# BOOST_SRC_DIR="/tmp/boost"
 
-# Remove any existing Boost installation at the target location
-if [ -d "${BOOST_INSTALL_DIR}" ]; then
-    echo "Removing existing Boost at ${BOOST_INSTALL_DIR}"
-    rm -rf "${BOOST_INSTALL_DIR}"
-fi
+# # Remove any existing Boost installation at the target location
+# if [ -d "${BOOST_INSTALL_DIR}" ]; then
+#     echo "Removing existing Boost at ${BOOST_INSTALL_DIR}"
+#     rm -rf "${BOOST_INSTALL_DIR}"
+# fi
 
-# Clean up any previous source directory
-if [ -d "${BOOST_SRC_DIR}" ]; then
-    echo "Removing previous Boost source at ${BOOST_SRC_DIR}"
-    rm -rf "${BOOST_SRC_DIR}"
-fi
+# # Clean up any previous source directory
+# if [ -d "${BOOST_SRC_DIR}" ]; then
+#     echo "Removing previous Boost source at ${BOOST_SRC_DIR}"
+#     rm -rf "${BOOST_SRC_DIR}"
+# fi
 
-echo "Cloning Boost ${BOOST_VERSION}..."
-git clone --branch "boost-${BOOST_VERSION}.0" --depth 1 --recurse-submodules https://github.com/boostorg/boost.git "${BOOST_SRC_DIR}"
+# echo "Cloning Boost ${BOOST_VERSION}..."
+# git clone --branch "boost-${BOOST_VERSION}.0" --depth 1 --recurse-submodules https://github.com/boostorg/boost.git "${BOOST_SRC_DIR}"
 
-pushd "${BOOST_SRC_DIR}"
+# pushd "${BOOST_SRC_DIR}"
 
-echo "Bootstrapping Boost..."
-./bootstrap.sh
+# echo "Bootstrapping Boost..."
+# ./bootstrap.sh
 
-echo "Installing Boost to ${BOOST_INSTALL_DIR}..."
-./b2 install --prefix="${BOOST_INSTALL_DIR}" -j"$(nproc)" \
-    --with-filesystem \
-    --with-regex \
-    --with-log \
-    --with-thread \
-    --with-system \
-    --with-iostreams \
-    --with-serialization \
-    --with-program_options
+# echo "Installing Boost to ${BOOST_INSTALL_DIR}..."
+# ./b2 install --prefix="${BOOST_INSTALL_DIR}" -j"$(nproc)" \
+#     --with-filesystem \
+#     --with-regex \
+#     --with-log \
+#     --with-thread \
+#     --with-system \
+#     --with-iostreams \
+#     --with-serialization \
+#     --with-program_options
 
-popd
+# popd
 
-echo "Cleaning up Boost source directory..."
-rm -rf "${BOOST_SRC_DIR}"
+# echo "Cleaning up Boost source directory..."
+# rm -rf "${BOOST_SRC_DIR}"
 
 export SKBUILD_CMAKE_ARGS="-DCUOPT_BUILD_WHEELS=ON;-DDISABLE_DEPRECATION_WARNING=ON"
 
