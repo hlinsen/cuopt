@@ -218,9 +218,9 @@ mip_solution_t<i_t, f_t> solve_mip(optimization_problem_t<i_t, f_t>& op_problem,
 
     auto sol = run_mip(problem, settings, timer);
 
-    auto status_to_skip = sol.get_termination_status() == mip_termination_status_t::TimeLimit ||
-                          sol.get_termination_status() == mip_termination_status_t::Infeasible;
-    if (run_presolve && !status_to_skip) {
+    if (run_presolve) {
+      auto status_to_skip = sol.get_termination_status() == mip_termination_status_t::TimeLimit ||
+                            sol.get_termination_status() == mip_termination_status_t::Infeasible;
       auto primal_solution =
         cuopt::device_copy(sol.get_solution(), op_problem.get_handle_ptr()->get_stream());
       rmm::device_uvector<f_t> dual_solution(0, op_problem.get_handle_ptr()->get_stream());
@@ -230,31 +230,32 @@ mip_solution_t<i_t, f_t> solve_mip(optimization_problem_t<i_t, f_t>& op_problem,
                       reduced_costs,
                       cuopt::linear_programming::problem_category_t::MIP,
                       op_problem.get_handle_ptr()->get_stream());
+      if (!status_to_skip) {
+        thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
+                     dual_solution.data(),
+                     dual_solution.data() + dual_solution.size(),
+                     std::numeric_limits<f_t>::signaling_NaN());
+        thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
+                     reduced_costs.data(),
+                     reduced_costs.data() + reduced_costs.size(),
+                     std::numeric_limits<f_t>::signaling_NaN());
+        detail::problem_t<i_t, f_t> full_problem(op_problem);
+        detail::solution_t<i_t, f_t> full_sol(full_problem);
+        full_sol.copy_new_assignment(cuopt::host_copy(primal_solution));
+        full_sol.compute_feasibility();
+        if (!full_sol.get_feasible()) {
+          CUOPT_LOG_WARN("The solution is not feasible after post solve");
+        }
 
-      thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
-                   dual_solution.data(),
-                   dual_solution.data() + dual_solution.size(),
-                   std::numeric_limits<f_t>::signaling_NaN());
-      thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
-                   reduced_costs.data(),
-                   reduced_costs.data() + reduced_costs.size(),
-                   std::numeric_limits<f_t>::signaling_NaN());
-      detail::problem_t<i_t, f_t> full_problem(op_problem);
-      detail::solution_t<i_t, f_t> full_sol(full_problem);
-      full_sol.copy_new_assignment(cuopt::host_copy(primal_solution));
-      full_sol.compute_feasibility();
-      if (!full_sol.get_feasible()) {
-        CUOPT_LOG_WARN("The solution is not feasible after post solve");
+        auto full_stats = sol.get_stats();
+        // add third party presolve time to cuopt presolve time
+        full_stats.presolve_time += presolve_time;
+
+        // FIXME:: reduced_solution.get_stats() is not correct, we need to compute the stats for the
+        // full problem
+        full_sol.post_process_completed = true;  // hack
+        sol                             = full_sol.get_solution(true, full_stats);
       }
-
-      auto full_stats = sol.get_stats();
-      // add third party presolve time to cuopt presolve time
-      full_stats.presolve_time += presolve_time;
-
-      // FIXME:: reduced_solution.get_stats() is not correct, we need to compute the stats for the
-      // full problem
-      full_sol.post_process_completed = true;  // hack
-      sol                             = full_sol.get_solution(true, full_stats);
     }
 
     if (settings.sol_file != "") {

@@ -26,7 +26,7 @@
 namespace cuopt::linear_programming::detail {
 
 static papilo::PostsolveStorage<double> post_solve_storage_;
-static int presolve_calls = 0;
+static int presolve_calls_ = 0;
 
 template <typename i_t, typename f_t>
 papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>& op_problem)
@@ -305,8 +305,8 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
   double time_limit)
 {
   cuopt_expects(
-    presolve_calls == 0, error_type_t::ValidationError, "Presolve can only be called once");
-  presolve_calls++;
+    presolve_calls_ == 0, error_type_t::ValidationError, "Presolve can only be called once");
+  presolve_calls_++;
 
   papilo::Problem<f_t> papilo_problem = build_papilo_problem(op_problem);
 
@@ -326,7 +326,7 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
   check_presolve_status(result.status);
   if (result.status == papilo::PresolveStatus::kInfeasible ||
       result.status == papilo::PresolveStatus::kUnbndOrInfeas) {
-    --presolve_calls;
+    --presolve_calls_;
     return std::make_pair(optimization_problem_t<i_t, f_t>(op_problem.get_handle_ptr()), false);
   }
   post_solve_storage_ = result.postsolve;
@@ -346,9 +346,10 @@ void third_party_presolve_t<i_t, f_t>::undo(rmm::device_uvector<f_t>& primal_sol
                                             problem_category_t category,
                                             rmm::cuda_stream_view stream_view)
 {
-  --presolve_calls;
+  --presolve_calls_;
   cuopt_expects(
-    presolve_calls == 0, error_type_t::ValidationError, "Postsolve can only be called once");
+    presolve_calls_ == 0, error_type_t::ValidationError, "Postsolve can only be called once");
+  if (primal_solution.is_empty()) { return; }
   std::vector<f_t> primal_sol_vec_h(primal_solution.size());
   raft::copy(primal_sol_vec_h.data(), primal_solution.data(), primal_solution.size(), stream_view);
   std::vector<f_t> dual_sol_vec_h(dual_solution.size());
