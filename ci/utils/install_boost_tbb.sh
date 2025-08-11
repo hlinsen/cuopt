@@ -29,7 +29,7 @@ if [ -f /etc/os-release ]; then
     elif [[ "$ID" == "ubuntu" ]]; then
         echo "Detected Ubuntu. Installing Boost and TBB via apt..."
         apt-get update
-        apt-get install -y libboost-dev libtbb-dev gcc-14 libquadmath-dev
+        apt-get install -y libboost-dev libtbb-dev
     else
         echo "Unknown OS: $ID. Please install Boost development libraries manually."
         exit 1
