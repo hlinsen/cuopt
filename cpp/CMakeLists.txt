@@ -172,10 +172,8 @@ FetchContent_Declare(
 
 set(BUILD_TESTING OFF CACHE BOOL "Disable test build for papilo")
 set(TBB OFF CACHE BOOL "Disable TBB")
-# set(PAPILO_HAVE_BOOST_IOSTREAMS OFF)
-# set(PAPILO_COMMAND_LINE_AVAILABLE OFF)
-# set(PAPILO_SERIALIZATION_AVAILABLE OFF)
 set(PAPILO_NO_BINARIES ON)
+option(LUSOL "Disable LUSOL" OFF)
 
 FetchContent_MakeAvailable(papilo)
 

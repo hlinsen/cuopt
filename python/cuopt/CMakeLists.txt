@@ -33,7 +33,6 @@ project(
 
 find_package(cuopt ${cuopt_version})
 find_package(mps_parser ${cuopt_version})
-find_package(TBB REQUIRED)
 
 include(rapids-cython-core)
 rapids_cython_init()
