@@ -21,9 +21,6 @@ set -euo pipefail
 # so those constraints will affect all future 'pip install' calls
 source rapids-init-pip
 
-# Install Boost and TBB
-# bash ci/utils/install_boost_tbb.sh
-
 # Download the packages built in the previous step
 RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 CUOPT_MPS_PARSER_WHEELHOUSE=$(RAPIDS_PY_WHEEL_NAME="cuopt_mps_parser" rapids-download-wheels-from-github python)
