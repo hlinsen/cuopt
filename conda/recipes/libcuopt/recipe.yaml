@@ -57,7 +57,6 @@ cache:
       - cuda-version =${{ cuda_version }}
       - cmake ${{ cmake_version }}
       - ninja
-      - tbb-devel
     host:
       - cpp-argparse
       - cuda-version =${{ cuda_version }}
@@ -71,7 +70,6 @@ cache:
       - libcusparse-dev
       - cuda-cudart-dev
       - boost
-      - tbb-devel
 
 outputs:
   - package:
@@ -137,14 +135,12 @@ outputs:
         - cuda-cudart-dev
         - libcublas
         - libcusparse-dev
-        - tbb-devel
       run:
         - ${{ pin_compatible("cuda-version", upper_bound="x", lower_bound="x") }}
         - ${{ pin_subpackage("libmps-parser", exact=True) }}
         - boost
         - librmm =${{ dep_minor_version }}
         - cuda-nvrtc
-        - tbb-devel
       ignore_run_exports:
         by_name:
           - cuda-cudart
@@ -189,7 +185,6 @@ outputs:
         - cuda-cudart-dev
         - libcublas
         - libcusparse-dev
-        - tbb-devel
       run:
         - gmock ${{ gtest_version }}
         - gtest ${{ gtest_version }}

@@ -313,7 +313,6 @@ dependencies:
           - cpp-argparse
           - librmm==25.10.*
           - libraft-headers==25.10.*
-          - tbb-devel
   test_cpp:
     common:
       - output_types: [conda]
