@@ -161,8 +161,6 @@ else()
   find_package(RAFT REQUIRED)
 endif()
 
-#find_package(TBB REQUIRED)
-
 FetchContent_Declare(
   papilo
   GIT_REPOSITORY "https://github.com/scipopt/papilo.git"

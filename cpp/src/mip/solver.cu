@@ -113,7 +113,7 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
   dm.timer              = timer_;
   bool presolve_success = dm.run_presolve(timer_.remaining_time());
   if (!presolve_success) {
-    CUOPT_LOG_INFO("Problem proven infeasible in presolve");
+    CUOPT_LOG_INFO("Pdroblem proven infeasible in presolve");
     solution_t<i_t, f_t> sol(*context.problem_ptr);
     sol.set_problem_fully_reduced();
     context.problem_ptr->post_process_solution(sol);

@@ -153,20 +153,15 @@ These constants are used as parameter names in the :c:func:`cuOptSetParameter`, 
 .. doxygendefine:: CUOPT_SAVE_BEST_PRIMAL_SO_FAR
 .. doxygendefine:: CUOPT_FIRST_PRIMAL_FEASIBLE
 .. doxygendefine:: CUOPT_LOG_FILE
-.. doxygendefine:: CUOPT_LOG_TO_CONSOLE
-.. doxygendefine:: CUOPT_CROSSOVER
-.. doxygendefine:: CUOPT_PRESOLVE
 .. doxygendefine:: CUOPT_MIP_ABSOLUTE_TOLERANCE
 .. doxygendefine:: CUOPT_MIP_RELATIVE_TOLERANCE
 .. doxygendefine:: CUOPT_MIP_INTEGRALITY_TOLERANCE
-.. doxygendefine:: CUOPT_MIP_ABSOLUTE_GAP
-.. doxygendefine:: CUOPT_MIP_RELATIVE_GAP
-.. doxygendefine:: CUOPT_MIP_HEURISTICS_ONLY
 .. doxygendefine:: CUOPT_MIP_SCALING
+.. doxygendefine:: CUOPT_MIP_HEURISTICS_ONLY
+.. doxygendefine:: CUOPT_PRESOLVE
 .. doxygendefine:: CUOPT_SOLUTION_FILE
 .. doxygendefine:: CUOPT_NUM_CPU_THREADS
 .. doxygendefine:: CUOPT_USER_PROBLEM_FILE
-
 
 .. _pdlp-solver-mode-constants:
 

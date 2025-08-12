@@ -136,7 +136,6 @@ files:
       key: requires
     includes:
       - build_common
-      - depends_on_papilo_deps
       - depends_on_libraft_headers
       - depends_on_librmm
       - depends_on_rapids_logger
@@ -148,7 +147,6 @@ files:
       table: project
     includes:
       - cuda_wheels
-      - depends_on_papilo_deps
       - depends_on_libraft_headers
       - depends_on_librmm
       - depends_on_rapids_logger
@@ -275,12 +273,6 @@ dependencies:
           - *rapids_build_backend
           - setuptools
           - wheel
-  depends_on_papilo_deps:
-    common:
-      - output_types: conda
-        packages:
-          - tbb-devel
-          - boost
   build_common:
     common:
       - output_types: [conda, requirements, pyproject]
