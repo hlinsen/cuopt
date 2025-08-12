@@ -95,7 +95,6 @@ outputs:
           - cuda-nvtx
           - cuda-version
           - gtest
-          - libcudss
           - libcurand
           - libcusparse
           - librmm
@@ -146,7 +145,6 @@ outputs:
           - cuda-nvtx
           - cuda-version
           - gtest
-          - libcudss
           - libcurand
           - libcusparse
           - librmm
@@ -194,7 +192,6 @@ outputs:
           - cuda-nvtx
           - cuda-version
           - gtest
-          - libcudss
           - libcurand
           - libcusparse
           - librmm

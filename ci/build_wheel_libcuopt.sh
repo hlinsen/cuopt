@@ -34,10 +34,17 @@ fi
 # Install cudss
 
 # Clean metadata & install cudss
-dnf clean all
-# Addding static library just to please CMAKE requirements
-dnf -y install libcudss0-static-cuda-12 libcudss0-devel-cuda-12 libcudss0-cuda-12
-
+if command -v dnf &> /dev/null; then
+    dnf clean all
+    # Adding static library just to please CMAKE requirements
+    dnf -y install libcudss0-static-cuda-12 libcudss0-devel-cuda-12 libcudss0-cuda-12
+elif command -v apt-get &> /dev/null; then
+    apt-get update
+    apt-get install -y libcudss-devel
+else
+    echo "Neither dnf nor apt-get found. Cannot install cudss dependencies."
+    exit 1
+fi
 # dnf -y install libcudss0-devel-cuda-12
 
 
