@@ -641,11 +641,13 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
         cuopt::device_copy(solution.get_dual_solution(), op_problem.get_handle_ptr()->get_stream());
       auto reduced_costs =
         cuopt::device_copy(solution.get_reduced_cost(), op_problem.get_handle_ptr()->get_stream());
+      bool status_to_skip = false;
 
       presolver->undo(primal_solution,
                       dual_solution,
                       reduced_costs,
                       cuopt::linear_programming::problem_category_t::LP,
+                      status_to_skip,
                       op_problem.get_handle_ptr()->get_stream());
 
       thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),

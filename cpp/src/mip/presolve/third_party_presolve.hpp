@@ -40,6 +40,7 @@ class third_party_presolve_t {
             rmm::device_uvector<f_t>& dual_solution,
             rmm::device_uvector<f_t>& reduced_costs,
             problem_category_t category,
+            bool status_to_skip,
             rmm::cuda_stream_view stream_view);
 
   //  private:

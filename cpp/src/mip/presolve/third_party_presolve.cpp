@@ -344,12 +344,13 @@ void third_party_presolve_t<i_t, f_t>::undo(rmm::device_uvector<f_t>& primal_sol
                                             rmm::device_uvector<f_t>& dual_solution,
                                             rmm::device_uvector<f_t>& reduced_costs,
                                             problem_category_t category,
+                                            bool status_to_skip,
                                             rmm::cuda_stream_view stream_view)
 {
   --presolve_calls_;
   cuopt_expects(
     presolve_calls_ == 0, error_type_t::ValidationError, "Postsolve can only be called once");
-  if (primal_solution.is_empty()) { return; }
+  if (status_to_skip) { return; }
   std::vector<f_t> primal_sol_vec_h(primal_solution.size());
   raft::copy(primal_sol_vec_h.data(), primal_solution.data(), primal_solution.size(), stream_view);
   std::vector<f_t> dual_sol_vec_h(dual_solution.size());
@@ -372,14 +373,6 @@ void third_party_presolve_t<i_t, f_t>::undo(rmm::device_uvector<f_t>& primal_sol
   dual_solution.resize(full_sol.primal.size(), stream_view);
   reduced_costs.resize(full_sol.primal.size(), stream_view);
   raft::copy(primal_solution.data(), full_sol.primal.data(), full_sol.primal.size(), stream_view);
-  // thrust::fill(rmm::exec_policy(stream_view),
-  //              dual_solution.data(),
-  //              dual_solution.data() + dual_solution.size(),
-  //              std::numeric_limits<f_t>::signaling_NaN());
-  // thrust::fill(rmm::exec_policy(stream_view),
-  //              reduced_costs.data(),
-  //              reduced_costs.data() + reduced_costs.size(),
-  //              std::numeric_limits<f_t>::signaling_NaN());
 }
 
 #if MIP_INSTANTIATE_FLOAT

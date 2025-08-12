@@ -229,6 +229,7 @@ mip_solution_t<i_t, f_t> solve_mip(optimization_problem_t<i_t, f_t>& op_problem,
                       dual_solution,
                       reduced_costs,
                       cuopt::linear_programming::problem_category_t::MIP,
+                      status_to_skip,
                       op_problem.get_handle_ptr()->get_stream());
       if (!status_to_skip) {
         thrust::fill(rmm::exec_policy(op_problem.get_handle_ptr()->get_stream()),
