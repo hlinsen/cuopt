@@ -564,9 +564,6 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
                                                    bool is_batch_mode)
 {
   try {
-    // const f_t time_limit =
-    // settings.time_limit == 0 ? std::numeric_limits<f_t>::max() : settings.time_limit;
-
     // Create log stream for file logging and add it to default logger
     init_logger_t log(settings.log_file, settings.log_to_console);
 
