@@ -229,17 +229,19 @@ void check_presolve_status(const papilo::PresolveStatus& status)
 {
   switch (status) {
     case papilo::PresolveStatus::kUnchanged:
-      CUOPT_LOG_INFO("Presolve did not result in any changes");
+      CUOPT_LOG_INFO("Presolve status:: did not result in any changes");
       break;
-    case papilo::PresolveStatus::kReduced: CUOPT_LOG_INFO("Presolve reduced the problem"); break;
+    case papilo::PresolveStatus::kReduced:
+      CUOPT_LOG_INFO("Presolve status:: reduced the problem");
+      break;
     case papilo::PresolveStatus::kUnbndOrInfeas:
-      CUOPT_LOG_INFO("Presolve found an unbounded or infeasible problem");
+      CUOPT_LOG_INFO("Presolve status:: found an unbounded or infeasible problem");
       break;
     case papilo::PresolveStatus::kInfeasible:
-      CUOPT_LOG_INFO("Presolve found an infeasible problem");
+      CUOPT_LOG_INFO("Presolve status:: found an infeasible problem");
       break;
     case papilo::PresolveStatus::kUnbounded:
-      CUOPT_LOG_INFO("Presolve found an unbounded problem");
+      CUOPT_LOG_INFO("Presolve status:: found an unbounded problem");
       break;
   }
 }
@@ -247,8 +249,8 @@ void check_presolve_status(const papilo::PresolveStatus& status)
 void check_postsolve_status(const papilo::PostsolveStatus& status)
 {
   switch (status) {
-    case papilo::PostsolveStatus::kOk: CUOPT_LOG_INFO("Post-solve succeeded"); break;
-    case papilo::PostsolveStatus::kFailed: CUOPT_LOG_INFO("Post-solve failed"); break;
+    case papilo::PostsolveStatus::kOk: CUOPT_LOG_INFO("Post-solve status:: succeeded"); break;
+    case papilo::PostsolveStatus::kFailed: CUOPT_LOG_INFO("Post-solve status:: failed"); break;
   }
 }
 
@@ -307,9 +309,9 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
 
   papilo::Problem<f_t> papilo_problem = build_papilo_problem(op_problem);
 
-  CUOPT_LOG_INFO("Unpresolved problem:: Num variables: %d Num constraints: %d, NNZ: %d",
-                 papilo_problem.getNCols(),
+  CUOPT_LOG_INFO("Unpresolved problem:: %d constraints, %d variables, %d nonzeros",
                  papilo_problem.getNRows(),
+                 papilo_problem.getNCols(),
                  papilo_problem.getConstraintMatrix().getNnz());
 
   papilo::Presolve<f_t> presolver;
@@ -327,9 +329,13 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
     return std::make_pair(optimization_problem_t<i_t, f_t>(op_problem.get_handle_ptr()), false);
   }
   post_solve_storage_ = result.postsolve;
-  CUOPT_LOG_INFO("Presolved problem:: Num variables: %d Num constraints: %d, NNZ: %d",
-                 papilo_problem.getNCols(),
+  CUOPT_LOG_INFO("Presolve removed:: %d constraints, %d variables, %d nonzeros",
+                 op_problem.get_n_constraints() - papilo_problem.getNRows(),
+                 op_problem.get_n_variables() - papilo_problem.getNCols(),
+                 op_problem.get_nnz() - papilo_problem.getConstraintMatrix().getNnz());
+  CUOPT_LOG_INFO("Presolved problem:: %d constraints, %d variables, %d nonzeros",
                  papilo_problem.getNRows(),
+                 papilo_problem.getNCols(),
                  papilo_problem.getConstraintMatrix().getNnz());
 
   return std::make_pair(
