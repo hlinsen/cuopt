@@ -44,9 +44,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     python${PYTHON_SHORT_VER} -m ensurepip --upgrade && \
     python${PYTHON_SHORT_VER} -m pip install --upgrade pip
 
-# Install Boost and TBB
-RUN bash ci/utils/install_boost_tbb.sh
-
 ENV DEBIAN_FRONTEND=""
 
 RUN ln -sf /usr/bin/python${PYTHON_SHORT_VER} /usr/bin/python && \
