@@ -232,15 +232,15 @@ void mip_solution_t<i_t, f_t>::write_to_sol_file(std::string_view filename,
 template <typename i_t, typename f_t>
 void mip_solution_t<i_t, f_t>::log_summary() const
 {
-  // CUOPT_LOG_INFO("Termination Status: {}", get_termination_status_string());
+  CUOPT_LOG_INFO("Termination Status: {}", get_termination_status_string());
   CUOPT_LOG_INFO("Objective Value: %f", get_objective_value());
   CUOPT_LOG_INFO("Max constraint violation: %f", get_max_constraint_violation());
   CUOPT_LOG_INFO("Max integer violation: %f", get_max_int_violation());
   CUOPT_LOG_INFO("Max variable bound violation: %f", get_max_variable_bound_violation());
   CUOPT_LOG_INFO("MIP Gap: %f", get_mip_gap());
   CUOPT_LOG_INFO("Solution Bound: %f", get_solution_bound());
-  CUOPT_LOG_INFO("Total Solve Time: %f", get_total_solve_time());
   CUOPT_LOG_INFO("Presolve Time: %f", get_presolve_time());
+  CUOPT_LOG_INFO("Total Solve Time: %f", get_total_solve_time());
 }
 
 #if MIP_INSTANTIATE_FLOAT

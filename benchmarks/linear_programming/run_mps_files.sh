@@ -31,7 +31,7 @@
 #   --mip-heuristics-only : Run mip heuristics only
 #   --write-log-file : Write log file
 #   --num-cpu-threads : Number of CPU threads to use
-#   --presolve : Enable presolve (default: true)
+#   --presolve : Enable presolve (default: true for MIP problems, false for LP problems)
 #   --batch-num : Batch number.  This allows to split the work across multiple batches uniformly when resources are limited.
 #   --n-batches : Number of batches
 #   --log-to-console : Log to console
@@ -75,7 +75,7 @@ Optional Arguments:
     --mip-heuristics-only  Run mip heuristics only
     --write-log-file   Write log file
     --num-cpu-threads  Number of CPU threads to use
-    --presolve         Enable presolve (default: true)
+    --presolve         Enable presolve (default: true for MIP problems, false for LP problems)
     --batch-num        Batch number
     --n-batches        Number of batches
     --log-to-console   Log to console

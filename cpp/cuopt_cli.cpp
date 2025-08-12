@@ -195,7 +195,7 @@ int main(int argc, char* argv[])
     .implicit_value(true);
 
   program.add_argument("--presolve")
-    .help("enable/disable presolve (default: true)")
+    .help("enable/disable presolve (default: true for MIP problems, false for LP problems)")
     .default_value(true)
     .implicit_value(true);
 
