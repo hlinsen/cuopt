@@ -89,7 +89,7 @@ mip_solution_t<i_t, f_t> run_mip(detail::problem_t<i_t, f_t>& problem,
     solution.compute_objective();  // just to ensure h_user_obj is set
     auto stats           = solver_stats_t<i_t, f_t>{};
     stats.solution_bound = solution.get_user_objective();
-    return solution.get_solution(true, stats);
+    return solution.get_solution(true, stats, false);
   }
   // problem contains unpreprocessed data
   detail::problem_t<i_t, f_t> scaled_problem(problem);
@@ -144,8 +144,8 @@ mip_solution_t<i_t, f_t> run_mip(detail::problem_t<i_t, f_t>& problem,
       "please provide a more numerically stable problem.");
   }
 
-  auto sol = scaled_sol.get_solution(is_feasible_before_scaling || is_feasible_after_unscaling,
-                                     solver.get_solver_stats());
+  auto sol = scaled_sol.get_solution(
+    is_feasible_before_scaling || is_feasible_after_unscaling, solver.get_solver_stats(), false);
   detail::print_solution(scaled_problem.handle_ptr, sol.get_solution());
   return sol;
 }
@@ -263,7 +263,6 @@ mip_solution_t<i_t, f_t> solve_mip(optimization_problem_t<i_t, f_t>& op_problem,
       CUOPT_LOG_INFO("Writing solution to file %s", settings.sol_file.c_str());
       sol.write_to_sol_file(settings.sol_file, op_problem.get_handle_ptr()->get_stream());
     }
-    sol.log_summary();
     return sol;
   } catch (const cuopt::logic_error& e) {
     CUOPT_LOG_ERROR("Error in solve_mip: %s", e.what());

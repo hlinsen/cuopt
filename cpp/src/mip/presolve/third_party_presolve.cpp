@@ -247,10 +247,7 @@ void check_presolve_status(const papilo::PresolveStatus& status)
 void check_postsolve_status(const papilo::PostsolveStatus& status)
 {
   switch (status) {
-    case papilo::PostsolveStatus::kOk:
-      CUOPT_LOG_INFO("Post-solve succeeded");
-      break;
-      // This occurs when the solution is not feasible
+    case papilo::PostsolveStatus::kOk: CUOPT_LOG_INFO("Post-solve succeeded"); break;
     case papilo::PostsolveStatus::kFailed: CUOPT_LOG_INFO("Post-solve failed"); break;
   }
 }

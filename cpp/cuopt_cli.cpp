@@ -131,14 +131,12 @@ int run_single_file(const std::string& file_path,
   try {
     if (is_mip && !solve_relaxation) {
       auto& mip_settings = settings.get_mip_settings();
-      std::cout << "MIP presolve: " << mip_settings.presolve << std::endl;
       if (initial_solution.size() > 0) {
         mip_settings.add_initial_solution(initial_solution.data(), initial_solution.size());
       }
       auto solution = cuopt::linear_programming::solve_mip(op_problem, mip_settings);
     } else {
       auto& lp_settings = settings.get_pdlp_settings();
-      std::cout << "LP presolve: " << lp_settings.presolve << std::endl;
       if (initial_solution.size() > 0) {
         lp_settings.set_initial_primal_solution(initial_solution.data(), initial_solution.size());
       }
