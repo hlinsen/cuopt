@@ -32,12 +32,13 @@ else
 fi
 
 # Install cudss
-if command -v dnf &> /dev/null; then
-    dnf install libcudss-dev -y
-else
-    echo "dnf not found, skipping cudss installation"
-    exit 1
-fi
+
+# Clean metadata & install cudss
+dnf clean all
+# Addding static library just to please CMAKE requirements
+dnf -y install libcudss0-static-cuda-12 libcudss0-devel-cuda-12 libcudss0-cuda-12
+
+# dnf -y install libcudss0-devel-cuda-12
 
 
 rapids-logger "Generating build requirements"
