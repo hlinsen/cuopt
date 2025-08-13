@@ -41,12 +41,12 @@
 
 namespace cuopt::linear_programming::detail {
 
-void force_link_cudss() {
-    cudssHandle_t handle;
-    cudssCreate(&handle);
-    cudssDestroy(handle);
+void force_link_cudss()
+{
+  cudssHandle_t handle;
+  cudssCreate(&handle);
+  cudssDestroy(handle);
 }
-
 
 // This serves as both a warm up but also a mandatory initial call to setup cuSparse and cuBLAS
 static void init_handler(const raft::handle_t* handle_ptr)
