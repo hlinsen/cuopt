@@ -372,7 +372,7 @@ Linear Programming FAQs
 
 .. dropdown:: Does cuOpt implement presolve reductions?
 
-    We use PaPILO presolve within cuOpt. It is enabled by default for MIP and disabled by default for LP.
+    We use PaPILO presolve at the root node. It is enabled by default for MIP and disabled by default for LP.
     For LP, dual postsolve is not supported, for this reason dual solution and reduced costs are filled with Nans.
 
 
