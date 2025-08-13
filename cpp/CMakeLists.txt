@@ -380,6 +380,7 @@ target_link_libraries(cuopt_cli
   PUBLIC
   cuopt
   OpenMP::OpenMP_CXX
+  PRIVATE
   papilo-core
 )
 set_property(TARGET cuopt_cli PROPERTY INSTALL_RPATH "$ORIGIN/../${lib_dir}")
@@ -401,6 +402,7 @@ if(BUILD_BENCHMARKS)
     PUBLIC
     cuopt
     OpenMP::OpenMP_CXX
+    PRIVATE
     papilo-core
   )
 endif()
