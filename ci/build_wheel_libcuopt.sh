@@ -32,6 +32,7 @@ else
 fi
 
 # Install cudss
+bash ci/utils/install_cudss.sh
 
 # Clean metadata & install cudss
 if command -v dnf &> /dev/null; then
@@ -76,6 +77,7 @@ EXCLUDE_ARGS=(
   --exclude "libraft.so"
   --exclude "libcublas.so.*"
   --exclude "libcublasLt.so.*"
+  --exclude "libcudss*"
   --exclude "libcurand.so.*"
   --exclude "libcusolver.so.*"
   --exclude "libcusparse.so.*"
