@@ -947,6 +947,8 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
             data.z = z_save;
             settings.log.printf("Suboptimal solution found\n");
             return 1;
+          } else {
+            settings.log.printf("Primal residual %.2e dual residual %.2e complementarity residual %.2e\n", relative_primal_residual, relative_dual_residual, relative_complementarity_residual);
           }
           settings.log.printf("Search direction computation failed\n");
           return -1;
@@ -999,11 +1001,31 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
         f_t max_corrector_residual = 0.0;
         status = compute_search_direction(data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
         if (status < 0) {
-            if (primal_residual_norm < 100 * options.feasibility_tol &&
-                dual_residual_norm < 100 * options.optimality_tol &&
-                complementarity_residual_norm < 100 * options.complementarity_tol) {
+            if (relative_primal_residual < 100 * options.feasibility_tol &&
+                relative_dual_residual < 100 * options.optimality_tol &&
+                relative_complementarity_residual < 100 * options.complementarity_tol) {
               settings.log.printf("Suboptimal solution found\n");
               return 1;
+            }
+            compute_residual_norms(w_save, x_save, y_save, v_save, z_save, data, primal_residual_norm, dual_residual_norm, complementarity_residual_norm);
+            primal_objective = data.c.inner_product(x_save);
+            relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
+            relative_dual_residual = dual_residual_norm / (1.0 + norm_c);
+            relative_complementarity_residual = complementarity_residual_norm / (1.0 + std::abs(primal_objective));
+
+            if (relative_primal_residual < 100 * options.feasibility_tol &&
+                relative_dual_residual < 100 * options.optimality_tol &&
+                relative_complementarity_residual < 100 * options.complementarity_tol) {
+              settings.log.printf("Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n", primal_residual_norm, dual_residual_norm, complementarity_residual_norm);
+              data.w = w_save;
+              data.x = x_save;
+              data.y = y_save;
+              data.v = v_save;
+              data.z = z_save;
+              settings.log.printf("Suboptimal solution found\n");
+              return 1;
+            } else {
+              settings.log.printf("Primal residual %.2e dual residual %.2e complementarity residual %.2e\n", relative_primal_residual, relative_dual_residual, relative_complementarity_residual);
             }
             settings.log.printf("Search direction computation failed\n");
             return -1;
