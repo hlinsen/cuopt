@@ -17,8 +17,6 @@
 
 set -euo pipefail
 
-ARCH=$(uname -m)
-
 # Clean metadata & install cudss
 if command -v dnf &> /dev/null; then
     dnf clean all
