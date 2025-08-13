@@ -243,7 +243,6 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
                                               lp_solution_t<i_t, f_t>& solution)
 {
   f_t start_time     = tic();
-  lp_status_t status = lp_status_t::UNSET;
   lp_problem_t<i_t, f_t> original_lp(1, 1, 1);
   std::vector<i_t> new_slacks;
   simplex_solver_settings_t<i_t, f_t> barrier_settings = settings;
@@ -259,13 +258,8 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
   if (ok == -1) { return lp_status_t::INFEASIBLE; }
   barrier_solver_t<i_t, f_t> barrier_solver(barrier_lp, presolve_info, barrier_settings);
   barrier_solver_settings_t<i_t, f_t> barrier_solver_settings;
-  i_t barrier_status = barrier_solver.solve(barrier_solver_settings);
-  if (barrier_status == 0) {
-    status = lp_status_t::OPTIMAL;
-  } else {
-    status = lp_status_t::NUMERICAL_ISSUES;
-  }
-  return status;
+  lp_status_t barrier_status = barrier_solver.solve(barrier_solver_settings);
+  return barrier_status;
 }
 
 template <typename i_t, typename f_t>

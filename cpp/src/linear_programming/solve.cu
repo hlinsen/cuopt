@@ -285,7 +285,7 @@ optimization_problem_solution_t<i_t, f_t> convert_dual_simplex_sol(
   if (termination_status != pdlp_termination_status_t::Optimal &&
       termination_status != pdlp_termination_status_t::TimeLimit &&
       termination_status != pdlp_termination_status_t::ConcurrentLimit) {
-    CUOPT_LOG_INFO("Dual simplex status %s", sol.get_termination_status_string().c_str());
+    CUOPT_LOG_INFO("Solve status %s", sol.get_termination_status_string().c_str());
   }
 
   problem.handle_ptr->sync_stream();

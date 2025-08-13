@@ -18,6 +18,7 @@
 
 #include "dual_simplex/dense_vector.hpp"
 #include "dual_simplex/presolve.hpp"
+#include "dual_simplex/solve.hpp"
 #include "dual_simplex/simplex_solver_settings.hpp"
 #include "dual_simplex/sparse_cholesky.hpp"
 #include "dual_simplex/sparse_matrix.hpp"
@@ -46,7 +47,7 @@ class barrier_solver_t {
     : lp(lp), settings(settings), presolve_info(presolve)
   {
   }
-  i_t solve(const barrier_solver_settings_t<i_t, f_t>& options);
+  lp_status_t solve(const barrier_solver_settings_t<i_t, f_t>& options);
 
  private:
   void initial_point(iteration_data_t<i_t, f_t>& data);

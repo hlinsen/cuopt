@@ -836,9 +836,10 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 }
 
 template <typename i_t, typename f_t>
-i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>& options)
+lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>& options)
 {
   float64_t start_time = tic();
+  lp_status_t status = lp_status_t::UNSET;
 
   i_t n = lp.num_cols;
   i_t m = lp.num_rows;
@@ -858,14 +859,14 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
   iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
   if (toc(start_time) > settings.time_limit) {
     settings.log.printf("Barrier time limit exceeded\n");
-    return -1;
+    return lp_status_t::TIME_LIMIT;
   }
   settings.log.printf("%d finite upper bounds\n", num_upper_bounds);
 
   initial_point(data);
   if (toc(start_time) > settings.time_limit) {
     settings.log.printf("Barrier time limit exceeded\n");
-    return -1;
+    return lp_status_t::TIME_LIMIT;
   }
   compute_residuals(data.w, data.x, data.y, data.v, data.z, data);
 
@@ -925,7 +926,7 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
   while (iter < iteration_limit) {
     if (toc(start_time) > settings.time_limit) {
       settings.log.printf("Barrier time limit exceeded\n");
-      return -1;
+      return lp_status_t::TIME_LIMIT;
     }
     // Compute the affine step
     data.primal_rhs             = data.primal_residual;
@@ -946,7 +947,7 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
           relative_dual_residual < 100 * options.optimality_tol &&
           relative_complementarity_residual < 100 * options.complementarity_tol) {
         settings.log.printf("Suboptimal solution found\n");
-        return 1;
+        return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
       }
       compute_residual_norms(w_save,
                              x_save,
@@ -977,7 +978,7 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
         data.v = v_save;
         data.z = z_save;
         settings.log.printf("Suboptimal solution found\n");
-        return 1;
+        return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
       } else {
         settings.log.printf(
           "Primal residual %.2e dual residual %.2e complementarity residual %.2e\n",
@@ -986,11 +987,11 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
           relative_complementarity_residual);
       }
       settings.log.printf("Search direction computation failed\n");
-      return -1;
+      return lp_status_t::NUMERICAL_ISSUES;
     }
     if (toc(start_time) > settings.time_limit) {
       settings.log.printf("Barrier time limit exceeded\n");
-      return -1;
+      return lp_status_t::TIME_LIMIT;
     }
 
     f_t step_primal_aff = std::min(max_step_to_boundary(data.w, data.dw_aff),
@@ -1044,7 +1045,7 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
           relative_dual_residual < 100 * options.optimality_tol &&
           relative_complementarity_residual < 100 * options.complementarity_tol) {
         settings.log.printf("Suboptimal solution found\n");
-        return 1;
+        return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
       }
       compute_residual_norms(w_save,
                              x_save,
@@ -1075,7 +1076,7 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
         data.v = v_save;
         data.z = z_save;
         settings.log.printf("Suboptimal solution found\n");
-        return 1;
+        return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
       } else {
         settings.log.printf(
           "Primal residual %.2e dual residual %.2e complementarity residual %.2e\n",
@@ -1084,12 +1085,12 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
           relative_complementarity_residual);
       }
       settings.log.printf("Search direction computation failed\n");
-      return -1;
+      return lp_status_t::NUMERICAL_ISSUES;
     }
     data.has_factorization = false;
     if (toc(start_time) > settings.time_limit) {
       settings.log.printf("Barrier time limit exceeded\n");
-      return -1;
+      return lp_status_t::TIME_LIMIT;
     }
 
     // dw = dw_aff + dw_cc
@@ -1168,7 +1169,7 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
 
     if (primal_objective != primal_objective || dual_objective != dual_objective) {
       settings.log.printf("Numerical error in objective\n");
-      return -1;
+      return lp_status_t::NUMERICAL_ISSUES;
     }
 
     settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e %.2e %.2e %.2e %.2e %.2e %.1f\n",
@@ -1205,10 +1206,10 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
       settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
                           complementarity_residual_norm,
                           relative_complementarity_residual);
-      return 0;
+      return lp_status_t::OPTIMAL;
     }
   }
-  return 1;
+  return lp_status_t::ITERATION_LIMIT;
 }
 
 #ifdef DUAL_SIMPLEX_INSTANTIATE_DOUBLE
