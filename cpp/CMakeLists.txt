@@ -230,6 +230,10 @@ set(CMAKE_LIBRARY_PATH ${CMAKE_CURRENT_BINARY_DIR}/libmps_parser/)
 
 find_package(cudss REQUIRED CONFIG)
 
+set_target_properties(cudss PROPERTIES
+  INTERFACE_LINK_LIBRARIES "${cudss_LIBRARY_DIR}/libcudss.so.0"
+)
+
 target_link_libraries(cuopt
   PUBLIC
   CUDA::cublas
