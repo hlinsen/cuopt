@@ -40,6 +40,11 @@ class iteration_data_t {
       y(lp.num_rows),
       v(num_upper_bounds),
       z(lp.num_cols),
+      w_save(num_upper_bounds),
+      x_save(lp.num_cols),
+      y_save(lp.num_rows),
+      v_save(num_upper_bounds),
+      z_save(lp.num_cols),
       diag(lp.num_cols),
       inv_diag(lp.num_cols),
       inv_sqrt_diag(lp.num_cols),
@@ -108,6 +113,28 @@ class iteration_data_t {
 
     // Perform symbolic analysis
     chol->analyze(ADAT);
+  }
+
+  void to_solution(const lp_problem_t<i_t, f_t>& lp, i_t iterations, f_t objective, f_t user_objective, f_t primal_residual, f_t dual_residual, lp_solution_t<i_t, f_t>& solution)
+  {
+    solution.x = x;
+    solution.y = y;
+    dense_vector_t<i_t, f_t> z_tilde(z.size());
+    scatter_upper_bounds(v, z_tilde);
+    z_tilde.axpy(1.0, z, -1.0);
+    solution.z = z_tilde;
+
+    dense_vector_t<i_t, f_t> dual_res = z_tilde;
+    dual_res.axpy(-1.0, lp.objective, 1.0);
+    matrix_transpose_vector_multiply(lp.A, 1.0, solution.y, 1.0, dual_res);
+    f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_res);
+    printf("Solution Dual residual: %e\n", dual_residual_norm);
+
+    solution.iterations = iterations;
+    solution.objective = objective;
+    solution.user_objective = user_objective;
+    solution.l2_primal_residual = primal_residual;
+    solution.l2_dual_residual = dual_residual;
   }
 
   void column_density(const csc_matrix_t<i_t, f_t>& A,
@@ -270,6 +297,12 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> y;
   dense_vector_t<i_t, f_t> v;
   dense_vector_t<i_t, f_t> z;
+
+  dense_vector_t<i_t, f_t> w_save;
+  dense_vector_t<i_t, f_t> x_save;
+  dense_vector_t<i_t, f_t> y_save;
+  dense_vector_t<i_t, f_t> v_save;
+  dense_vector_t<i_t, f_t> z_save;
 
   dense_vector_t<i_t, f_t> diag;
   dense_vector_t<i_t, f_t> inv_diag;
@@ -836,7 +869,79 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 }
 
 template <typename i_t, typename f_t>
-lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>& options)
+lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
+  const barrier_solver_settings_t<i_t, f_t>& options,
+  iteration_data_t<i_t, f_t>& data,
+  i_t iter,
+  f_t norm_b,
+  f_t norm_c,
+  f_t& primal_objective,
+  f_t& relative_primal_residual,
+  f_t& relative_dual_residual,
+  f_t& relative_complementarity_residual,
+  lp_solution_t<i_t, f_t>& solution)
+{
+    if (relative_primal_residual < 100 * options.feasibility_tol &&
+        relative_dual_residual < 100 * options.optimality_tol &&
+        relative_complementarity_residual < 100 * options.complementarity_tol) {
+      settings.log.printf("Suboptimal solution found\n");
+      data.to_solution(lp,
+        iter,
+                       primal_objective,
+                       primal_objective + lp.obj_constant,
+                       vector_norm2<i_t, f_t>(data.primal_residual),
+                       vector_norm2<i_t, f_t>(data.dual_residual),
+                       solution);
+      return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
+    }
+    f_t primal_residual_norm;
+    f_t dual_residual_norm;
+    f_t complementarity_residual_norm;
+    compute_residual_norms(data.w_save,
+                           data.x_save,
+                           data.y_save,
+                           data.v_save,
+                           data.z_save,
+                           data,
+                           primal_residual_norm,
+                           dual_residual_norm,
+                           complementarity_residual_norm);
+    primal_objective         = data.c.inner_product(data.x_save);
+    relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
+    relative_dual_residual   = dual_residual_norm / (1.0 + norm_c);
+    relative_complementarity_residual =
+      complementarity_residual_norm / (1.0 + std::abs(primal_objective));
+
+    if (relative_primal_residual < 100 * options.feasibility_tol &&
+        relative_dual_residual < 100 * options.optimality_tol &&
+        relative_complementarity_residual < 100 * options.complementarity_tol) {
+      settings.log.printf(
+        "Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n",
+        primal_residual_norm,
+        dual_residual_norm,
+        complementarity_residual_norm);
+      data.to_solution(lp, iter,
+                       primal_objective,
+                       primal_objective + lp.obj_constant,
+                       vector_norm2<i_t, f_t>(data.primal_residual),
+                       vector_norm2<i_t, f_t>(data.dual_residual),
+                       solution);
+      settings.log.printf("Suboptimal solution found\n");
+      return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
+    } else {
+      settings.log.printf(
+        "Primal residual %.2e dual residual %.2e complementarity residual %.2e\n",
+        relative_primal_residual,
+        relative_dual_residual,
+        relative_complementarity_residual);
+    }
+    settings.log.printf("Search direction computation failed\n");
+    return lp_status_t::NUMERICAL_ISSUES;
+}
+
+template <typename i_t, typename f_t>
+lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>& options,
+                                               lp_solution_t<i_t, f_t>& solution)
 {
   float64_t start_time = tic();
   lp_status_t status = lp_status_t::UNSET;
@@ -844,6 +949,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   i_t n = lp.num_cols;
   i_t m = lp.num_rows;
 
+  solution.resize(m, n);
   settings.log.printf(
     "Barrier solver: %d constraints, %d variables, %ld nonzeros\n", m, n, lp.A.col_start[n]);
 
@@ -915,11 +1021,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                    dual_residual_norm < options.optimality_tol &&
                    complementarity_residual_norm < options.complementarity_tol;
 
-  dense_vector_t<i_t, f_t> w_save = data.w;
-  dense_vector_t<i_t, f_t> x_save = data.x;
-  dense_vector_t<i_t, f_t> y_save = data.y;
-  dense_vector_t<i_t, f_t> v_save = data.v;
-  dense_vector_t<i_t, f_t> z_save = data.z;
+  data.w_save = data.w;
+  data.x_save = data.x;
+  data.y_save = data.y;
+  data.v_save = data.v;
+  data.z_save = data.z;
 
   const i_t iteration_limit = std::min(options.iteration_limit, settings.iteration_limit);
 
@@ -943,51 +1049,16 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     i_t status              = compute_search_direction(
       data, data.dw_aff, data.dx_aff, data.dy_aff, data.dv_aff, data.dz_aff, max_affine_residual);
     if (status < 0) {
-      if (relative_primal_residual < 100 * options.feasibility_tol &&
-          relative_dual_residual < 100 * options.optimality_tol &&
-          relative_complementarity_residual < 100 * options.complementarity_tol) {
-        settings.log.printf("Suboptimal solution found\n");
-        return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
-      }
-      compute_residual_norms(w_save,
-                             x_save,
-                             y_save,
-                             v_save,
-                             z_save,
-                             data,
-                             primal_residual_norm,
-                             dual_residual_norm,
-                             complementarity_residual_norm);
-      primal_objective         = data.c.inner_product(x_save);
-      relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
-      relative_dual_residual   = dual_residual_norm / (1.0 + norm_c);
-      relative_complementarity_residual =
-        complementarity_residual_norm / (1.0 + std::abs(primal_objective));
-
-      if (relative_primal_residual < 100 * options.feasibility_tol &&
-          relative_dual_residual < 100 * options.optimality_tol &&
-          relative_complementarity_residual < 100 * options.complementarity_tol) {
-        settings.log.printf(
-          "Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n",
-          primal_residual_norm,
-          dual_residual_norm,
-          complementarity_residual_norm);
-        data.w = w_save;
-        data.x = x_save;
-        data.y = y_save;
-        data.v = v_save;
-        data.z = z_save;
-        settings.log.printf("Suboptimal solution found\n");
-        return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
-      } else {
-        settings.log.printf(
-          "Primal residual %.2e dual residual %.2e complementarity residual %.2e\n",
-          relative_primal_residual,
-          relative_dual_residual,
-          relative_complementarity_residual);
-      }
-      settings.log.printf("Search direction computation failed\n");
-      return lp_status_t::NUMERICAL_ISSUES;
+        return check_for_suboptimal_solution(options,
+            data,
+            iter,
+            norm_b,
+            norm_c,
+            primal_objective,
+            relative_primal_residual,
+            relative_dual_residual,
+            relative_complementarity_residual,
+            solution);
     }
     if (toc(start_time) > settings.time_limit) {
       settings.log.printf("Barrier time limit exceeded\n");
@@ -1041,51 +1112,16 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     status                     = compute_search_direction(
       data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
     if (status < 0) {
-      if (relative_primal_residual < 100 * options.feasibility_tol &&
-          relative_dual_residual < 100 * options.optimality_tol &&
-          relative_complementarity_residual < 100 * options.complementarity_tol) {
-        settings.log.printf("Suboptimal solution found\n");
-        return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
-      }
-      compute_residual_norms(w_save,
-                             x_save,
-                             y_save,
-                             v_save,
-                             z_save,
-                             data,
-                             primal_residual_norm,
-                             dual_residual_norm,
-                             complementarity_residual_norm);
-      primal_objective         = data.c.inner_product(x_save);
-      relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
-      relative_dual_residual   = dual_residual_norm / (1.0 + norm_c);
-      relative_complementarity_residual =
-        complementarity_residual_norm / (1.0 + std::abs(primal_objective));
-
-      if (relative_primal_residual < 100 * options.feasibility_tol &&
-          relative_dual_residual < 100 * options.optimality_tol &&
-          relative_complementarity_residual < 100 * options.complementarity_tol) {
-        settings.log.printf(
-          "Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n",
-          primal_residual_norm,
-          dual_residual_norm,
-          complementarity_residual_norm);
-        data.w = w_save;
-        data.x = x_save;
-        data.y = y_save;
-        data.v = v_save;
-        data.z = z_save;
-        settings.log.printf("Suboptimal solution found\n");
-        return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
-      } else {
-        settings.log.printf(
-          "Primal residual %.2e dual residual %.2e complementarity residual %.2e\n",
-          relative_primal_residual,
-          relative_dual_residual,
-          relative_complementarity_residual);
-      }
-      settings.log.printf("Search direction computation failed\n");
-      return lp_status_t::NUMERICAL_ISSUES;
+      return check_for_suboptimal_solution(options,
+                                           data,
+                                           iter,
+                                           norm_b,
+                                           norm_c,
+                                           primal_objective,
+                                           relative_primal_residual,
+                                           relative_dual_residual,
+                                           relative_complementarity_residual,
+                                           solution);
     }
     data.has_factorization = false;
     if (toc(start_time) > settings.time_limit) {
@@ -1157,11 +1193,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     if (relative_primal_residual < 100 * options.feasibility_tol &&
         relative_dual_residual < 100 * options.optimality_tol &&
         relative_complementarity_residual < 100 * options.complementarity_tol) {
-      w_save = data.w;
-      x_save = data.x;
-      y_save = data.y;
-      v_save = data.v;
-      z_save = data.z;
+      data.w_save = data.w;
+      data.x_save = data.x;
+      data.y_save = data.y;
+      data.v_save = data.v;
+      data.z_save = data.z;
     }
 
     iter++;
@@ -1206,9 +1242,22 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
                           complementarity_residual_norm,
                           relative_complementarity_residual);
+      data.to_solution(lp,
+                        iter,
+                       primal_objective,
+                       primal_objective + lp.obj_constant,
+                       primal_residual_norm,
+                       dual_residual_norm,
+                       solution);
       return lp_status_t::OPTIMAL;
     }
   }
+  data.to_solution(lp, iter,
+    primal_objective,
+    primal_objective + lp.obj_constant,
+    vector_norm2<i_t, f_t>(data.primal_residual),
+    vector_norm2<i_t, f_t>(data.dual_residual),
+    solution);
   return lp_status_t::ITERATION_LIMIT;
 }
 

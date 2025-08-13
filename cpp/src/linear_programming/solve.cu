@@ -308,6 +308,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   dual_simplex_settings.concurrent_halt = settings.concurrent_halt;
   dual_simplex_settings.use_cudss       = settings.use_cudss;
   dual_simplex_settings.barrier         = true;
+  dual_simplex_settings.crossover       = settings.crossover;
   if (dual_simplex_settings.concurrent_halt != nullptr) {
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
     dual_simplex_settings.log.log = false;

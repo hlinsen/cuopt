@@ -59,6 +59,7 @@ struct simplex_solver_settings_t {
       barrier_presolve(false),
       use_cudss(false),
       barrier(false),
+      crossover(false),
       refactor_frequency(100),
       iteration_log_frequency(1000),
       first_iteration_log(2),
@@ -107,6 +108,7 @@ struct simplex_solver_settings_t {
   bool barrier_presolve;      // true to use barrier presolve
   bool use_cudss;  // true to use cuDSS for sparse Cholesky factorization, false to use cholmod
   bool barrier;    // true to use barrier method, false to use dual simplex method
+  bool crossover;  // true to do crossover, false to not
   i_t refactor_frequency;       // number of basis updates before refactorization
   i_t iteration_log_frequency;  // number of iterations between log updates
   i_t first_iteration_log;      // number of iterations to log at beginning of solve

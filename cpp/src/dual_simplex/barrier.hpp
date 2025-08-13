@@ -19,6 +19,7 @@
 #include "dual_simplex/dense_vector.hpp"
 #include "dual_simplex/presolve.hpp"
 #include "dual_simplex/solve.hpp"
+#include "dual_simplex/solution.hpp"
 #include "dual_simplex/simplex_solver_settings.hpp"
 #include "dual_simplex/sparse_cholesky.hpp"
 #include "dual_simplex/sparse_matrix.hpp"
@@ -47,7 +48,8 @@ class barrier_solver_t {
     : lp(lp), settings(settings), presolve_info(presolve)
   {
   }
-  lp_status_t solve(const barrier_solver_settings_t<i_t, f_t>& options);
+  lp_status_t solve(const barrier_solver_settings_t<i_t, f_t>& options,
+                    lp_solution_t<i_t, f_t>& solution);
 
  private:
   void initial_point(iteration_data_t<i_t, f_t>& data);
@@ -78,6 +80,17 @@ class barrier_solver_t {
                                dense_vector_t<i_t, f_t>& dv,
                                dense_vector_t<i_t, f_t>& dz,
                                f_t& max_residual);
+
+  lp_status_t check_for_suboptimal_solution(const barrier_solver_settings_t<i_t, f_t>& options,
+                                            iteration_data_t<i_t, f_t>& data,
+                                            i_t iter,
+                                            f_t norm_b,
+                                            f_t norm_c,
+                                            f_t& primal_objective,
+                                            f_t& relative_primal_residual,
+                                            f_t& relative_dual_residual,
+                                            f_t& relative_complementarity_residual,
+                                            lp_solution_t<i_t, f_t>& solution);
 
   const lp_problem_t<i_t, f_t>& lp;
   const simplex_solver_settings_t<i_t, f_t>& settings;
