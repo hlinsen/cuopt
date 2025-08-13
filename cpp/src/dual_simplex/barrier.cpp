@@ -23,6 +23,8 @@
 #include <dual_simplex/tic_toc.hpp>
 #include <dual_simplex/types.hpp>
 
+#include <numeric>
+
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -94,6 +96,8 @@ class iteration_data_t {
         inv_diag.sqrt(inv_sqrt_diag);
     }
 
+    column_density(lp.A, settings);
+
     // Copy A into AD
     AD = lp.A;
     // Perform column scaling on A to get AD^(-1)
@@ -116,6 +120,43 @@ class iteration_data_t {
     chol->analyze(ADAT);
   }
 
+  void column_density(const csc_matrix_t<i_t, f_t>& A, const simplex_solver_settings_t<i_t, f_t>& settings)
+  {
+    const i_t m = A.m;
+    const i_t n = A.n;
+    if (n < 2) {
+        return;
+    }
+    std::vector<f_t> density(n);
+    for (i_t j = 0; j < n; j++) {
+      const i_t nnz = A.col_start[j+1] - A.col_start[j];
+      density[j] = static_cast<f_t>(nnz);
+    }
+
+    std::vector<i_t> permutation(n);
+    std::iota(permutation.begin(), permutation.end(), 0);
+    std::sort(permutation.begin(), permutation.end(), [&density](i_t i, i_t j) {
+      return density[i] < density[j];
+    });
+
+    std::vector<i_t> columns_to_keep;
+    columns_to_keep.reserve(n);
+
+    f_t nnz = density[permutation[0]];
+    columns_to_keep.push_back(permutation[0]);
+    for (i_t i = 1; i < n; i++) {
+      const i_t j = permutation[i];
+      const f_t density_j = density[j];
+
+      if (i > n - 5 && density_j > 10.0) {
+        settings.log.printf("Dense column %6d nz %6d density %.2e nnz %.2e\n", j, static_cast<i_t>(density_j), density_j / m, nnz + density_j * density_j);
+      }
+      nnz += density_j * density_j;
+
+      columns_to_keep.push_back(j);
+    }
+ }
+
   void scatter_upper_bounds(const dense_vector_t<i_t, f_t>& y, dense_vector_t<i_t, f_t>& z)
   {
     if (n_upper_bounds > 0) {
@@ -133,6 +174,86 @@ class iteration_data_t {
         i_t j = upper_bounds[k];
         y[k]  = z[j];
       }
+    }
+  }
+
+  void preconditioned_conjugate_gradient(const simplex_solver_settings_t<i_t, f_t>& settings, const dense_vector_t<i_t, f_t>& b, f_t tolerance, dense_vector_t<i_t, f_t>& xinout) const
+  {
+    dense_vector_t<i_t, f_t> residual = b;
+    dense_vector_t<i_t, f_t> y(ADAT.n);
+
+    dense_vector_t<i_t, f_t> x = xinout;
+
+    const csc_matrix_t<i_t, f_t>& A = ADAT;
+
+    // r = A*x - b
+    matrix_vector_multiply(A, 1.0, x, -1.0, residual);
+
+    // Solve M y = r for y
+    chol->solve(residual, y);
+
+    dense_vector_t<i_t, f_t> p = y;
+    p.multiply_scalar(-1.0);
+
+    dense_vector_t<i_t, f_t> Ap(A.n);
+    i_t iter = 0;
+    f_t norm_residual = vector_norm2<i_t, f_t>(residual);
+    f_t initial_norm_residual = norm_residual;
+    settings.log.printf("PCG initial residual 2-norm %e inf-norm %e\n", norm_residual, vector_norm_inf<i_t, f_t>(residual));
+
+    f_t rTy = residual.inner_product(y);
+
+    while (norm_residual > tolerance && iter < 100) {
+        // Compute Ap = A * p
+        matrix_vector_multiply(A, 1.0, p, 0.0, Ap);
+
+        // Compute alpha = (r^T * y) / (p^T * Ap)
+        f_t alpha = rTy / p.inner_product(Ap);
+
+        // Update residual = residual + alpha * Ap
+        residual.axpy(alpha, Ap, 1.0);
+
+        f_t new_residual = vector_norm2<i_t, f_t>(residual);
+        if (new_residual > 1.1 * norm_residual || new_residual > 1.1 * initial_norm_residual) {
+            settings.log.printf("PCG residual increased by more than 10%%. New %e > %e\n", new_residual, norm_residual);
+            break;
+        }
+        norm_residual = new_residual;
+
+        // Update x = x + alpha * p
+        x.axpy(alpha, p, 1.0);
+
+
+        // residual = A*x - b
+        residual = b;
+        matrix_vector_multiply(A, 1.0, x, -1.0, residual);
+        norm_residual = vector_norm2<i_t, f_t>(residual);
+
+        // Solve M y = r for y
+        chol->solve(residual, y);
+
+        // Compute beta = (r_+^T y_+) / (r^T y)
+        f_t r1Ty1 = residual.inner_product(y);
+        f_t beta = r1Ty1 / rTy;
+
+        rTy = r1Ty1;
+
+        // Update p = -y + beta * p
+        p.axpy(-1.0, y, beta);
+
+        iter++;
+        settings.log.printf("PCG iter %3d 2-norm_residual %.2e inf-norm_residual %.2e\n", iter, norm_residual, vector_norm_inf<i_t, f_t>(residual));
+    }
+
+    residual = b;
+    matrix_vector_multiply(A, 1.0, x, -1.0, residual);
+    norm_residual = vector_norm2<i_t, f_t>(residual);
+    if (norm_residual < initial_norm_residual) {
+        settings.log.printf("PCG improved residual 2-norm %.2e/%.2e in %d iterations\n", norm_residual, initial_norm_residual, iter);
+        xinout = x;
+    } else
+    {
+        settings.log.printf("Rejecting PCG solution\n");
     }
   }
 
@@ -184,6 +305,7 @@ class iteration_data_t {
    dense_vector_t<i_t, f_t> dv;
    dense_vector_t<i_t, f_t> dz;
 };
+
 
 
 template <typename i_t, typename f_t>
@@ -480,6 +602,15 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     return -1;
   }
 
+  if (0 && y_residual_norm > 1e-10) {
+    settings.log.printf("Running PCG to improve residual 2-norm %e inf-norm %e\n", vector_norm2<i_t, f_t>(y_residual), y_residual_norm);
+    data.preconditioned_conjugate_gradient(settings, h, std::min(y_residual_norm / 100.0, 1e-6), dy);
+    y_residual = h;
+    matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
+    const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual);
+    settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n", y_residual_norm_pcg);
+  }
+
   // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs - v
   // .* bound_rhs) ./ w))
   //r1 <- A'*dy - r1
@@ -723,9 +854,17 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
         }
     }
     iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
+    if (toc(start_time) > settings.time_limit) {
+      settings.log.printf("Barrier time limit exceeded\n");
+      return -1;
+    }
     settings.log.printf("%d finite upper bounds\n", num_upper_bounds);
 
     initial_point(data);
+    if (toc(start_time) > settings.time_limit) {
+      settings.log.printf("Barrier time limit exceeded\n");
+      return -1;
+    }
     compute_residuals(data.w, data.x, data.y, data.v, data.z, data);
 
     f_t primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual),
@@ -734,8 +873,15 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
     f_t complementarity_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.complementarity_xz_residual),
                                                  vector_norm_inf<i_t, f_t>(data.complementarity_wv_residual));
     f_t mu = (data.complementarity_xz_residual.sum()  + data.complementarity_wv_residual.sum()) / (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
-    settings.log.printf("Initial mu %e\n", mu);
+
+    f_t norm_b = vector_norm_inf<i_t, f_t>(data.b);
+    f_t norm_c = vector_norm_inf<i_t, f_t>(data.c);
+
     f_t primal_objective = data.c.inner_product(data.x);
+
+    f_t relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
+    f_t relative_dual_residual = dual_residual_norm / (1.0 + norm_c);
+    f_t relative_complementarity_residual = complementarity_residual_norm / (1.0 + std::abs(primal_objective));
 
     dense_vector_t<i_t, f_t> restrict_u(num_upper_bounds);
     dense_vector_t<i_t, f_t> upper(lp.upper);
@@ -757,7 +903,13 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
     dense_vector_t<i_t, f_t> v_save = data.v;
     dense_vector_t<i_t, f_t> z_save = data.z;
 
-    while (iter < options.iteration_limit) {
+    const i_t iteration_limit = std::min(options.iteration_limit, settings.iteration_limit);
+
+    while (iter < iteration_limit) {
+        if (toc(start_time) > settings.time_limit) {
+            settings.log.printf("Barrier time limit exceeded\n");
+            return -1;
+        }
         // Compute the affine step
         data.primal_rhs = data.primal_residual;
         data.bound_rhs = data.bound_residual;
@@ -772,16 +924,21 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
         f_t max_affine_residual = 0.0;
         i_t status = compute_search_direction(data, data.dw_aff, data.dx_aff, data.dy_aff, data.dv_aff, data.dz_aff, max_affine_residual);
         if (status < 0) {
-          if (primal_residual_norm < 100 * options.feasibility_tol &&
-              dual_residual_norm < 100 * options.optimality_tol &&
-              complementarity_residual_norm < 100 * options.complementarity_tol) {
+          if (relative_primal_residual < 100 * options.feasibility_tol &&
+              relative_dual_residual < 100 * options.optimality_tol &&
+              relative_complementarity_residual < 100 * options.complementarity_tol) {
             settings.log.printf("Suboptimal solution found\n");
             return 1;
           }
           compute_residual_norms(w_save, x_save, y_save, v_save, z_save, data, primal_residual_norm, dual_residual_norm, complementarity_residual_norm);
-          if (primal_residual_norm < 100 * options.feasibility_tol &&
-              dual_residual_norm < 100 * options.optimality_tol &&
-              complementarity_residual_norm < 100 * options.complementarity_tol) {
+          primal_objective = data.c.inner_product(x_save);
+          relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
+          relative_dual_residual = dual_residual_norm / (1.0 + norm_c);
+          relative_complementarity_residual = complementarity_residual_norm / (1.0 + std::abs(primal_objective));
+
+          if (relative_primal_residual < 100 * options.feasibility_tol &&
+              relative_dual_residual < 100 * options.optimality_tol &&
+              relative_complementarity_residual < 100 * options.complementarity_tol) {
             settings.log.printf("Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n", primal_residual_norm, dual_residual_norm, complementarity_residual_norm);
             data.w = w_save;
             data.x = x_save;
@@ -793,6 +950,10 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
           }
           settings.log.printf("Search direction computation failed\n");
           return -1;
+        }
+        if (toc(start_time) > settings.time_limit) {
+            settings.log.printf("Barrier time limit exceeded\n");
+            return -1;
         }
 
         f_t step_primal_aff = std::min(max_step_to_boundary(data.w, data.dw_aff), max_step_to_boundary(data.x, data.dx_aff));
@@ -815,8 +976,11 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
         dense_vector_t<i_t, f_t> complementarity_wv_aff(num_upper_bounds);
         x_aff.pairwise_product(z_aff, complementarity_xz_aff);
         w_aff.pairwise_product(v_aff, complementarity_wv_aff);
-        f_t mu_aff = (complementarity_xz_aff.sum() + complementarity_wv_aff.sum()) / (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
+
+        f_t complementarity_aff_sum = complementarity_xz_aff.sum() + complementarity_wv_aff.sum();
+        f_t mu_aff = (complementarity_aff_sum) / (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
         f_t sigma = std::max(0.0, std::min(1.0, std::pow(mu_aff / mu, 3.0)));
+        f_t new_mu = sigma * mu_aff;
 
         // Compute the combined centering corrector step
         data.primal_rhs.set_scalar(0.0);
@@ -825,12 +989,12 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
         // complementarity_xz_rhs = -dx_aff .* dz_aff + sigma * mu
         data.dx_aff.pairwise_product(data.dz_aff, data.complementarity_xz_rhs);
         data.complementarity_xz_rhs.multiply_scalar(-1.0);
-        data.complementarity_xz_rhs.add_scalar(sigma * mu);
+        data.complementarity_xz_rhs.add_scalar(new_mu);
 
         // complementarity_wv_rhs = -dw_aff .* dv_aff + sigma * mu
         data.dw_aff.pairwise_product(data.dv_aff, data.complementarity_wv_rhs);
         data.complementarity_wv_rhs.multiply_scalar(-1.0);
-        data.complementarity_wv_rhs.add_scalar(sigma * mu);
+        data.complementarity_wv_rhs.add_scalar(new_mu);
 
         f_t max_corrector_residual = 0.0;
         status = compute_search_direction(data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
@@ -845,6 +1009,10 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
             return -1;
         }
         data.has_factorization = false;
+        if (toc(start_time) > settings.time_limit) {
+            settings.log.printf("Barrier time limit exceeded\n");
+            return -1;
+        }
 
         // dw = dw_aff + dw_cc
         // dx = dx_aff + dx_cc
@@ -888,9 +1056,18 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
 
         compute_residual_norms(data.w, data.x, data.y, data.v, data.z, data, primal_residual_norm, dual_residual_norm, complementarity_residual_norm);
 
-        if (primal_residual_norm < 100 * options.feasibility_tol &&
-            dual_residual_norm < 100 * options.optimality_tol &&
-            complementarity_residual_norm < 100 * options.complementarity_tol) {
+        mu = (data.complementarity_xz_residual.sum()  + data.complementarity_wv_residual.sum()) / (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
+
+        primal_objective = data.c.inner_product(data.x);
+        dual_objective = data.b.inner_product(data.y) - restrict_u.inner_product(data.v);
+
+        relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
+        relative_dual_residual = dual_residual_norm / (1.0 + norm_c);
+        relative_complementarity_residual = complementarity_residual_norm / (1.0 + std::abs(primal_objective));
+
+        if (relative_primal_residual < 100 * options.feasibility_tol &&
+            relative_dual_residual < 100 * options.optimality_tol &&
+            relative_complementarity_residual < 100 * options.complementarity_tol) {
             w_save = data.w;
             x_save = data.x;
             y_save = data.y;
@@ -898,10 +1075,6 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
             z_save = data.z;
         }
 
-        mu = (data.complementarity_xz_residual.sum()  + data.complementarity_wv_residual.sum()) / (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
-
-        primal_objective = data.c.inner_product(data.x);
-        dual_objective = data.b.inner_product(data.y) - restrict_u.inner_product(data.v);
         iter++;
         elapsed_time = toc(start_time);
 
@@ -914,9 +1087,9 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
                             iter,
                             primal_objective + lp.obj_constant,
                             dual_objective + lp.obj_constant,
-                            primal_residual_norm,
-                            dual_residual_norm,
-                            complementarity_residual_norm,
+                            relative_primal_residual,
+                            relative_dual_residual,
+                            relative_complementarity_residual,
                             step_primal,
                             step_dual,
                             std::min(data.complementarity_xz_residual.minimum(), data.complementarity_wv_residual.minimum()),
@@ -924,15 +1097,18 @@ i_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>&
                             std::max(max_affine_residual, max_corrector_residual),
                             elapsed_time);
 
-        bool primal_feasible = primal_residual_norm < options.feasibility_tol;
-        bool dual_feasible = dual_residual_norm < options.optimality_tol;
-        bool small_gap = complementarity_residual_norm < options.complementarity_tol;
+        bool primal_feasible = relative_primal_residual < options.feasibility_tol;
+        bool dual_feasible = relative_dual_residual < options.optimality_tol;
+        bool small_gap = relative_complementarity_residual < options.complementarity_tol;
 
         converged = primal_feasible && dual_feasible && small_gap;
 
         if (converged) {
-            settings.log.printf("Optimal solution found\n");
-            settings.log.printf("Optimal objective value %.12e\n", primal_objective + lp.obj_constant);
+            settings.log.printf("Optimal solution found in %d iterations and %.2fs\n", iter, toc(start_time));
+            settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
+            settings.log.printf("Primal infeasibility (abs/rel): %8.2e/%8.2e\n", primal_residual_norm, relative_primal_residual);
+            settings.log.printf("Dual infeasibility   (abs/rel): %8.2e/%8.2e\n", dual_residual_norm, relative_dual_residual);
+            settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n", complementarity_residual_norm, relative_complementarity_residual);
             return 0;
         }
     }

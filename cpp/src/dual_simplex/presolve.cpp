@@ -857,7 +857,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   }
 
   // Check for dependent rows
-  bool check_dependent_rows = settings.barrier;
+  bool check_dependent_rows = false; //settings.barrier;
   if (check_dependent_rows) {
     std::vector<i_t> dependent_rows;
     constexpr i_t kOk = -1;

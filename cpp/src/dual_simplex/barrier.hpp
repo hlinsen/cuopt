@@ -27,9 +27,9 @@ namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
 struct barrier_solver_settings_t {
-  f_t feasibility_tol = 1e-6;
-  f_t optimality_tol = 1e-6;
-  f_t complementarity_tol = 1e-6;
+  f_t feasibility_tol = 1e-8;
+  f_t optimality_tol = 1e-8;
+  f_t complementarity_tol = 1e-8;
   i_t iteration_limit = 1000;
   f_t step_scale = 0.9;
 };

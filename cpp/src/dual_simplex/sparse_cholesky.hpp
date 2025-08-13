@@ -108,9 +108,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                          &reorder_alg, sizeof(cudssAlgType_t)), status, "cudssConfigSet for reordering alg");
 #endif
 
+#if 0
         int32_t ir_n_steps = 2;
         CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig, CUDSS_CONFIG_IR_N_STEPS,
                                           &ir_n_steps, sizeof(int32_t)), status, "cudssConfigSet for ir n steps");
+#endif
 
         // Device pointers
         csr_offset_d = nullptr;
