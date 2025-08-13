@@ -273,7 +273,7 @@ lp_status_t solve_linear_program(const user_problem_t<i_t, f_t>& user_problem,
                                  const simplex_solver_settings_t<i_t, f_t>& settings,
                                  lp_solution_t<i_t, f_t>& solution)
 {
-  f_t start_time     = tic();
+  f_t start_time = tic();
   lp_problem_t<i_t, f_t> original_lp(1, 1, 1);
   std::vector<i_t> new_slacks;
   convert_user_problem(user_problem, settings, original_lp, new_slacks);
@@ -374,10 +374,10 @@ template lp_status_t solve_linear_program_advanced(
   std::vector<variable_status_t>& vstatus,
   std::vector<double>& edge_norms);
 
-
-template lp_status_t solve_linear_program_with_barrier(const user_problem_t<int, double>& user_problem,
-    const simplex_solver_settings_t<int, double>& settings,
-    lp_solution_t<int, double>& solution);
+template lp_status_t solve_linear_program_with_barrier(
+  const user_problem_t<int, double>& user_problem,
+  const simplex_solver_settings_t<int, double>& settings,
+  lp_solution_t<int, double>& solution);
 
 template lp_status_t solve_linear_program(const user_problem_t<int, double>& user_problem,
                                           const simplex_solver_settings_t<int, double>& settings,

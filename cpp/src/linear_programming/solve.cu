@@ -314,8 +314,8 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   }
 
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
-  auto status =
-    dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(user_problem, dual_simplex_settings, solution);
+  auto status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
+    user_problem, dual_simplex_settings, solution);
 
   auto end      = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_solver);
@@ -347,7 +347,6 @@ optimization_problem_solution_t<i_t, f_t> run_barrier(
                                   std::get<3>(sol_dual_simplex),
                                   std::get<4>(sol_dual_simplex));
 }
-
 
 template <typename i_t, typename f_t>
 std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>

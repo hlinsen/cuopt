@@ -693,15 +693,12 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
     bound_strengthening(row_sense, settings, problem);
   }
 
-
   if (less_rows > 0) {
     convert_less_than_to_equal(user_problem, row_sense, problem, less_rows, new_slacks);
   }
 
   // Add artifical variables
-  if (!settings.barrier_presolve) {
-    add_artifical_variables(problem, equality_rows, new_slacks);
-  }
+  if (!settings.barrier_presolve) { add_artifical_variables(problem, equality_rows, new_slacks); }
 }
 
 template <typename i_t, typename f_t>
@@ -713,7 +710,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   problem = original;
   std::vector<char> row_sense(problem.num_rows, '=');
 
-   // The original problem may have a variable without a lower bound
+  // The original problem may have a variable without a lower bound
   // but a finite upper bound
   // -inf < x_j <= u_j
   i_t no_lower_bound = 0;
@@ -745,20 +742,17 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     // sum_{k != j} c_k x_k + c_j (x'_j + l_j)
     //
     // so we get the constant term c_j * l_j
-    for (i_t j = 0; j < problem.num_cols; j++)
-    {
-        if (problem.lower[j] != 0.0 && problem.lower[j] > -inf)
-        {
-            for (i_t p = problem.A.col_start[j]; p < problem.A.col_start[j+1]; p++)
-            {
-                i_t i = problem.A.i[p];
-                f_t aij = problem.A.x[p];
-                problem.rhs[i] -= aij * problem.lower[j];
-            }
-            problem.obj_constant += problem.objective[j] * problem.lower[j];
-            problem.upper[j] -= problem.lower[j];
-            problem.lower[j] = 0.0;
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (problem.lower[j] != 0.0 && problem.lower[j] > -inf) {
+        for (i_t p = problem.A.col_start[j]; p < problem.A.col_start[j + 1]; p++) {
+          i_t i   = problem.A.i[p];
+          f_t aij = problem.A.x[p];
+          problem.rhs[i] -= aij * problem.lower[j];
         }
+        problem.obj_constant += problem.objective[j] * problem.lower[j];
+        problem.upper[j] -= problem.lower[j];
+        problem.lower[j] = 0.0;
+      }
     }
   }
 
@@ -783,13 +777,11 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     // sum_{k != j} c_k x_k + c_j v - c_j w
 
     i_t num_cols = problem.num_cols + free_variables;
-    i_t nnz = problem.A.col_start[problem.num_cols];
-    for (i_t j = 0; j<problem.num_cols; j++)
-    {
-        if (problem.lower[j] == -inf && problem.upper[j] == inf)
-        {
-            nnz += (problem.A.col_start[j+1] - problem.A.col_start[j]);
-        }
+    i_t nnz      = problem.A.col_start[problem.num_cols];
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (problem.lower[j] == -inf && problem.upper[j] == inf) {
+        nnz += (problem.A.col_start[j + 1] - problem.A.col_start[j]);
+      }
     }
 
     problem.A.col_start.resize(num_cols + 1);
@@ -801,31 +793,28 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
 
     presolve_info.free_variable_pairs.resize(free_variables * 2);
     i_t pair_count = 0;
-    i_t q = problem.A.col_start[problem.num_cols];
-    i_t col = problem.num_cols;
-    for (i_t j = 0; j < problem.num_cols; j++)
-    {
-        if (problem.lower[j] == -inf && problem.upper[j] == inf)
-        {
-            for (i_t p = problem.A.col_start[j]; p < problem.A.col_start[j+1]; p++)
-            {
-                i_t i = problem.A.i[p];
-                f_t aij = problem.A.x[p];
-                problem.A.i[q] = i;
-                problem.A.x[q] = -aij;
-                q++;
-            }
-            problem.lower[col] = 0.0;
-            problem.upper[col] = inf;
-            problem.objective[col] = -problem.objective[j];
-            presolve_info.free_variable_pairs[pair_count++] = j;
-            presolve_info.free_variable_pairs[pair_count++] = col;
-            problem.A.col_start[++col] = q;
-            problem.lower[j] = 0.0;
+    i_t q          = problem.A.col_start[problem.num_cols];
+    i_t col        = problem.num_cols;
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (problem.lower[j] == -inf && problem.upper[j] == inf) {
+        for (i_t p = problem.A.col_start[j]; p < problem.A.col_start[j + 1]; p++) {
+          i_t i          = problem.A.i[p];
+          f_t aij        = problem.A.x[p];
+          problem.A.i[q] = i;
+          problem.A.x[q] = -aij;
+          q++;
         }
+        problem.lower[col]                              = 0.0;
+        problem.upper[col]                              = inf;
+        problem.objective[col]                          = -problem.objective[j];
+        presolve_info.free_variable_pairs[pair_count++] = j;
+        presolve_info.free_variable_pairs[pair_count++] = col;
+        problem.A.col_start[++col]                      = q;
+        problem.lower[j]                                = 0.0;
+      }
     }
     assert(problem.A.p[num_cols] == nnz);
-    problem.A.n = num_cols;
+    problem.A.n      = num_cols;
     problem.num_cols = num_cols;
   }
 
@@ -857,12 +846,12 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   }
 
   // Check for dependent rows
-  bool check_dependent_rows = false; //settings.barrier;
+  bool check_dependent_rows = false;  // settings.barrier;
   if (check_dependent_rows) {
     std::vector<i_t> dependent_rows;
     constexpr i_t kOk = -1;
     i_t infeasible;
-    f_t dependent_row_start = tic();
+    f_t dependent_row_start    = tic();
     const i_t independent_rows = find_dependent_rows(problem, settings, dependent_rows, infeasible);
     if (infeasible != kOk) {
       settings.log.printf("Found problem infeasible in presolve\n");

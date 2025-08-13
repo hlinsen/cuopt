@@ -17,26 +17,25 @@
 #pragma once
 
 #include "dual_simplex/dense_vector.hpp"
-#include "dual_simplex/sparse_matrix.hpp"
-#include "dual_simplex/sparse_cholesky.hpp"
 #include "dual_simplex/presolve.hpp"
 #include "dual_simplex/simplex_solver_settings.hpp"
+#include "dual_simplex/sparse_cholesky.hpp"
+#include "dual_simplex/sparse_matrix.hpp"
 #include "dual_simplex/tic_toc.hpp"
 
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
 struct barrier_solver_settings_t {
-  f_t feasibility_tol = 1e-8;
-  f_t optimality_tol = 1e-8;
+  f_t feasibility_tol     = 1e-8;
+  f_t optimality_tol      = 1e-8;
   f_t complementarity_tol = 1e-8;
-  i_t iteration_limit = 1000;
-  f_t step_scale = 0.9;
+  i_t iteration_limit     = 1000;
+  f_t step_scale          = 0.9;
 };
 
-
 template <typename i_t, typename f_t>
-class iteration_data_t; // Forward declare
+class iteration_data_t;  // Forward declare
 
 template <typename i_t, typename f_t>
 class barrier_solver_t {
