@@ -87,7 +87,7 @@ template <typename i_t, typename f_t>
 class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
  public:
   sparse_cholesky_cudss_t(const simplex_solver_settings_t<i_t, f_t>& settings, i_t size)
-    : n(size), nnz(-1), first_factor(true), positive_definite(true)
+    : n(size), nnz(-1), first_factor(true), positive_definite(true), settings_(settings)
   {
     int major, minor, patch;
     cudssGetProperty(MAJOR_VERSION, &major);
@@ -213,14 +213,14 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssExecute for analysis");
 
     f_t symbolic_time = toc(start_symbolic);
-    printf("Symbolic time %.2fs\n", symbolic_time);
+    settings_.log.printf("Symbolic time %.2fs\n", symbolic_time);
     int64_t lu_nz       = 0;
     size_t size_written = 0;
     CUDSS_CALL_AND_CHECK(
       cudssDataGet(handle, solverData, CUDSS_DATA_LU_NNZ, &lu_nz, sizeof(int64_t), &size_written),
       status,
       "cudssDataGet for LU_NNZ");
-    printf("Symbolic nonzeros in factor %e\n", static_cast<f_t>(lu_nz) / 2.0);
+    settings_.log.printf("Symbolic nonzeros in factor %e\n", static_cast<f_t>(lu_nz) / 2.0);
     // TODO: Is there any way to get nonzeros in the factors?
     // TODO: Is there any way to get flops for the factorization?
 
@@ -232,7 +232,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     A_in.to_compressed_row(Arow);
 
     if (nnz != A_in.col_start[A_in.n]) {
-      printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, A_in.col_start[A_in.n]);
+      settings_.log.printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, A_in.col_start[A_in.n]);
       exit(1);
     }
 
@@ -259,16 +259,16 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       status,
       "cudssDataGet for info");
     if (info != 0) {
-      printf("Factorization failed info %d\n", info);
+      settings_.log.printf("Factorization failed info %d\n", info);
       return -1;
     }
 
     if (first_factor) {
-      printf("Factor time %.2fs\n", numeric_time);
+      settings_.log.printf("Factor time %.2fs\n", numeric_time);
       first_factor = false;
     }
     if (status != CUDSS_STATUS_SUCCESS) {
-      printf("cuDSS Factorization failed\n");
+      settings_.log.printf("cuDSS Factorization failed\n");
       return -1;
     }
     return 0;
@@ -277,11 +277,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   i_t solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) override
   {
     if (b.size() != n) {
-      printf("Error: b.size() %d != n %d\n", b.size(), n);
+      settings_.log.printf("Error: b.size() %d != n %d\n", b.size(), n);
       exit(1);
     }
     if (x.size() != n) {
-      printf("Error: x.size() %d != n %d\n", x.size(), n);
+      settings_.log.printf("Error: x.size() %d != n %d\n", x.size(), n);
       exit(1);
     }
     CUDA_CALL_AND_CHECK(cudaMemcpy(b_values_d, b.data(), n * sizeof(f_t), cudaMemcpyHostToDevice),
@@ -346,6 +346,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   f_t* csr_values_d;
   f_t* x_values_d;
   f_t* b_values_d;
+
+  const simplex_solver_settings_t<i_t, f_t>& settings_;
 };
 
 }  // namespace cuopt::linear_programming::dual_simplex
