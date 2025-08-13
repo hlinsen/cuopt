@@ -230,9 +230,21 @@ set(CMAKE_LIBRARY_PATH ${CMAKE_CURRENT_BINARY_DIR}/libmps_parser/)
 
 find_package(cudss REQUIRED CONFIG)
 
-#set_target_properties(cudss PROPERTIES
-#  INTERFACE_LINK_LIBRARIES "${cudss_LIBRARY_DIR}/libcudss.so.0"
-#)
+# Print all details of the cudss package
+message(STATUS "cudss package details:")
+message(STATUS "  cudss_FOUND: ${cudss_FOUND}")
+message(STATUS "  cudss_VERSION: ${cudss_VERSION}")
+message(STATUS "  cudss_INCLUDE_DIRS: ${cudss_INCLUDE_DIRS}")
+message(STATUS "  cudss_LIBRARY_DIR: ${cudss_LIBRARY_DIR}")
+message(STATUS "  cudss_LIBRARIES: ${cudss_LIBRARIES}")
+message(STATUS "  cudss_DEFINITIONS: ${cudss_DEFINITIONS}")
+message(STATUS "  cudss_COMPILE_OPTIONS: ${cudss_COMPILE_OPTIONS}")
+message(STATUS "  cudss_LINK_OPTIONS: ${cudss_LINK_OPTIONS}")
+
+# Use the specific cudss library version to avoid symlink issues
+set(CUDSS_LIB_FILE "${cudss_LIBRARY_DIR}/libcudss.so.0")
+message(STATUS "Using cudss library: ${CUDSS_LIB_FILE}")
+
 
 target_link_libraries(cuopt
   PUBLIC
@@ -243,7 +255,7 @@ target_link_libraries(cuopt
   CCCL::CCCL
   raft::raft
   cuopt::mps_parser
-  cudss
+  ${CUDSS_LIB_FILE}
   PRIVATE
   ${CUOPT_PRIVATE_CUDA_LIBS}
   )
