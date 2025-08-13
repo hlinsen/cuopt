@@ -33,15 +33,25 @@
 #include <raft/sparse/detail/cusparse_macros.h>
 #include <raft/sparse/detail/cusparse_wrappers.h>
 
+#include <cudss.h>
+
 #include <future>
 #include <memory>
 #include <thread>
 
 namespace cuopt::linear_programming::detail {
 
+void force_link_cudss() {
+    cudssHandle_t handle;
+    cudssCreate(&handle);
+    cudssDestroy(handle);
+}
+
+
 // This serves as both a warm up but also a mandatory initial call to setup cuSparse and cuBLAS
 static void init_handler(const raft::handle_t* handle_ptr)
 {
+  force_link_cudss();
   // Init cuBlas / cuSparse context here to avoid having it during solving time
   RAFT_CUBLAS_TRY(raft::linalg::detail::cublassetpointermode(
     handle_ptr->get_cublas_handle(), CUBLAS_POINTER_MODE_DEVICE, handle_ptr->get_stream()));
