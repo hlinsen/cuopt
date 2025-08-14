@@ -162,6 +162,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   i_t analyze(const csc_matrix_t<i_t, f_t>& A_in) override
   {
     csr_matrix_t<i_t, f_t> Arow;
+#ifdef WRITE_MATRIX_MARKET
+    FILE* fid = fopen("A.mtx", "w");
+    A_in.write_matrix_market(fid);
+    fclose(fid);
+#endif
     A_in.to_compressed_row(Arow);
 
     nnz = A_in.col_start[A_in.n];
@@ -205,15 +210,27 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssMatrixCreateCsr");
 
     // Perform symbolic analysis
+    f_t start_analysis = tic();
+
+    CUDSS_CALL_AND_CHECK(
+      cudssExecute(handle, CUDSS_PHASE_REORDERING, solverConfig, solverData, A, cudss_x, cudss_b),
+      status,
+      "cudssExecute for reordering");
+
+    f_t reorder_time = toc(start_analysis);
+    settings_.log.printf("Reordering time %.2fs\n", reorder_time);
+
     f_t start_symbolic = tic();
 
     CUDSS_CALL_AND_CHECK(
-      cudssExecute(handle, CUDSS_PHASE_ANALYSIS, solverConfig, solverData, A, cudss_x, cudss_b),
+      cudssExecute(handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b),
       status,
-      "cudssExecute for analysis");
+      "cudssExecute for symbolic factorization");
 
     f_t symbolic_time = toc(start_symbolic);
-    settings_.log.printf("Symbolic time %.2fs\n", symbolic_time);
+    f_t analysis_time = toc(start_analysis);
+    settings_.log.printf("Symbolic factorization time %.2fs\n", symbolic_time);
+    settings_.log.printf("Symbolic time %.2fs\n", analysis_time);
     int64_t lu_nz       = 0;
     size_t size_written = 0;
     CUDSS_CALL_AND_CHECK(

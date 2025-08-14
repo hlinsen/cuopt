@@ -974,6 +974,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     settings.log.printf("Barrier time limit exceeded\n");
     return lp_status_t::TIME_LIMIT;
   }
+  if (settings.concurrent_halt != nullptr &&
+    settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+    settings.log.printf("Barrier solver halted\n");
+    return lp_status_t::CONCURRENT_LIMIT;
+  }
   compute_residuals(data.w, data.x, data.y, data.v, data.z, data);
 
   f_t primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual),

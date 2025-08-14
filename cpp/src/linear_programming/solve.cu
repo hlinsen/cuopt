@@ -350,6 +350,20 @@ optimization_problem_solution_t<i_t, f_t> run_barrier(
 }
 
 template <typename i_t, typename f_t>
+void run_barrier_thread(
+  dual_simplex::user_problem_t<i_t, f_t>& problem,
+  pdlp_solver_settings_t<i_t, f_t> const& settings,
+  std::unique_ptr<
+    std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>&
+    sol_ptr)
+{
+  // We will return the solution from the thread as a unique_ptr
+  sol_ptr = std::make_unique<
+    std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>(
+    run_barrier(problem, settings));
+}
+
+template <typename i_t, typename f_t>
 std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>
 run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
                  pdlp_solver_settings_t<i_t, f_t> const& settings)
@@ -363,7 +377,6 @@ run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   dual_simplex_settings.time_limit      = settings.time_limit;
   dual_simplex_settings.iteration_limit = settings.iteration_limit;
   dual_simplex_settings.concurrent_halt = settings.concurrent_halt;
-  dual_simplex_settings.use_cudss       = settings.use_cudss;
   if (dual_simplex_settings.concurrent_halt != nullptr) {
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
     dual_simplex_settings.log.log = false;
@@ -555,11 +568,24 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
                                   std::ref(settings_pdlp),
                                   std::ref(sol_dual_simplex_ptr));
 
+  dual_simplex::user_problem_t<i_t, f_t> barrier_problem = dual_simplex_problem;
+  // Create a thread for barrier
+  std::unique_ptr<
+    std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>
+    sol_barrier_ptr;
+  std::thread barrier_thread(run_barrier_thread<i_t, f_t>,
+                             std::ref(barrier_problem),
+                             std::ref(settings_pdlp),
+                             std::ref(sol_barrier_ptr));
+
   // Run pdlp in the main thread
   auto sol_pdlp = run_pdlp(problem, settings_pdlp, is_batch_mode);
 
   // Wait for dual simplex thread to finish
   dual_simplex_thread.join();
+
+  // Wait for barrier thread to finish
+  barrier_thread.join();
 
   // copy the dual simplex solution to the device
   auto sol_dual_simplex = convert_dual_simplex_sol(problem,
@@ -569,6 +595,14 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
                                                    std::get<3>(*sol_dual_simplex_ptr),
                                                    std::get<4>(*sol_dual_simplex_ptr));
 
+  // copy the barrier solution to the device
+  auto sol_barrier = convert_dual_simplex_sol(problem,
+                                              std::get<0>(*sol_barrier_ptr),
+                                              std::get<1>(*sol_barrier_ptr),
+                                              std::get<2>(*sol_barrier_ptr),
+                                              std::get<3>(*sol_barrier_ptr),
+                                              std::get<4>(*sol_barrier_ptr));
+
   f_t end_time = dual_simplex::toc(start_time);
   CUOPT_LOG_INFO("Concurrent time:  %.3fs", end_time);
   // Check status to see if we should return the pdlp solution or the dual simplex solution
@@ -577,6 +611,16 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
       sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::DualInfeasible) {
     CUOPT_LOG_INFO("Solved with dual simplex");
     sol_pdlp.copy_from(op_problem.get_handle_ptr(), sol_dual_simplex);
+    sol_pdlp.set_solve_time(end_time);
+    CUOPT_LOG_INFO("Status: %s   Objective: %.8e  Iterations: %d  Time: %.3fs",
+                   sol_pdlp.get_termination_status_string().c_str(),
+                   sol_pdlp.get_objective_value(),
+                   sol_pdlp.get_additional_termination_information().number_of_steps_taken,
+                   end_time);
+    return sol_pdlp;
+  } else if (sol_barrier.get_termination_status() == pdlp_termination_status_t::Optimal) {
+    CUOPT_LOG_INFO("Solved with barrier");
+    sol_pdlp.copy_from(op_problem.get_handle_ptr(), sol_barrier);
     sol_pdlp.set_solve_time(end_time);
     CUOPT_LOG_INFO("Status: %s   Objective: %.8e  Iterations: %d  Time: %.3fs",
                    sol_pdlp.get_termination_status_string().c_str(),
