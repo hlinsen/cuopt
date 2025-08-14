@@ -96,9 +96,9 @@ class csc_matrix_t {
   // Perform column scaling of the matrix
   void scale_columns(const std::vector<f_t>& scale);
 
-  i_t nz_max;                  // maximum number of entries
   i_t m;                       // number of rows
   i_t n;                       // number of columns
+  i_t nz_max;                  // maximum number of entries
   std::vector<i_t> col_start;  // column pointers (size n + 1)
   std::vector<i_t> i;          // row indices, size nz_max
   std::vector<f_t> x;          // numerical values, size nz_max
