@@ -221,7 +221,7 @@ i_t remove_rows(lp_problem_t<i_t, f_t>& problem,
 {
   constexpr bool verbose = true;
   if (verbose) { printf("Removing rows %d %ld\n", Arow.m, row_marker.size()); }
-  csr_matrix_t<i_t, f_t> Aout;
+  csr_matrix_t<i_t, f_t> Aout(0, 0, 0);
   Arow.remove_rows(row_marker, Aout);
   i_t new_rows = Aout.m;
   if (verbose) { printf("Cleaning up rhs. New rows %d\n", new_rows); }
@@ -257,7 +257,7 @@ i_t remove_empty_rows(lp_problem_t<i_t, f_t>& problem,
 {
   constexpr bool verbose = false;
   if (verbose) { printf("Problem has %d empty rows\n", num_empty_rows); }
-  csr_matrix_t<i_t, f_t> Arow;
+  csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
   problem.A.to_compressed_row(Arow);
   std::vector<i_t> row_marker(problem.num_rows);
 
@@ -347,7 +347,7 @@ i_t convert_less_than_to_equal(const user_problem_t<i_t, f_t>& user_problem,
   // We must convert rows in the form: a_i^T x <= beta
   // into: a_i^T x + s_i = beta, s_i >= 0
 
-  csr_matrix_t<i_t, f_t> Arow;
+  csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
   problem.A.to_compressed_row(Arow);
   i_t num_cols = problem.num_cols + less_rows;
   i_t nnz      = problem.A.col_start[problem.num_cols] + less_rows;
@@ -399,7 +399,7 @@ i_t convert_greater_to_less(const user_problem_t<i_t, f_t>& user_problem,
   // sum_{j : a_ij != 0} -a_ij * x_j <= -beta
 
   // First construct a compressed sparse row representation of the A matrix
-  csr_matrix_t<i_t, f_t> Arow;
+  csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
   problem.A.to_compressed_row(Arow);
 
   for (i_t i = 0; i < problem.num_rows; i++) {
@@ -813,7 +813,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
         problem.lower[j]                                = 0.0;
       }
     }
-    assert(problem.A.p[num_cols] == nnz);
+    // assert(problem.A.p[num_cols] == nnz);
     problem.A.n      = num_cols;
     problem.num_cols = num_cols;
   }
@@ -821,7 +821,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   // Check for empty rows
   i_t num_empty_rows = 0;
   {
-    csr_matrix_t<i_t, f_t> Arow;
+    csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
     problem.A.to_compressed_row(Arow);
     for (i_t i = 0; i < problem.num_rows; i++) {
       if (Arow.row_start[i + 1] - Arow.row_start[i] == 0) { num_empty_rows++; }
@@ -860,7 +860,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     if (independent_rows < problem.num_rows) {
       const i_t num_dependent_rows = problem.num_rows - independent_rows;
       settings.log.printf("%d dependent rows\n", num_dependent_rows);
-      csr_matrix_t<i_t, f_t> Arow;
+      csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
       problem.A.to_compressed_row(Arow);
       remove_rows(problem, row_sense, Arow, dependent_rows, false);
     }

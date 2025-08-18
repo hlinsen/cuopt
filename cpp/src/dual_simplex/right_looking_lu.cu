@@ -613,8 +613,8 @@ i_t right_looking_lu(const csc_matrix_t<i_t, f_t>& A,
   initialize_max_in_row(first_in_row, elements, max_in_row);
 #endif
 
-  csr_matrix_t<i_t, f_t> Urow;  // We will store U by rows in Urow during the factorization and
-                                // translate back to U at the end
+  csr_matrix_t<i_t, f_t> Urow(n, n, 0);  // We will store U by rows in Urow during the factorization
+                                         // and translate back to U at the end
   Urow.n = Urow.m = n;
   Urow.row_start.resize(n + 1, -1);
   i_t Unz = 0;

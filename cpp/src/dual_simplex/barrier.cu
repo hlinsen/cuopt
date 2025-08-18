@@ -16,15 +16,18 @@
  */
 
 #include <dual_simplex/barrier.hpp>
-
 #include <dual_simplex/presolve.hpp>
 #include <dual_simplex/sparse_matrix.hpp>
+#include <dual_simplex/sparse_matrix_kernels.cuh>
 #include <dual_simplex/tic_toc.hpp>
 #include <dual_simplex/types.hpp>
 
 #include <numeric>
 
 namespace cuopt::linear_programming::dual_simplex {
+
+auto constexpr use_gpu = true;
+auto constexpr TPB     = 256;
 
 template <typename i_t, typename f_t>
 class iteration_data_t {
@@ -66,6 +69,10 @@ class iteration_data_t {
       dy(lp.num_rows),
       dv(num_upper_bounds),
       dz(lp.num_cols),
+      cusparse_info(lp.handle_ptr),
+      device_AD(lp.num_cols, lp.num_rows, 0, lp.handle_ptr->get_stream()),
+      device_A(lp.num_cols, lp.num_rows, 0, lp.handle_ptr->get_stream()),
+      device_ADAT(lp.num_rows, lp.num_rows, 0, lp.handle_ptr->get_stream()),
       has_factorization(false)
   {
     // Create the upper bounds vector
@@ -91,23 +98,60 @@ class iteration_data_t {
 
     // Copy A into AD
     AD = lp.A;
-    // Perform column scaling on A to get AD^(-1)
-    AD.scale_columns(inv_diag);
 
     // Form A*Dinv*A'
-    float64_t start_form_aat = tic();
-    lp.A.transpose(AT);
-    multiply(AD, AT, ADAT);
+    float64_t start_form_aat;
+
+    if (use_gpu) {
+      start_form_aat = tic();
+      lp.handle_ptr->sync_stream();
+      device_AD.copy(AD, lp.handle_ptr->get_stream());
+      auto d_inv_diag = cuopt::device_copy(inv_diag, lp.handle_ptr->get_stream());
+
+      auto n_blocks = AD.n;  // one block per col
+      scale_columns_kernel<i_t, f_t><<<n_blocks, TPB, 0, lp.handle_ptr->get_stream()>>>(
+        device_AD.view(), cuopt::make_span(d_inv_diag));
+      RAFT_CHECK_CUDA(lp.handle_ptr->get_stream());
+
+      csr_matrix_t<i_t, f_t> host_A_CSR(lp.num_rows, lp.num_cols, 0);
+      csr_matrix_t<i_t, f_t> host_ADAT_CSR(lp.num_rows, lp.num_rows, 0);
+      lp.A.to_compressed_row(host_A_CSR);
+      device_A.copy(host_A_CSR, lp.handle_ptr->get_stream());
+
+      initialize_cusparse_data<i_t, f_t>(
+        lp.handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
+      multiply_kernels<i_t, f_t>(lp.handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
+      lp.handle_ptr->sync_stream();
+
+      auto host_csr_ADAT = device_ADAT.to_host(lp.handle_ptr->get_stream());
+      host_csr_ADAT.to_compressed_col(ADAT);
+      // ADAT.compare(copy_ADAT);
+
+      auto tmp_adat_nnz =
+        device_ADAT.row_start.element(device_ADAT.m, device_ADAT.row_start.stream());
+      settings.log.printf("AAT nonzeros %e\n", static_cast<float64_t>(tmp_adat_nnz));
+
+    } else {
+      // Perform column scaling on A to get AD^(-1)
+      start_form_aat = tic();
+      AD.scale_columns(inv_diag);
+      lp.A.transpose(AT);
+      multiply(AD, AT, ADAT);
+      settings.log.printf("AAT nonzeros %e\n", static_cast<float64_t>(ADAT.col_start[lp.num_rows]));
+    }
 
     float64_t aat_time = toc(start_form_aat);
     settings.log.printf("AAT time %.2fs\n", aat_time);
-    settings.log.printf("AAT nonzeros %e\n", static_cast<float64_t>(ADAT.col_start[lp.num_rows]));
 
     chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(settings, lp.num_rows);
     chol->set_positive_definite(false);
 
     // Perform symbolic analysis
-    chol->analyze(ADAT);
+    if (use_gpu) {
+      chol->analyze(device_ADAT);
+    } else {
+      chol->analyze(ADAT);
+    }
   }
 
   void column_density(const csc_matrix_t<i_t, f_t>& A,
@@ -278,6 +322,9 @@ class iteration_data_t {
   csc_matrix_t<i_t, f_t> AD;
   csc_matrix_t<i_t, f_t> AT;
   csc_matrix_t<i_t, f_t> ADAT;
+  typename csr_matrix_t<i_t, f_t>::device_t device_ADAT;
+  typename csr_matrix_t<i_t, f_t>::device_t device_A;
+  typename csc_matrix_t<i_t, f_t>::device_t device_AD;
 
   std::unique_ptr<sparse_cholesky_base_t<i_t, f_t>> chol;
 
@@ -306,13 +353,19 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> dy;
   dense_vector_t<i_t, f_t> dv;
   dense_vector_t<i_t, f_t> dz;
+  cusparse_info_t<i_t, f_t> cusparse_info;
 };
 
 template <typename i_t, typename f_t>
 void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 {
   // Perform a numerical factorization
-  i_t status = data.chol->factorize(data.ADAT);
+  i_t status;
+  if (use_gpu) {
+    status = data.chol->factorize(data.device_ADAT);
+  } else {
+    status = data.chol->factorize(data.ADAT);
+  }
   if (status != 0) {
     settings.log.printf("Initial factorization failed\n");
     return;
@@ -534,17 +587,47 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   // Form A*D*A'
   if (!data.has_factorization) {
-    data.AD = lp.A;
-    data.AD.scale_columns(data.inv_diag);
-    // compute ADAT = A Dinv * A^T
-    multiply(data.AD, data.AT, data.ADAT);
+    i_t status;
+    float64_t start_time = tic();
+    if (use_gpu) {
+      // compute ADAT = A Dinv * A^T
+      data.AD = lp.A;
+      data.device_AD.copy(data.AD, lp.handle_ptr->get_stream());
+      auto d_inv_diag = cuopt::device_copy(data.inv_diag, lp.handle_ptr->get_stream());
 
-    // factorize
-    i_t status = data.chol->factorize(data.ADAT);
+      auto n_blocks = data.AD.n;  // one block per col
+      scale_columns_kernel<i_t, f_t><<<n_blocks, TPB, 0, lp.handle_ptr->get_stream()>>>(
+        data.device_AD.view(), cuopt::make_span(d_inv_diag));
+      RAFT_CHECK_CUDA(lp.handle_ptr->get_stream());
+
+      thrust::fill(rmm::exec_policy(lp.handle_ptr->get_stream()),
+                   data.device_ADAT.x.data(),
+                   data.device_ADAT.x.data() + data.device_ADAT.x.size(),
+                   0.0);
+
+      lp.handle_ptr->sync_stream();
+      multiply_kernels<i_t, f_t>(
+        lp.handle_ptr, data.device_A, data.device_AD, data.device_ADAT, data.cusparse_info);
+      lp.handle_ptr->sync_stream();
+
+      auto host_ADAT = data.device_ADAT.to_host(lp.handle_ptr->get_stream());
+      host_ADAT.to_compressed_col(data.ADAT);
+      data.AD = data.device_AD.to_host(lp.handle_ptr->get_stream());
+
+      status = data.chol->factorize(data.device_ADAT);
+    } else {
+      data.AD = lp.A;
+      data.AD.scale_columns(data.inv_diag);
+      // compute ADAT = A Dinv * A^T
+      multiply(data.AD, data.AT, data.ADAT);
+      // factorize
+      status = data.chol->factorize(data.ADAT);
+    }
     if (status < 0) {
       settings.log.printf("Factorization failed.\n");
       return -1;
     }
+    settings.log.printf("in loop spgemm: %.2fs\n", toc(start_time));
     data.has_factorization = true;
   }
 
@@ -569,15 +652,16 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   data.complementarity_xz_rhs.pairwise_divide(data.x, tmp4);
   // tmp3 <- -complementarity_xz_rhs ./ x + E * ((complementarity_wv_rhs - v .* bound_rhs) ./ w)
   tmp3.axpy(-1.0, tmp4, 1.0);
-  // tmp3 <- dual_rhs -complementarity_xz_rhs ./ x + E * ((complementarity_wv_rhs - v .* bound_rhs)
+  // tmp3 <- dual_rhs -complementarity_xz_rhs ./ x + E * ((complementarity_wv_rhs - v .*
+  // bound_rhs)
   // ./ w)
   tmp3.axpy(1.0, data.dual_rhs, 1.0);
   // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
   // ./ w)
   dense_vector_t<i_t, f_t> r1       = tmp3;
   dense_vector_t<i_t, f_t> r1_prime = r1;
-  // tmp4 <- inv_diag * ( dual_rhs -complementarity_xz_rhs ./ x + E *((complementarity_wv_rhs - v .*
-  // bound_rhs) ./ w))
+  // tmp4 <- inv_diag * ( dual_rhs -complementarity_xz_rhs ./ x + E *((complementarity_wv_rhs - v
+  // .* bound_rhs) ./ w))
   data.inv_diag.pairwise_product(tmp3, tmp4);
 
   dense_vector_t<i_t, f_t> h = data.primal_rhs;
@@ -614,7 +698,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n", y_residual_norm_pcg);
   }
 
-  // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs - v
+  // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
+  // v
   // .* bound_rhs) ./ w))
   // r1 <- A'*dy - r1
   matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, r1);

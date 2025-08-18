@@ -1237,7 +1237,7 @@ crossover_status_t crossover(const lp_problem_t<i_t, f_t>& lp,
     primal_feasible = primal_infeas <= primal_tol && primal_res <= primal_tol;
     dual_feasible   = dual_infeas <= dual_tol && dual_res <= dual_tol;
   } else {
-    lp_problem_t<i_t, f_t> phase1_problem(1, 1, 1);
+    lp_problem_t<i_t, f_t> phase1_problem(lp.handle_ptr, 1, 1, 1);
     create_phase1_problem(lp, phase1_problem);
     std::vector<variable_status_t> phase1_vstatus(n);
     i_t num_basic_phase1    = 0;

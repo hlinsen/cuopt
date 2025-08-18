@@ -393,6 +393,83 @@ void csc_matrix_t<i_t, f_t>::scale_columns(const std::vector<f_t>& scale)
 }
 
 template <typename i_t, typename f_t>
+void csc_matrix_t<i_t, f_t>::compare(csc_matrix_t<i_t, f_t> const& B) const
+{
+  auto my_nnz = this->col_start[this->n];
+  auto B_nnz  = B.col_start[B.n];
+  assert(my_nnz == B_nnz);
+  assert(this->m == B.m);
+  assert(this->n == B.n);
+  // std::cout << "this->nz_max " << this->nz_max << " B.nz_max " << B.nz_max << std::endl;
+  // assert(this->nz_max == B.nz_max);
+
+  for (i_t k = 0; k < this->n; k++) {
+    auto col_start = this->col_start[k];
+    auto col_end   = this->col_start[k + 1];
+    auto my_start  = B.col_start[k];
+    auto my_end    = B.col_start[k + 1];
+    if (col_start != my_start) {
+      std::cout << "this->col_start[" << k << "] " << col_start << " B.col_start[" << k << "] "
+                << my_start << std::endl;
+    }
+    if (col_end != my_end) {
+      std::cout << "this->col_end[" << k << "] " << col_end << " B.col_end[" << k << "] " << my_end
+                << std::endl;
+    }
+
+    // Create a vector of pairs (row index, value) for the column
+    std::vector<std::pair<i_t, f_t>> this_col_entries(col_end - col_start);
+    for (i_t idx = 0; idx < col_end - col_start; ++idx) {
+      this_col_entries[idx] = {this->i[col_start + idx], this->x[col_start + idx]};
+    }
+    // Sort the pairs by row index
+    std::sort(
+      this_col_entries.begin(),
+      this_col_entries.end(),
+      [](const std::pair<i_t, f_t>& a, const std::pair<i_t, f_t>& b) { return a.first < b.first; });
+    // Extract the sorted indices and values back to sorted_col and a new sorted_x
+    std::vector<i_t> this_sorted_col(col_end - col_start);
+    std::vector<f_t> this_sorted_x(col_end - col_start);
+    for (i_t idx = 0; idx < col_end - col_start; ++idx) {
+      this_sorted_col[idx] = this_col_entries[idx].first;
+      this_sorted_x[idx]   = this_col_entries[idx].second;
+    }
+
+    std::vector<std::pair<i_t, f_t>> B_col_entries(col_end - col_start);
+    for (i_t idx = 0; idx < col_end - col_start; ++idx) {
+      B_col_entries[idx] = {B.i[col_start + idx], B.x[col_start + idx]};
+    }
+    std::sort(
+      B_col_entries.begin(),
+      B_col_entries.end(),
+      [](const std::pair<i_t, f_t>& a, const std::pair<i_t, f_t>& b) { return a.first < b.first; });
+    std::vector<i_t> B_sorted_col(col_end - col_start);
+    std::vector<f_t> B_sorted_x(col_end - col_start);
+    for (i_t idx = 0; idx < col_end - col_start; ++idx) {
+      B_sorted_col[idx] = B_col_entries[idx].first;
+      B_sorted_x[idx]   = B_col_entries[idx].second;
+    }
+    for (i_t l = 0; l < col_end - col_start; l++) {
+      auto col = this_sorted_col[l];
+      auto val = this_sorted_x[l];
+
+      auto my_col = B_sorted_col[l];
+      auto my_val = B_sorted_x[l];
+
+      if (col != my_col) {
+        std::cout << "col " << col << " my_col " << my_col << std::endl;
+        std::cout << "col_start " << col_start << " l " << l << std::endl;
+      }
+
+      if (std::abs(val - my_val) > 1e-6) {
+        std::cout << "val " << val << " my_val " << my_val << std::endl;
+      }
+    }
+  }
+  return;
+}
+
+template <typename i_t, typename f_t>
 i_t scatter(const csc_matrix_t<i_t, f_t>& A,
             i_t j,
             f_t beta,

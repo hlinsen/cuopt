@@ -117,7 +117,7 @@ lp_status_t solve_linear_program_advanced(const lp_problem_t<i_t, f_t>& original
                                           std::vector<f_t>& edge_norms)
 {
   lp_status_t lp_status = lp_status_t::UNSET;
-  lp_problem_t<i_t, f_t> presolved_lp(1, 1, 1);
+  lp_problem_t<i_t, f_t> presolved_lp(original_lp.handle_ptr, 1, 1, 1);
   presolve_info_t<i_t, f_t> presolve_info;
   const i_t ok = presolve(original_lp, settings, presolved_lp, presolve_info);
   if (ok == -1) { return lp_status_t::INFEASIBLE; }
@@ -129,12 +129,14 @@ lp_status_t solve_linear_program_advanced(const lp_problem_t<i_t, f_t>& original
     write_matlab(matlab_file, presolved_lp);
   }
 
-  lp_problem_t<i_t, f_t> lp(
-    presolved_lp.num_rows, presolved_lp.num_cols, presolved_lp.A.col_start[presolved_lp.num_cols]);
+  lp_problem_t<i_t, f_t> lp(original_lp.handle_ptr,
+                            presolved_lp.num_rows,
+                            presolved_lp.num_cols,
+                            presolved_lp.A.col_start[presolved_lp.num_cols]);
   std::vector<f_t> column_scales;
   column_scaling(presolved_lp, settings, lp, column_scales);
   assert(presolved_lp.num_cols == lp.num_cols);
-  lp_problem_t<i_t, f_t> phase1_problem(1, 1, 1);
+  lp_problem_t<i_t, f_t> phase1_problem(original_lp.handle_ptr, 1, 1, 1);
   std::vector<variable_status_t> phase1_vstatus;
   f_t phase1_obj = -inf;
   create_phase1_problem(lp, phase1_problem);
@@ -244,16 +246,18 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
 {
   f_t start_time     = tic();
   lp_status_t status = lp_status_t::UNSET;
-  lp_problem_t<i_t, f_t> original_lp(1, 1, 1);
+  lp_problem_t<i_t, f_t> original_lp(user_problem.handle_ptr, 1, 1, 1);
   std::vector<i_t> new_slacks;
   simplex_solver_settings_t<i_t, f_t> barrier_settings = settings;
   barrier_settings.barrier_presolve                    = true;
   convert_user_problem(user_problem, barrier_settings, original_lp, new_slacks);
   presolve_info_t<i_t, f_t> presolve_info;
-  lp_problem_t<i_t, f_t> presolved_lp(1, 1, 1);
+  lp_problem_t<i_t, f_t> presolved_lp(user_problem.handle_ptr, 1, 1, 1);
   const i_t ok = presolve(original_lp, barrier_settings, presolved_lp, presolve_info);
-  lp_problem_t<i_t, f_t> barrier_lp(
-    presolved_lp.num_rows, presolved_lp.num_cols, presolved_lp.A.col_start[presolved_lp.num_cols]);
+  lp_problem_t<i_t, f_t> barrier_lp(user_problem.handle_ptr,
+                                    presolved_lp.num_rows,
+                                    presolved_lp.num_cols,
+                                    presolved_lp.A.col_start[presolved_lp.num_cols]);
   std::vector<f_t> column_scales;
   column_scaling(presolved_lp, barrier_settings, barrier_lp, column_scales);
   if (ok == -1) { return lp_status_t::INFEASIBLE; }
@@ -274,7 +278,7 @@ lp_status_t solve_linear_program(const user_problem_t<i_t, f_t>& user_problem,
                                  lp_solution_t<i_t, f_t>& solution)
 {
   f_t start_time = tic();
-  lp_problem_t<i_t, f_t> original_lp(1, 1, 1);
+  lp_problem_t<i_t, f_t> original_lp(user_problem.handle_ptr, 1, 1, 1);
   std::vector<i_t> new_slacks;
   convert_user_problem(user_problem, settings, original_lp, new_slacks);
   solution.resize(user_problem.num_rows, user_problem.num_cols);
@@ -313,7 +317,7 @@ i_t solve(const user_problem_t<i_t, f_t>& problem,
   } else {
     f_t start_time = tic();
     lp_problem_t<i_t, f_t> original_lp(
-      problem.num_rows, problem.num_cols, problem.A.col_start[problem.A.n]);
+      problem.handle_ptr, problem.num_rows, problem.num_cols, problem.A.col_start[problem.A.n]);
     std::vector<i_t> new_slacks;
     convert_user_problem(problem, settings, original_lp, new_slacks);
     lp_solution_t<i_t, f_t> solution(original_lp.num_rows, original_lp.num_cols);

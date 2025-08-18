@@ -444,7 +444,7 @@ optimization_problem_solution_t<i_t, f_t> run_pdlp(detail::problem_t<i_t, f_t>& 
   if (do_crossover && sol.get_termination_status() == pdlp_termination_status_t::Optimal) {
     crossover_info = -1;
 
-    dual_simplex::lp_problem_t<i_t, f_t> lp(1, 1, 1);
+    dual_simplex::lp_problem_t<i_t, f_t> lp(problem.handle_ptr, 1, 1, 1);
     dual_simplex::lp_solution_t<i_t, f_t> initial_solution(1, 1);
     translate_to_crossover_problem(problem, sol, lp, initial_solution);
     dual_simplex::simplex_solver_settings_t<i_t, f_t> dual_simplex_settings;
@@ -777,7 +777,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(
     const optimization_problem_t<int, F_TYPE>& op_problem,                             \
     detail::problem_t<int, F_TYPE>& problem,                                           \
     pdlp_solver_settings_t<int, F_TYPE> const& settings,                               \
-    bool is_batch_mode = false);                                                       \
+    bool is_batch_mode);                                                               \
                                                                                        \
   template optimization_problem_t<int, F_TYPE> mps_data_model_to_optimization_problem( \
     raft::handle_t const* handle_ptr,                                                  \

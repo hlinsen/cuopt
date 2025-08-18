@@ -16,6 +16,7 @@
  */
 #pragma once
 
+#include "dual_simplex/cusparse_info.hpp"
 #include "dual_simplex/dense_vector.hpp"
 #include "dual_simplex/presolve.hpp"
 #include "dual_simplex/simplex_solver_settings.hpp"
