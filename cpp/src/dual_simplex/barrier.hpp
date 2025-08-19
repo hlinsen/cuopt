@@ -83,6 +83,7 @@ class barrier_solver_t {
 
   lp_status_t check_for_suboptimal_solution(const barrier_solver_settings_t<i_t, f_t>& options,
                                             iteration_data_t<i_t, f_t>& data,
+                                            f_t start_time,
                                             i_t iter,
                                             f_t norm_b,
                                             f_t norm_c,

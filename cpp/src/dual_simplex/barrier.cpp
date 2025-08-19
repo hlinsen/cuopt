@@ -26,6 +26,220 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
+
+template <typename i_t, typename f_t>
+class dense_matrix_t {
+ public:
+  dense_matrix_t(i_t rows, i_t cols)
+    : m(rows), n(cols), values(rows * cols, 0.0)
+  {}
+
+  void resize(i_t rows, i_t cols)
+  {
+    m = rows;
+    n = cols;
+    values.resize(rows * cols, 0.0);
+  }
+
+  f_t& operator()(i_t row, i_t col)
+  {
+    return values[col * m + row];
+  }
+
+  f_t operator()(i_t row, i_t col) const
+  {
+    return values[col * m + row];
+  }
+
+  void from_sparse(const csc_matrix_t<i_t, f_t>& A, i_t sparse_column, i_t dense_column)
+  {
+    for (i_t i = 0; i < m; i++) {
+      this->operator()(i, dense_column) = 0.0;
+    }
+
+    const i_t col_start = A.col_start[sparse_column];
+    const i_t col_end = A.col_start[sparse_column + 1];
+    for (i_t p = col_start; p < col_end; p++) {
+      this->operator()(A.i[p], dense_column) = A.x[p];
+    }
+  }
+
+  void add_diagonal(const dense_vector_t<i_t, f_t>& diag)
+  {
+    for (i_t j = 0; j < n; j++) {
+      this->operator()(j, j) += diag[j];
+    }
+  }
+
+  void set_column(i_t col, const dense_vector_t<i_t, f_t>& x)
+  {
+    for (i_t i = 0; i < m; i++) {
+      this->operator()(i, col) = x[i];
+    }
+  }
+
+  // y = alpha * A * x + beta * y
+  void matrix_vector_multiply(f_t alpha, const dense_vector_t<i_t, f_t>& x, f_t beta, dense_vector_t<i_t, f_t>& y) const
+  {
+    if (x.size() != n) {
+      printf("dense_matrix_t::matrix_vector_multiply: x.size() != n\n");
+      exit(1);
+    }
+    if (y.size() != m) {
+      printf("dense_matrix_t::matrix_vector_multiply: y.size() != m\n");
+      exit(1);
+    }
+
+    for (i_t i = 0; i < m; i++) {
+      y[i] *= beta;
+    }
+
+    const dense_matrix_t<i_t, f_t>& A = *this;
+
+    for (i_t j = 0; j < n; j++) {
+      for (i_t i = 0; i < m; i++) {
+        y[i] += alpha * A(i, j) * x[j];
+      }
+    }
+  }
+
+  // y = alpha * A' * x + beta * y
+  void transpose_multiply(f_t alpha, const dense_vector_t<i_t, f_t>& x, f_t beta, dense_vector_t<i_t, f_t>& y) const
+  {
+    if (x.size() != m) {
+      printf("dense_matrix_t::transpose_multiply: x.size() != n\n");
+      exit(1);
+    }
+    for (i_t j = 0; j < n; j++) {
+      f_t sum = 0.0;
+      for (i_t i = 0; i < m; i++) {
+        sum += x[i] * this->operator()(i, j);
+      }
+      y[j] = alpha * sum + beta * y[j];
+    }
+  }
+
+  // Y <- alpha * A' * X + beta * Y
+  void transpose_matrix_multiply(f_t alpha, const dense_matrix_t<i_t, f_t>& X, f_t beta, dense_matrix_t<i_t, f_t>& Y) const
+  {
+    // X is m x p
+    // Y is q x p
+    // Y <- alpha * A' * X + beta * Y
+    if (X.n != Y.n) {
+      printf("dense_matrix_t::transpose_matrix_multiply: X.m != Y.m\n");
+      exit(1);
+    }
+    if (X.m != m) {
+      printf("dense_matrix_t::transpose_matrix_multiply: X.m != m\n");
+      exit(1);
+    }
+    for (i_t k = 0; k < X.n; k++) {
+      for (i_t j = 0; j < n; j++) {
+        f_t sum = 0.0;
+        for (i_t i = 0; i < m; i++) {
+          sum += this->operator()(i, j) * X(i, k);
+        }
+        Y(j, k) = alpha * sum + beta * Y(j, k);
+      }
+    }
+  }
+
+  void scale_columns(const dense_vector_t<i_t, f_t>& scale)
+  {
+    for (i_t j = 0; j < n; j++) {
+      for (i_t i = 0; i < m; i++) {
+        this->operator()(i, j) *= scale[j];
+      }
+    }
+  }
+
+  void chol(dense_matrix_t<i_t, f_t>& L)
+  {
+    if (m != n) {
+      printf("dense_matrix_t::chol: m != n\n");
+      exit(1);
+    }
+    if (L.m != n) {
+      printf("dense_matrix_t::chol: L.m != n\n");
+      exit(1);
+    }
+
+    // Clear the upper triangular part of L
+    for (i_t i = 0; i < n; i++) {
+      for (i_t j = i + 1; j < n; j++) {
+        L(i, j) = 0.0;
+      }
+    }
+
+    const dense_matrix_t<i_t, f_t>& A = *this;
+    // Compute the cholesky factor and store it in the lower triangular part of L
+    for (i_t i = 0; i < n; i++) {
+      for (i_t j = 0; j <= i; j++) {
+        f_t sum = 0.0;
+        for (i_t k = 0; k < j; k++) {
+          sum += L(i, k) * L(j, k);
+        }
+
+        if (i == j) {
+          L(i, j) = sqrt(A(i, i) - sum);
+        } else {
+          L(i, j) = (1.0 / L(j, j) * (A(i, j) - sum));
+        }
+      }
+    }
+  }
+
+  // Assume A = L
+  // Solve L * x = b
+  void triangular_solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x)
+  {
+    if (b.size() != n) {
+      printf("dense_matrix_t::triangular_solve: b.size() %d != n %d\n", static_cast<i_t>(b.size()), n);
+      exit(1);
+    }
+    x.resize(n, 0.0);
+
+    // sum_k=0^i-1 L(i, k) * x[k] + L(i, i) * x[i] = b[i]
+    // x[i] = (b[i] - sum_k=0^i-1 L(i, k) * x[k]) / L(i, i)
+    const dense_matrix_t<i_t, f_t>& L = *this;
+    for (i_t i = 0; i < n; i++) {
+      f_t sum = 0.0;
+      for (i_t k = 0; k < i; k++) {
+        sum += L(i, k) * x[k];
+      }
+      x[i] = (b[i] - sum) / L(i, i);
+    }
+  }
+
+  // Assume A = L
+  // Solve  L^T * x = b
+  void triangular_solve_transpose(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x)
+  {
+    if (b.size() != n) {
+      printf("dense_matrix_t::triangular_solve_transpose: b.size() != n\n");
+      exit(1);
+    }
+    x.resize(n, 0.0);
+
+    // L^T = U
+    // U * x = b
+    // sum_k=i+1^n U(i, k) * x[k] + U(i, i) * x[i] = b[i], i=n-1, n-2, ..., 0
+    // sum_k=i+1^n L(k, i) * x[k] + L(i, i) * x[i] = b[i], i=n-1, n-2, ..., 0
+    const dense_matrix_t<i_t, f_t>& L = *this;
+    for (i_t i = n - 1; i >= 0; i--) {
+      f_t sum = 0.0;
+      for (i_t k = i + 1; k < n; k++) {
+        sum += L(k, i) * x[k];
+      }
+      x[i] = (b[i] - sum) / L(i, i);
+    }
+  }
+
+  i_t m;
+  i_t n;
+  std::vector<f_t> values;
+};
+
 template <typename i_t, typename f_t>
 class iteration_data_t {
  public:
@@ -51,6 +265,8 @@ class iteration_data_t {
       AD(lp.num_cols, lp.num_rows, 0),
       AT(lp.num_rows, lp.num_cols, 0),
       ADAT(lp.num_rows, lp.num_rows, 0),
+      A_dense(lp.num_rows, 0),
+      A(lp.A),
       primal_residual(lp.num_rows),
       bound_residual(num_upper_bounds),
       dual_residual(lp.num_cols),
@@ -71,7 +287,9 @@ class iteration_data_t {
       dy(lp.num_rows),
       dv(num_upper_bounds),
       dz(lp.num_cols),
-      has_factorization(false)
+      has_factorization(false),
+      num_factorizations(0),
+      settings_(settings)
   {
     // Create the upper bounds vector
     n_upper_bounds = 0;
@@ -79,7 +297,7 @@ class iteration_data_t {
       if (lp.upper[j] < inf) { upper_bounds[n_upper_bounds++] = j; }
     }
     settings.log.printf("n_upper_bounds %d\n", n_upper_bounds);
-    // Form A*Dinv*A'
+
     diag.set_scalar(1.0);
     if (n_upper_bounds > 0) {
       for (i_t k = 0; k < n_upper_bounds; k++) {
@@ -92,27 +310,440 @@ class iteration_data_t {
     inv_sqrt_diag.set_scalar(1.0);
     if (n_upper_bounds > 0) { inv_diag.sqrt(inv_sqrt_diag); }
 
-    column_density(lp.A, settings);
+    n_dense_columns = 0;
+    std::vector<i_t> dense_columns_unordered;
+    if (settings.eliminate_dense_columns) {
+      f_t start_column_density = tic();
+      column_density(lp.A, settings, dense_columns_unordered);
+      float64_t column_density_time = toc(start_column_density);
+      n_dense_columns               = static_cast<i_t>(dense_columns_unordered.size());
+      settings.log.printf(
+        "Found %d dense columns in %.2fs\n", n_dense_columns, column_density_time);
+    }
 
     // Copy A into AD
     AD = lp.A;
-    // Perform column scaling on A to get AD^(-1)
-    AD.scale_columns(inv_diag);
+    if (n_dense_columns > 0) {
 
-    // Form A*Dinv*A'
-    float64_t start_form_aat = tic();
-    lp.A.transpose(AT);
-    multiply(AD, AT, ADAT);
+      cols_to_remove.resize(lp.num_cols, 0);
+      for (i_t k : dense_columns_unordered) {
+        cols_to_remove[k] = 1;
+      }
+      dense_columns.clear();
+      dense_columns.reserve(n_dense_columns);
+      for (i_t j = 0; j < lp.num_cols; j++) {
+        if (cols_to_remove[j]) {
+          dense_columns.push_back(j);
+        }
+      }
+      AD.remove_columns(cols_to_remove);
 
-    float64_t aat_time = toc(start_form_aat);
-    settings.log.printf("AAT time %.2fs\n", aat_time);
-    settings.log.printf("AAT nonzeros %e\n", static_cast<float64_t>(ADAT.col_start[lp.num_rows]));
+      sparse_mark.resize(lp.num_cols, 1);
+      for (i_t k : dense_columns) {
+        sparse_mark[k] = 0;
+      }
+
+      A_dense.resize(AD.m, n_dense_columns);
+      i_t k = 0;
+      for (i_t j : dense_columns) {
+        A_dense.from_sparse(lp.A, j, k++);
+      }
+    }
+    original_A_values = AD.x;
+    AD.transpose(AT);
+
+    form_adat();
 
     chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(settings, lp.num_rows);
     chol->set_positive_definite(false);
 
     // Perform symbolic analysis
     chol->analyze(ADAT);
+  }
+
+  void form_adat()
+  {
+    float64_t start_form_adat = tic();
+    const i_t m = AD.m;
+    // Restore the columns of AD to A
+    AD.x = original_A_values;
+
+    std::vector<f_t> inv_diag_prime;
+    if (n_dense_columns > 0) {
+      // Adjust inv_diag
+      inv_diag_prime.resize(AD.n);
+      const i_t n = A.n;
+      i_t new_j = 0;
+      for (i_t j = 0; j < n; j++) {
+        if (cols_to_remove[j]) { continue; }
+        inv_diag_prime[new_j++] = inv_diag[j];
+      }
+    } else {
+      inv_diag_prime = inv_diag;
+    }
+
+    if (inv_diag_prime.size() != AD.n) {
+      settings_.log.printf("inv_diag_prime.size() = %ld, AD.n = %d\n", inv_diag_prime.size(), AD.n);
+      exit(1);
+    }
+
+    // Scale the columns of A
+    AD.scale_columns(inv_diag_prime);
+
+    // Compute A*Dinv*A'
+    multiply(AD, AT, ADAT);
+
+    float64_t adat_time = toc(start_form_adat);
+    if (num_factorizations == 0) {
+      settings_.log.printf("ADAT time %.2fs\n", adat_time);
+      settings_.log.printf("ADAT nonzeros %e\n", static_cast<float64_t>(ADAT.col_start[m]));
+    }
+  }
+
+  i_t solve_adat(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) const
+  {
+    if (n_dense_columns == 0) {
+      // Solve ADAT * x = b
+      return chol->solve(b, x);
+    } else {
+      // Use Sherman Morrison followed by PCG
+
+      // ADA^T = A_sparse * D_sparse * A_sparse^T + A_dense * D_dense * A_dense^T
+      // Let p be the number of dense columns
+      // U = A_dense * D_dense^0.5 is m x p
+      // U^T = D_dense^0.5 * A_dense^T is p x m
+
+      // We have that A D A^T *x = b is
+      // (A_sparse * D_sparse * A_sparse^T + A_dense * D_dense * A_dense^T) * x = b
+      // (A_sparse * D_sparse * A_sparse^T + U * U^T ) * x = b
+      // We can write this as the 2x2 system
+      //
+      // [ A_sparse * D_sparse * A_sparse^T     U ][ x ] = [ b ]
+      // [ U^T                                  -I][ y ]   [ 0 ]
+      //
+      // We can write x = (A_sparse * D_sparse * A_sparse^T)^{-1} * (b - U * y)
+      // So U^T * x - y = 0 or
+      // U^T * (A_sparse * D_sparse * A_sparse^T)^{-1} * (b - U * y) - y = 0
+      // (U^T * (A_sparse * D_sparse * A_sparse^T)^{-1} U + I) * y = U^T * (A_sparse * D_sparse * A_sparse^T)^{-1} * b
+      //  H * y = g
+      // where H = U^T * (A_sparse * D_sparse * A_sparse^T)^{-1} U + I
+      // and g = U^T * (A_sparse * D_sparse * A_sparse^T)^{-1} * b
+      // Let (A_sparse * D_sparse * A_sparse^T)* w = b
+      // then g = U^T * w
+      // Let (A_sparse * D_sparse * A_sparse^T) * M = U
+      // then H = U^T * M + I
+      //
+      // We can use a dense cholesky factorization of H to solve for y
+
+      const bool debug = false;
+
+      dense_vector_t<i_t, f_t> w(AD.m);
+      i_t solve_status = chol->solve(b, w);
+      if (solve_status != 0) {
+        return solve_status;
+      }
+
+      dense_matrix_t<i_t, f_t> AD_dense = A_dense;
+
+      // AD_dense = A_dense * D_dense
+      dense_vector_t<i_t, f_t> dense_diag(n_dense_columns);
+      i_t k = 0;
+      for (i_t j : dense_columns) {
+        dense_diag[k++] = std::sqrt(inv_diag[j]);
+      }
+      AD_dense.scale_columns(dense_diag);
+
+      dense_matrix_t<i_t, f_t> M(AD.m, n_dense_columns);
+      dense_matrix_t<i_t, f_t> H(n_dense_columns, n_dense_columns);
+      for (i_t k = 0; k < n_dense_columns; k++) {
+        dense_vector_t<i_t, f_t> U_col(AD.m);
+        // U_col = AD_dense(:, k)
+        for (i_t i = 0; i < AD.m; i++) {
+          U_col[i] = AD_dense(i, k);
+        }
+        dense_vector_t<i_t, f_t> M_col(AD.m);
+        solve_status = chol->solve(U_col, M_col);
+        if (solve_status != 0) {
+          return solve_status;
+        }
+        M.set_column(k, M_col);
+
+        if (debug) {
+          dense_vector_t<i_t, f_t> M_residual = U_col;
+          matrix_vector_multiply(ADAT, 1.0, M_col, -1.0, M_residual);
+          settings_.log.printf("|| A_sparse * D_sparse * A_sparse^T * M(:, k) - AD_dense(:, k) ||_2 = %e\n", vector_norm2<i_t, f_t>(M_residual));
+        }
+      }
+      // A_sparse * D_sparse * A_sparse^T * M = U = AD_dense
+      // H = AD_dense^T * M
+      AD_dense.transpose_matrix_multiply(1.0, M, 0.0, H);
+      dense_vector_t<i_t, f_t> e(n_dense_columns);
+      e.set_scalar(1.0);
+      // H = AD_dense^T * M + I
+      H.add_diagonal(e);
+
+      dense_vector_t<i_t, f_t> g(n_dense_columns);
+      // g = D_dense * A_dense^T * w
+      AD_dense.transpose_multiply(1.0, w, 0.0, g);
+
+      if (debug) {
+        for (i_t k = 0; k < n_dense_columns; k++) {
+          for (i_t h = 0; h < n_dense_columns; h++) {
+            if (std::abs(H(k, h) - H(h, k)) > 1e-10) {
+              settings_.log.printf(
+                "H(%d, %d) = %e, H(%d, %d) = %e\n", k, h, H(k, h), h, k, H(h, k));
+            }
+          }
+        }
+      }
+
+      // H = L*L^T
+      dense_matrix_t<i_t, f_t> L(n_dense_columns, n_dense_columns);
+      H.chol(L);
+
+      dense_vector_t<i_t, f_t> y(n_dense_columns);
+      // H *y = g
+      // L*L^T * y = g
+      // L*u = g
+      dense_vector_t<i_t, f_t> u(n_dense_columns);
+      L.triangular_solve(g, u);
+      // L^T y = u
+      L.triangular_solve_transpose(u, y);
+
+      if (debug) {
+        dense_vector_t<i_t, f_t> H_residual = g;
+        H.matrix_vector_multiply(1.0, y, -1.0, H_residual);
+        settings_.log.printf("|| H * y - g ||_2 = %e\n", vector_norm2<i_t, f_t>(H_residual));
+      }
+
+      // x = (A_sparse * D_sparse * A_sparse^T)^{-1} * (b - U * y)
+      // v = U *y = AD_dense * y
+      dense_vector_t<i_t, f_t> v(AD.m);
+      AD_dense.matrix_vector_multiply(1.0, y, 0.0, v);
+
+      // v = b - U*y
+      v.axpy(1.0, b, -1.0);
+
+      // A_sparse * D_sparse * A_sparse^T * x = v
+      solve_status = chol->solve(v, x);
+      if (solve_status != 0) {
+        return solve_status;
+      }
+
+      if (debug) {
+        dense_vector_t<i_t, f_t> solve_residual = v;
+        matrix_vector_multiply(ADAT, 1.0, x, -1.0, solve_residual);
+        settings_.log.printf("|| A_sparse * D * A_sparse^T * x - v ||_2 = %e\n",
+                             vector_norm2<i_t, f_t>(solve_residual));
+      }
+
+      if (debug) {
+        // Check U^T * x - y = 0;
+        dense_vector_t<i_t, f_t> residual_2 = y;
+        AD_dense.transpose_multiply(1.0, x, -1.0, residual_2);
+        settings_.log.printf("|| U^T * x - y ||_2 = %e\n", vector_norm2<i_t, f_t>(residual_2));
+      }
+
+      if (debug) {
+        // Check A_sparse * D_sparse * A_sparse^T * x  + U * y = b
+        dense_vector_t<i_t, f_t> residual_1 = b;
+        AD_dense.matrix_vector_multiply(1.0, y, -1.0, residual_1);
+        matrix_vector_multiply(ADAT, 1.0, x, 1.0, residual_1);
+        settings_.log.printf("|| A_sparse * D_sparse * A_sparse^T * x + U * y - b ||_2 = %e\n",
+                             vector_norm2<i_t, f_t>(residual_1));
+      }
+
+      if (0 && debug)
+      {
+
+        csc_matrix_t<i_t, f_t> A_full_D = A;
+        A_full_D.scale_columns(inv_diag);
+
+        csc_matrix_t<i_t, f_t> A_full_D_T(A_full_D.n, A_full_D.m, 1);
+        A_full_D.transpose(A_full_D_T);
+
+        csc_matrix_t<i_t, f_t> ADAT_full(AD.m, AD.m, 1);
+        multiply(A, A_full_D_T, ADAT_full);
+
+        f_t max_error = 0.0;
+        for (i_t i = 0; i < AD.m; i++) {
+          dense_vector_t<i_t, f_t> ei(AD.m);
+          ei.set_scalar(0.0);
+          ei[i] = 1.0;
+
+          dense_vector_t<i_t, f_t> u(AD.m);
+
+          matrix_vector_multiply(ADAT_full, 1.0, ei, 0.0, u);
+
+          adat_multiply(-1.0, ei, 1.0, u);
+
+          max_error = std::max(max_error, vector_norm2<i_t, f_t>(u));
+        }
+        settings_.log.printf("|| ADAT(e_i) - ADA^T * e_i ||_2 = %e\n", max_error);
+      }
+
+      if (debug)
+      {
+
+        dense_matrix_t<i_t, f_t> UUT(AD.m, AD.m);
+
+        for (i_t i = 0; i < AD.m; i++) {
+          dense_vector_t<i_t, f_t> ei(AD.m);
+          ei.set_scalar(0.0);
+          ei[i] = 1.0;
+
+          dense_vector_t<i_t, f_t> UTei(n_dense_columns);
+          AD_dense.transpose_multiply(1.0, ei, 0.0, UTei);
+
+          dense_vector_t<i_t, f_t> U_col(AD.m);
+          AD_dense.matrix_vector_multiply(1.0, UTei, 0.0, U_col);
+
+          UUT.set_column(i, U_col);
+        }
+
+
+
+        csc_matrix_t<i_t, f_t> A_dense_csc = A;
+        A_dense_csc.remove_columns(sparse_mark);
+
+
+        std::vector<f_t> inv_diag_prime(n_dense_columns);
+        i_t k = 0;
+        for (i_t j : dense_columns) {
+          inv_diag_prime[k++] = std::sqrt(inv_diag[j]);
+        }
+        A_dense_csc.scale_columns(inv_diag_prime);
+
+        csc_matrix_t<i_t, f_t> AT_dense_transpose(1, 1, 1);
+        A_dense_csc.transpose(AT_dense_transpose);
+
+        csc_matrix_t<i_t, f_t> ADAT_dense_csc(AD.m, AD.m, 1);
+        multiply(A_dense_csc, AT_dense_transpose, ADAT_dense_csc);
+
+        dense_matrix_t<i_t, f_t> ADAT_dense(AD.m, AD.m);
+        for (i_t k = 0; k < AD.m; k++) {
+          ADAT_dense.from_sparse(ADAT_dense_csc, k, k);
+        }
+
+        f_t max_error = 0.0;
+        for (i_t i = 0; i < AD.m; i++) {
+         for (i_t j = 0; j < AD.m; j++) {
+          f_t ij_error = std::abs(ADAT_dense(i, j) - UUT(i, j));
+          max_error = std::max(max_error, ij_error);
+         }
+        }
+
+        settings_.log.printf("|| ADAT_dense - UUT ||_2 = %e\n", max_error);
+
+
+
+        csc_matrix_t<i_t, f_t> A_sparse = A;
+        std::vector<i_t> remove_dense(A.n, 0);
+        for (i_t k : dense_columns) {
+          remove_dense[k] = 1;
+        }
+        A_sparse.remove_columns(remove_dense);
+
+
+        std::vector<f_t> inv_diag_sparse(A.n - n_dense_columns);
+        i_t new_j   = 0;
+        for (i_t j = 0; j < A.n; j++) {
+          if (cols_to_remove[j]) { continue; }
+          inv_diag_sparse[new_j++] = std::sqrt(inv_diag[j]);
+        }
+        A_sparse.scale_columns(inv_diag_sparse);
+
+        csc_matrix_t<i_t, f_t> AT_sparse_transpose(1, 1, 1);
+        A_sparse.transpose(AT_sparse_transpose);
+
+        csc_matrix_t<i_t, f_t> ADAT_sparse(AD.m, AD.m, 1);
+        multiply(A_sparse, AT_sparse_transpose, ADAT_sparse);
+
+        csc_matrix_t<i_t, f_t> error(AD.m, AD.m, 1);
+        add(ADAT_sparse, ADAT, 1.0, -1.0, error);
+
+        settings_.log.printf("|| ADAT_sparse - ADAT ||_1 = %e\n", error.norm1());
+
+
+        csc_matrix_t<i_t, f_t> ADAT_test(AD.m, AD.m, 1);
+        add(ADAT_sparse, ADAT_dense_csc, 1.0, 1.0, ADAT_test);
+
+
+        csc_matrix_t<i_t, f_t> ADAT_all_columns(AD.m, AD.m, 1);
+        csc_matrix_t<i_t, f_t> AT_all_columns(AD.n, AD.m, 1);
+        A.transpose(AT_all_columns);
+        csc_matrix_t<i_t, f_t> A_scaled = A;
+        A_scaled.scale_columns(inv_diag);
+        multiply(A_scaled, AT_all_columns, ADAT_all_columns);
+
+        csc_matrix_t<i_t, f_t> error2(AD.m, AD.m, 1);
+        add(ADAT_test, ADAT_all_columns, 1.0, -1.0, error2);
+
+        int64_t large_nz = 0;
+        for (i_t j = 0; j < AD.m; j++) {
+          i_t col_start = error2.col_start[j];
+          i_t col_end = error2.col_start[j + 1];
+          for (i_t p = col_start; p < col_end; p++) {
+          if (std::abs(error2.x[p]) > 1e-6) {
+              large_nz++;
+              settings_.log.printf("large_nz (%d,%d) %e. m %d\n", error2.i[p], j, error2.x[p], AD.m);
+            }
+          }
+        }
+
+        settings_.log.printf("|| A_sparse * D_sparse * A_sparse^T + A_dense * D_dense * A_dense^T - ADAT ||_1 = %e nz %e large_nz %ld\n", error2.norm1(), static_cast<f_t>(error2.col_start[AD.m]), large_nz);
+
+      }
+
+      if (0 && debug)
+      {
+        f_t max_error     = 0.0;
+        f_t max_row_error = 0.0;
+        for (i_t i = 0; i < AD.m; i++) {
+          dense_vector_t<i_t, f_t> ei(AD.m);
+          ei.set_scalar(0.0);
+          ei[i] = 1.0;
+
+          dense_vector_t<i_t, f_t> VTei(n_dense_columns);
+          AD_dense.transpose_multiply(1.0, ei, 0.0, VTei);
+
+          f_t row_error = 0.0;
+          for (i_t k = 0; k < n_dense_columns; k++) {
+            i_t j = dense_columns[k];
+            row_error += std::abs(VTei[k] - AD_dense(i, k));
+          }
+          if (row_error > 1e-10) { settings_.log.printf("row_error %d = %e\n", i, row_error); }
+          max_row_error = std::max(max_row_error, row_error);
+
+          dense_vector_t<i_t, f_t> u(AD.m);
+          A_dense.matrix_vector_multiply(1.0, VTei, 0.0, u);
+
+          matrix_vector_multiply(ADAT, 1.0, ei, 1.0, u);
+
+          adat_multiply(-1.0, ei, 1.0, u);
+
+          max_error = std::max(max_error, vector_norm2<i_t, f_t>(u));
+        }
+        settings_.log.printf(
+          "|| (A_sparse * D_sparse * A_sparse^T + U * V^T) * e_i - ADA^T * e_i ||_2 = %e\n",
+          max_error);
+      }
+
+      if (debug) {
+        dense_vector_t<i_t, f_t> total_residual = b;
+        adat_multiply(1.0, x, -1.0, total_residual);
+        settings_.log.printf("|| A * D * A^T * x - b ||_2 = %e\n",
+                             vector_norm2<i_t, f_t>(total_residual));
+      }
+
+      // Now do some rounds of PCG
+      const bool do_pcg = true;
+      if (do_pcg) {
+        preconditioned_conjugate_gradient(settings_, b, 1e-9, x);
+      }
+
+      return solve_status;
+    }
   }
 
   void to_solution(const lp_problem_t<i_t, f_t>& lp, i_t iterations, f_t objective, f_t user_objective, f_t primal_residual, f_t dual_residual, lp_solution_t<i_t, f_t>& solution)
@@ -128,7 +759,7 @@ class iteration_data_t {
     dual_res.axpy(-1.0, lp.objective, 1.0);
     matrix_transpose_vector_multiply(lp.A, 1.0, solution.y, 1.0, dual_res);
     f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_res);
-    printf("Solution Dual residual: %e\n", dual_residual_norm);
+    settings_.log.printf("Solution Dual residual: %e\n", dual_residual_norm);
 
     solution.iterations = iterations;
     solution.objective = objective;
@@ -138,42 +769,43 @@ class iteration_data_t {
   }
 
   void column_density(const csc_matrix_t<i_t, f_t>& A,
-                      const simplex_solver_settings_t<i_t, f_t>& settings)
+                      const simplex_solver_settings_t<i_t, f_t>& settings,
+                      std::vector<i_t>& columns_to_remove)
   {
+    f_t start_column_density = tic();
     const i_t m = A.m;
     const i_t n = A.n;
     if (n < 2) { return; }
-    std::vector<f_t> density(n);
+    std::vector<f_t> col_nz(n);
     for (i_t j = 0; j < n; j++) {
       const i_t nnz = A.col_start[j + 1] - A.col_start[j];
-      density[j]    = static_cast<f_t>(nnz);
+      col_nz[j]    = static_cast<f_t>(nnz);
     }
 
     std::vector<i_t> permutation(n);
     std::iota(permutation.begin(), permutation.end(), 0);
-    std::sort(permutation.begin(), permutation.end(), [&density](i_t i, i_t j) {
-      return density[i] < density[j];
+    std::sort(permutation.begin(), permutation.end(), [&col_nz](i_t i, i_t j) {
+      return col_nz[i] < col_nz[j];
     });
 
-    std::vector<i_t> columns_to_keep;
-    columns_to_keep.reserve(n);
+    columns_to_remove.reserve(n);
 
-    f_t nnz = density[permutation[0]];
-    columns_to_keep.push_back(permutation[0]);
-    for (i_t i = 1; i < n; i++) {
+    f_t nz_max = static_cast<f_t>(m) * static_cast<f_t>(m);
+
+    settings.log.printf("Column density time %.2fs\n", toc(start_column_density));
+
+    const f_t threshold = 10 * sqrt(m);
+    for (i_t i = 0; i < n; i++) {
       const i_t j         = permutation[i];
-      const f_t density_j = density[j];
 
-      if (i > n - 5 && density_j > 10.0) {
-        settings.log.printf("Dense column %6d nz %6d density %.2e nnz %.2e\n",
-                            j,
-                            static_cast<i_t>(density_j),
-                            density_j / m,
-                            nnz + density_j * density_j);
+
+      if ( col_nz[j] > threshold && n - i < 100) {
+        settings.log.printf("Dense column: nz %10d col %6d in %.2fs\n",
+          static_cast<i_t>(col_nz[j]),
+          j,
+          toc(start_column_density));
+        columns_to_remove.push_back(j);
       }
-      nnz += density_j * density_j;
-
-      columns_to_keep.push_back(j);
     }
   }
 
@@ -197,11 +829,42 @@ class iteration_data_t {
     }
   }
 
+  // v = alpha * A * Dinv * A^T * y + beta * v
+  void adat_multiply(f_t alpha, const dense_vector_t<i_t, f_t>& y, f_t beta, dense_vector_t<i_t, f_t>& v) const
+  {
+    const i_t m = A.m;
+    const i_t n = A.n;
+
+    if (y.size() != m) {
+      printf("adat_multiply: y.size() %d != m %d\n", static_cast<i_t>(y.size()), m);
+      exit(1);
+    }
+
+    if (v.size() != m) {
+      printf("adat_multiply: v.size() %d != m %d\n", static_cast<i_t>(v.size()), m);
+      exit(1);
+    }
+
+    // v = alpha * A * Dinv * A^T * y + beta * v
+
+    // u = A^T * y
+    dense_vector_t<i_t, f_t> u(n);
+    matrix_transpose_vector_multiply(A, 1.0, y, 0.0, u);
+
+    // w = Dinv * u
+    dense_vector_t<i_t, f_t> w(n);
+    inv_diag.pairwise_product(u, w);
+
+    // y = alpha * A * w + beta * v = alpha * A * Dinv * A^T * y + beta * v
+    matrix_vector_multiply(A, alpha, w, beta, v);
+  }
+
   void preconditioned_conjugate_gradient(const simplex_solver_settings_t<i_t, f_t>& settings,
                                          const dense_vector_t<i_t, f_t>& b,
                                          f_t tolerance,
                                          dense_vector_t<i_t, f_t>& xinout) const
   {
+    const bool show_pcg_info = false;
     dense_vector_t<i_t, f_t> residual = b;
     dense_vector_t<i_t, f_t> y(ADAT.n);
 
@@ -210,7 +873,7 @@ class iteration_data_t {
     const csc_matrix_t<i_t, f_t>& A = ADAT;
 
     // r = A*x - b
-    matrix_vector_multiply(A, 1.0, x, -1.0, residual);
+    adat_multiply(1.0, x, -1.0, residual);
 
     // Solve M y = r for y
     chol->solve(residual, y);
@@ -222,15 +885,17 @@ class iteration_data_t {
     i_t iter                  = 0;
     f_t norm_residual         = vector_norm2<i_t, f_t>(residual);
     f_t initial_norm_residual = norm_residual;
-    settings.log.printf("PCG initial residual 2-norm %e inf-norm %e\n",
-                        norm_residual,
-                        vector_norm_inf<i_t, f_t>(residual));
+    if (show_pcg_info) {
+      settings.log.printf("PCG initial residual 2-norm %e inf-norm %e\n",
+                          norm_residual,
+                          vector_norm_inf<i_t, f_t>(residual));
+    }
 
     f_t rTy = residual.inner_product(y);
 
     while (norm_residual > tolerance && iter < 100) {
       // Compute Ap = A * p
-      matrix_vector_multiply(A, 1.0, p, 0.0, Ap);
+      adat_multiply(1.0, p, 0.0, Ap);
 
       // Compute alpha = (r^T * y) / (p^T * Ap)
       f_t alpha = rTy / p.inner_product(Ap);
@@ -240,8 +905,10 @@ class iteration_data_t {
 
       f_t new_residual = vector_norm2<i_t, f_t>(residual);
       if (new_residual > 1.1 * norm_residual || new_residual > 1.1 * initial_norm_residual) {
-        settings.log.printf(
-          "PCG residual increased by more than 10%%. New %e > %e\n", new_residual, norm_residual);
+        if (show_pcg_info) {
+          settings.log.printf(
+            "PCG residual increased by more than 10%%. New %e > %e\n", new_residual, norm_residual);
+        }
         break;
       }
       norm_residual = new_residual;
@@ -251,7 +918,7 @@ class iteration_data_t {
 
       // residual = A*x - b
       residual = b;
-      matrix_vector_multiply(A, 1.0, x, -1.0, residual);
+      adat_multiply(1.0, x, -1.0, residual);
       norm_residual = vector_norm2<i_t, f_t>(residual);
 
       // Solve M y = r for y
@@ -267,23 +934,30 @@ class iteration_data_t {
       p.axpy(-1.0, y, beta);
 
       iter++;
-      settings.log.printf("PCG iter %3d 2-norm_residual %.2e inf-norm_residual %.2e\n",
-                          iter,
-                          norm_residual,
-                          vector_norm_inf<i_t, f_t>(residual));
+
+      if (show_pcg_info) {
+        settings.log.printf("PCG iter %3d 2-norm_residual %.2e inf-norm_residual %.2e\n",
+                            iter,
+                            norm_residual,
+                            vector_norm_inf<i_t, f_t>(residual));
+      }
     }
 
     residual = b;
-    matrix_vector_multiply(A, 1.0, x, -1.0, residual);
+    adat_multiply(1.0, x, -1.0, residual);
     norm_residual = vector_norm2<i_t, f_t>(residual);
     if (norm_residual < initial_norm_residual) {
+      if (show_pcg_info) {
       settings.log.printf("PCG improved residual 2-norm %.2e/%.2e in %d iterations\n",
                           norm_residual,
                           initial_norm_residual,
                           iter);
+      }
       xinout = x;
     } else {
-      settings.log.printf("Rejecting PCG solution\n");
+      if (show_pcg_info) {
+        settings.log.printf("Rejecting PCG solution\n");
+      }
     }
   }
 
@@ -308,13 +982,24 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> inv_diag;
   dense_vector_t<i_t, f_t> inv_sqrt_diag;
 
+
+  std::vector<f_t> original_A_values;
+
   csc_matrix_t<i_t, f_t> AD;
   csc_matrix_t<i_t, f_t> AT;
   csc_matrix_t<i_t, f_t> ADAT;
 
+  i_t n_dense_columns;
+  std::vector<i_t> dense_columns;
+  std::vector<i_t> sparse_mark;
+  std::vector<i_t> cols_to_remove;
+  dense_matrix_t<i_t, f_t> A_dense;
+  const csc_matrix_t<i_t, f_t>& A;
+
   std::unique_ptr<sparse_cholesky_base_t<i_t, f_t>> chol;
 
   bool has_factorization;
+  i_t num_factorizations;
 
   dense_vector_t<i_t, f_t> primal_residual;
   dense_vector_t<i_t, f_t> bound_residual;
@@ -339,6 +1024,8 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> dy;
   dense_vector_t<i_t, f_t> dv;
   dense_vector_t<i_t, f_t> dz;
+
+  const simplex_solver_settings_t<i_t, f_t>& settings_;
 };
 
 template <typename i_t, typename f_t>
@@ -350,6 +1037,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     settings.log.printf("Initial factorization failed\n");
     return;
   }
+  data.num_factorizations++;
 
   // rhs_x <- b
   dense_vector_t<i_t, f_t> rhs_x(lp.rhs);
@@ -366,12 +1054,14 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   // Solve A*Dinv*A'*q = A*Dinv*F*u - b
   dense_vector_t<i_t, f_t> q(lp.num_rows);
   settings.log.printf("||rhs_x|| = %e\n", vector_norm2<i_t, f_t>(rhs_x));
-  i_t solve_status = data.chol->solve(rhs_x, q);
+  //i_t solve_status = data.chol->solve(rhs_x, q);
+  i_t solve_status = data.solve_adat(rhs_x, q);
   settings.log.printf("Initial solve status %d\n", solve_status);
   settings.log.printf("||q|| = %e\n", vector_norm2<i_t, f_t>(q));
 
   // rhs_x <- A*Dinv*A'*q - rhs_x
-  matrix_vector_multiply(data.ADAT, 1.0, q, -1.0, rhs_x);
+  data.adat_multiply(1.0, q, -1.0, rhs_x);
+  //matrix_vector_multiply(data.ADAT, 1.0, q, -1.0, rhs_x);
   settings.log.printf("|| A*Dinv*A'*q - (A*Dinv*F*u - b) || = %e\n", vector_norm2<i_t, f_t>(rhs_x));
 
   // x = Dinv*(F*u - A'*q)
@@ -411,7 +1101,8 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   matrix_vector_multiply(lp.A, 1.0, Dinvc, 0.0, rhs);
 
   // Solve A*Dinv*A'*q = A*Dinv*c
-  data.chol->solve(rhs, data.y);
+  //data.chol->solve(rhs, data.y);
+  data.solve_adat(rhs, data.y);
 
   // z = Dinv*(c - A'*y)
   dense_vector_t<i_t, f_t> cmATy = data.c;
@@ -567,10 +1258,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   // Form A*D*A'
   if (!data.has_factorization) {
-    data.AD = lp.A;
-    data.AD.scale_columns(data.inv_diag);
-    // compute ADAT = A Dinv * A^T
-    multiply(data.AD, data.AT, data.ADAT);
+    data.form_adat();
 
     // factorize
     i_t status = data.chol->factorize(data.ADAT);
@@ -579,6 +1267,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       return -1;
     }
     data.has_factorization = true;
+    data.num_factorizations++;
   }
 
   // Compute h = primal_rhs + A*inv_diag*(dual_rhs - complementarity_xz_rhs ./ x +
@@ -618,7 +1307,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
 
   // Solve A D^{-1} A^T dy = h
-  i_t solve_status = data.chol->solve(h, dy);
+  //i_t solve_status = data.chol->solve(h, dy);
+  i_t solve_status = data.solve_adat(h, dy);
   if (solve_status < 0) {
     settings.log.printf("Linear solve failed\n");
     return -1;
@@ -626,7 +1316,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   // y_residual <- ADAT*dy - h
   dense_vector_t<i_t, f_t> y_residual = h;
-  matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
+  //matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
+  data.adat_multiply(1.0, dy, -1.0, y_residual);
   const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
   max_residual              = std::max(max_residual, y_residual_norm);
   if (y_residual_norm > 1e-2) {
@@ -730,7 +1421,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 #endif
 
   dense_vector_t<i_t, f_t> dx_residual_7 = h;
-  matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
+  //matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
+  data.adat_multiply(1.0, dy, -1.0, dx_residual_7);
   const f_t dx_residual_7_norm = vector_norm_inf<i_t, f_t>(dx_residual_7);
   max_residual                 = std::max(max_residual, dx_residual_7_norm);
   if (dx_residual_7_norm > 1e-2) {
@@ -872,6 +1564,7 @@ template <typename i_t, typename f_t>
 lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
   const barrier_solver_settings_t<i_t, f_t>& options,
   iteration_data_t<i_t, f_t>& data,
+  f_t start_time,
   i_t iter,
   f_t norm_b,
   f_t norm_c,
@@ -917,16 +1610,26 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
         relative_complementarity_residual < 100 * options.complementarity_tol) {
       settings.log.printf(
         "Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n",
-        primal_residual_norm,
-        dual_residual_norm,
-        complementarity_residual_norm);
+        relative_primal_residual,
+        relative_dual_residual,
+        relative_complementarity_residual);
       data.to_solution(lp, iter,
                        primal_objective,
                        primal_objective + lp.obj_constant,
                        vector_norm2<i_t, f_t>(data.primal_residual),
                        vector_norm2<i_t, f_t>(data.dual_residual),
                        solution);
-      settings.log.printf("Suboptimal solution found\n");
+      settings.log.printf("Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
+      settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
+      settings.log.printf("Primal infeasibility (abs/rel): %8.2e/%8.2e\n",
+                          primal_residual_norm,
+                          relative_primal_residual);
+      settings.log.printf("Dual infeasibility   (abs/rel): %8.2e/%8.2e\n",
+                          dual_residual_norm,
+                          relative_dual_residual);
+      settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
+                          complementarity_residual_norm,
+                          relative_complementarity_residual);
       return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
     } else {
       settings.log.printf(
@@ -1061,6 +1764,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     if (status < 0) {
         return check_for_suboptimal_solution(options,
             data,
+            start_time,
             iter,
             norm_b,
             norm_c,
@@ -1129,6 +1833,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     if (status < 0) {
       return check_for_suboptimal_solution(options,
                                            data,
+                                           start_time,
                                            iter,
                                            norm_b,
                                            norm_c,
