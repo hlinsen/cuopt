@@ -52,6 +52,7 @@ class barrier_solver_t {
                     lp_solution_t<i_t, f_t>& solution);
 
  private:
+  void my_pop_range();
   void initial_point(iteration_data_t<i_t, f_t>& data);
   void compute_residual_norms(const dense_vector_t<i_t, f_t>& w,
                               const dense_vector_t<i_t, f_t>& x,

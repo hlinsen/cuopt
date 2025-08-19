@@ -25,6 +25,8 @@
 
 #include "cudss.h"
 
+#include <raft/common/nvtx.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>

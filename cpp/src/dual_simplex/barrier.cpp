@@ -24,6 +24,8 @@
 
 #include <numeric>
 
+#include <raft/common/nvtx.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 
@@ -1221,6 +1223,18 @@ f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f
 }
 
 template <typename i_t, typename f_t>
+void barrier_solver_t<i_t, f_t>::my_pop_range()
+{
+  // Else the range will pop from the CPU side while some work is still hapenning on the GPU
+  // In benchmarking this is useful, in production we should not sync constantly
+  constexpr bool gpu_sync = true;
+  if (gpu_sync)
+    RAFT_CUDA_TRY(cudaStreamSynchronize(lp.handle_ptr->get_stream()));
+  raft::common::nvtx::pop_range();
+
+}
+
+template <typename i_t, typename f_t>
 i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                                          dense_vector_t<i_t, f_t>& dw,
                                                          dense_vector_t<i_t, f_t>& dx,
@@ -1229,6 +1243,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
                                                          dense_vector_t<i_t, f_t>& dz,
                                                          f_t& max_residual)
 {
+  raft::common::nvtx::range fun_scope("Barrier: compute_search_direction");
+
   const bool debug = true;
   // Solves the linear system
   //
@@ -1238,6 +1254,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // [ 0 0  A' -E  I ] [ dy ]   [ rd  ]
   // [ 0 Z  0   0  X ] [ dv ]   [ rxz ]
   // [ V 0  0   W  0 ] [ dz ]   [ rwv ]
+
+  raft::common::nvtx::push_range("Barrier: pre A*D*A' formation");
 
   max_residual = 0.0;
   // diag = z ./ x
@@ -1255,6 +1273,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   // inv_sqrt_diag <- sqrt(inv_diag)
   data.inv_diag.sqrt(data.inv_sqrt_diag);
+
+  my_pop_range();
 
   // Form A*D*A'
   if (!data.has_factorization) {
@@ -1276,6 +1296,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   // Compute h = primal_rhs + A*inv_diag*(dual_rhs - complementarity_xz_rhs ./ x +
   // E*((complementarity_wv_rhs - v .* bound_rhs) ./ w) )
+  raft::common::nvtx::push_range("Barrier: compute H");
+
   dense_vector_t<i_t, f_t> tmp1(data.n_upper_bounds);
   dense_vector_t<i_t, f_t> tmp2(data.n_upper_bounds);
   dense_vector_t<i_t, f_t> tmp3(lp.num_cols);
@@ -1310,6 +1332,10 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // h <- 1.0 * A * tmp4 + primal_rhs
   matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
 
+  my_pop_range();
+
+  raft::common::nvtx::push_range("Barrier: Solve A D^{-1} A^T dy = h");
+
   // Solve A D^{-1} A^T dy = h
   //i_t solve_status = data.chol->solve(h, dy);
   i_t solve_status = data.solve_adat(h, dy);
@@ -1317,6 +1343,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     settings.log.printf("Linear solve failed\n");
     return -1;
   }
+
+  my_pop_range();
 
   // y_residual <- ADAT*dy - h
   raft::common::nvtx::push_range("Barrier: y_residual");
@@ -1681,6 +1709,8 @@ template <typename i_t, typename f_t>
 lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>& options,
                                                lp_solution_t<i_t, f_t>& solution)
 {
+  raft::common::nvtx::range fun_scope("Barrier: solve");
+  
   float64_t start_time = tic();
   lp_status_t status = lp_status_t::UNSET;
 
