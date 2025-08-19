@@ -1258,6 +1258,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   // Form A*D*A'
   if (!data.has_factorization) {
+    raft::common::nvtx::range fun_scope("Barrier: CPU ADAT");
     data.form_adat();
 
     // factorize
@@ -1269,6 +1270,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     data.has_factorization = true;
     data.num_factorizations++;
   }
+
+  raft::common::nvtx::push_range("Barrier: post A*D*A' formation");
+
 
   // Compute h = primal_rhs + A*inv_diag*(dual_rhs - complementarity_xz_rhs ./ x +
   // E*((complementarity_wv_rhs - v .* bound_rhs) ./ w) )
@@ -1315,6 +1319,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   }
 
   // y_residual <- ADAT*dy - h
+  raft::common::nvtx::push_range("Barrier: y_residual");
   dense_vector_t<i_t, f_t> y_residual = h;
   //matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
   data.adat_multiply(1.0, dy, -1.0, y_residual);
@@ -1337,9 +1342,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual);
     settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n", y_residual_norm_pcg);
   }
+  my_pop_range();
 
   // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs - v
   // .* bound_rhs) ./ w))
+  raft::common::nvtx::push_range("Barrier: dx formation");
   // r1 <- A'*dy - r1
   matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, r1);
   // dx <- dinv .* r1
@@ -1360,7 +1367,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       settings.log.printf("|| D * dx - A'*y + r1 || = %.2e\n", dx_residual_norm);
     }
   }
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: dx_residual_2");
   dense_vector_t<i_t, f_t> dx_residual_2(lp.num_cols);
   // dx_residual_2 <- D^-1 * (A'*dy - r1)
   data.inv_diag.pairwise_product(r1, dx_residual_2);
@@ -1372,7 +1381,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (dx_residual_2_norm > 1e-2) {
     settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
   }
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: dx_residual_5_6");
   dense_vector_t<i_t, f_t> dx_residual_5(lp.num_cols);
   dense_vector_t<i_t, f_t> dx_residual_6(lp.num_rows);
   // dx_residual_5 <- D^-1 * (A'*dy - r1)
@@ -1386,6 +1397,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (dx_residual_6_norm > 1e-2) {
     settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
   }
+  my_pop_range();
+
+  raft::common::nvtx::push_range("Barrier: dx_residual_3_4");
 
   dense_vector_t<i_t, f_t> dx_residual_3(lp.num_cols);
   // dx_residual_3 <- D^-1 * r1
@@ -1396,6 +1410,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // dx_residual_4 <-  A * D^-1 * r1 + A * dx
   matrix_vector_multiply(lp.A, 1.0, dx, 1.0, dx_residual_4);
   // dx_residual_4 <- - A * D^-1 * r1 - A * dx + ADAT * dy
+  my_pop_range();
 
 #if CHECK_FORM_ADAT
   csc_matrix_t<i_t, f_t> ADinv = lp.A;
@@ -1420,6 +1435,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   }
 #endif
 
+  raft::common::nvtx::push_range("Barrier: dx_residual_7");
   dense_vector_t<i_t, f_t> dx_residual_7 = h;
   //matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
   data.adat_multiply(1.0, dy, -1.0, dx_residual_7);
@@ -1428,7 +1444,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (dx_residual_7_norm > 1e-2) {
     settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
   }
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: x_residual");
   // x_residual <- A * dx - primal_rhs
   dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
   matrix_vector_multiply(lp.A, 1.0, dx, -1.0, x_residual);
@@ -1439,7 +1457,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       settings.log.printf("|| A * dx - rp || = %.2e\n", x_residual_norm);
     }
   }
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: dz formation");
   // dz = (complementarity_xz_rhs - z.* dx) ./ x;
   // tmp3 <- z .* dx
   data.z.pairwise_product(dx, tmp3);
@@ -1447,7 +1467,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   tmp3.axpy(1.0, data.complementarity_xz_rhs, -1.0);
   // dz <- tmp3 ./ x
   tmp3.pairwise_divide(data.x, dz);
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: xz_residual");
   // xz_residual <- z .* dx + x .* dz - complementarity_xz_rhs
   dense_vector_t<i_t, f_t> xz_residual = data.complementarity_xz_rhs;
   dense_vector_t<i_t, f_t> zdx(lp.num_cols);
@@ -1463,7 +1485,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       settings.log.printf("|| Z dx + X dz - rxz || = %.2e\n", xz_residual_norm);
     }
   }
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: dv formation");
   // dv = (v .* E' dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
   // tmp1 <- E' * dx
   data.gather_upper_bounds(dx, tmp1);
@@ -1477,7 +1501,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   tmp1.axpy(1.0, data.complementarity_wv_rhs, 1.0);
   // dv <- tmp1 ./ w
   tmp1.pairwise_divide(data.w, dv);
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: dv_residual");
   dense_vector_t<i_t, f_t> dv_residual(data.n_upper_bounds);
   dense_vector_t<i_t, f_t> dv_residual_2(data.n_upper_bounds);
   // dv_residual <- E'*dx
@@ -1505,7 +1531,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
         dv_residual_norm);
     }
   }
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: dual_residual");
   // dual_residual <- A' * dy - E * dv  + dz -  dual_rhs
   dense_vector_t<i_t, f_t> dual_residual(lp.num_cols);
   // dual_residual <- E * dv
@@ -1523,7 +1551,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       settings.log.printf("|| A' * dy - E * dv  + dz -  dual_rhs || = %.2e\n", dual_residual_norm);
     }
   }
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: dw formation");
   // dw = bound_rhs - E'*dx
   data.gather_upper_bounds(dx, tmp1);
   dw = data.bound_rhs;
@@ -1540,7 +1570,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       settings.log.printf("|| dw + E'*dx - bound_rhs || = %.2e\n", dw_residual_norm);
     }
   }
+  my_pop_range();
 
+  raft::common::nvtx::push_range("Barrier: wv_residual");
   // wv_residual <- v .* dw + w .* dv - complementarity_wv_rhs
   dense_vector_t<i_t, f_t> wv_residual = data.complementarity_wv_rhs;
   dense_vector_t<i_t, f_t> vdw(data.n_upper_bounds);
@@ -1556,6 +1588,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       settings.log.printf("|| V dw + W dv - rwv || = %.2e\n", wv_residual_norm);
     }
   }
+  my_pop_range();
+
+  my_pop_range(); // Pop the post A*D*A' formation range
 
   return 0;
 }
