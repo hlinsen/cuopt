@@ -62,10 +62,10 @@ static void parse_arguments(argparse::ArgumentParser& program)
   program.add_argument("--method")
     .help(
       "Method to solve the linear programming problem. 0: Concurrent (default), 1: PDLP, 2: "
-      "DualSimplex")
+      "DualSimplex, 3: Barrier")
     .default_value(0)
     .scan<'i', int>()
-    .choices(0, 1, 2);
+    .choices(0, 1, 2, 3);
 
   program.add_argument("--crossover")
     .help("Enable crossover. 0: disabled (default), 1: enabled")
