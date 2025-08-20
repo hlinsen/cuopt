@@ -1229,7 +1229,7 @@ void barrier_solver_t<i_t, f_t>::my_pop_range()
   // In benchmarking this is useful, in production we should not sync constantly
   constexpr bool gpu_sync = true;
   if (gpu_sync)
-    RAFT_CUDA_TRY(cudaStreamSynchronize(lp.handle_ptr->get_stream()));
+    cudaDeviceSynchronize();
   raft::common::nvtx::pop_range();
 
 }
