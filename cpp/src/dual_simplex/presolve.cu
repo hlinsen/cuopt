@@ -166,19 +166,23 @@ i_t remove_empty_cols(lp_problem_t<i_t, f_t>& problem,
   std::vector<i_t> col_marker(problem.num_cols);
   i_t new_cols = 0;
   for (i_t j = 0; j < problem.num_cols; ++j) {
+    bool remove_var = false;
     if ((problem.A.col_start[j + 1] - problem.A.col_start[j]) == 0) {
+      if (problem.objective[j] >= 0 && problem.lower[j] > -inf) {
+        presolve_info.removed_values.push_back(problem.lower[j]);
+        problem.obj_constant += problem.objective[j] * problem.lower[j];
+        remove_var = true;
+      } else if (problem.objective[j] <= 0 && problem.upper[j] < inf) {
+        presolve_info.removed_values.push_back(problem.upper[j]);
+        problem.obj_constant += problem.objective[j] * problem.upper[j];
+        remove_var = true;
+      }
+    }
+
+    if (remove_var) {
       col_marker[j] = 1;
       presolve_info.removed_variables.push_back(j);
       presolve_info.removed_reduced_costs.push_back(problem.objective[j]);
-      if (problem.objective[j] >= 0) {
-        presolve_info.removed_values.push_back(problem.lower[j]);
-        problem.obj_constant += problem.objective[j] * problem.lower[j];
-        assert(problem.lower[j] > -inf);
-      } else {
-        presolve_info.removed_values.push_back(problem.upper[j]);
-        problem.obj_constant += problem.objective[j] * problem.upper[j];
-        assert(problem.upper[j] < inf);
-      }
     } else {
       col_marker[j] = 0;
       new_cols++;
@@ -727,6 +731,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   }
   if (settings.barrier_presolve && nonzero_lower_bounds > 0) {
     settings.log.printf("Transforming %ld nonzero lower bound\n", nonzero_lower_bounds);
+    presolve_info.removed_lower_bounds.resize(problem.num_cols);
     // We can construct a new variable: x'_j = x_j - l_j or x_j = x'_j + l_j
     // than we have 0 <= x'_j <= u_j - l_j
     // Constraints in the form:
@@ -751,7 +756,8 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
         }
         problem.obj_constant += problem.objective[j] * problem.lower[j];
         problem.upper[j] -= problem.lower[j];
-        problem.lower[j] = 0.0;
+        presolve_info.removed_lower_bounds[j] = problem.lower[j];
+        problem.lower[j]                      = 0.0;
       }
     }
   }
@@ -841,7 +847,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     }
   }
   if (num_empty_cols > 0) {
-    settings.log.printf("Presolve removing %d empty cols\n", num_empty_cols);
+    settings.log.printf("Presolve attempt to remove %d empty cols\n", num_empty_cols);
     remove_empty_cols(problem, num_empty_cols, presolve_info);
   }
 
@@ -1100,25 +1106,50 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   if (presolve_info.removed_variables.size() == 0) {
     uncrushed_x = crushed_x;
     uncrushed_z = crushed_z;
-    return;
+  } else {
+    printf("Presolve info removed variables %d\n", presolve_info.removed_variables.size());
+    // We removed some variables, so we need to map the crushed solution back to the original
+    // variables
+    const i_t n = presolve_info.removed_variables.size() + presolve_info.remaining_variables.size();
+    uncrushed_x.resize(n);
+    uncrushed_z.resize(n);
+
+    i_t k = 0;
+    for (const i_t j : presolve_info.remaining_variables) {
+      uncrushed_x[j] = crushed_x[k];
+      uncrushed_z[j] = crushed_z[k];
+      k++;
+    }
+
+    k = 0;
+    for (const i_t j : presolve_info.removed_variables) {
+      uncrushed_x[j] = presolve_info.removed_values[k];
+      uncrushed_z[j] = presolve_info.removed_reduced_costs[k];
+      k++;
+    }
   }
 
-  const i_t n = presolve_info.removed_variables.size() + presolve_info.remaining_variables.size();
-  uncrushed_x.resize(n);
-  uncrushed_z.resize(n);
-
-  i_t k = 0;
-  for (const i_t j : presolve_info.remaining_variables) {
-    uncrushed_x[j] = crushed_x[k];
-    uncrushed_z[j] = crushed_z[k];
-    k++;
+  const i_t num_free_variables = presolve_info.free_variable_pairs.size() / 2;
+  if (num_free_variables > 0) {
+    printf("Presolve info free variables %d\n", num_free_variables);
+    // We added free variables so we need to map the crushed solution back to the original variables
+    for (i_t k = 0; k < 2 * num_free_variables; k += 2) {
+      const i_t u = presolve_info.free_variable_pairs[k];
+      const i_t v = presolve_info.free_variable_pairs[k + 1];
+      uncrushed_x[u] -= uncrushed_x[v];
+    }
+    const i_t n = uncrushed_x.size();
+    uncrushed_x.resize(n - num_free_variables);
+    uncrushed_z.resize(n - num_free_variables);
   }
 
-  k = 0;
-  for (const i_t j : presolve_info.removed_variables) {
-    uncrushed_x[j] = presolve_info.removed_values[k];
-    uncrushed_z[j] = presolve_info.removed_reduced_costs[k];
-    k++;
+  if (presolve_info.removed_lower_bounds.size() > 0) {
+    printf("Presolve info removed lower bounds %d\n", presolve_info.removed_lower_bounds.size());
+    // We removed some lower bounds so we need to map the crushed solution back to the original
+    // variables
+    for (i_t j = 0; j < uncrushed_x.size(); j++) {
+      uncrushed_x[j] += presolve_info.removed_lower_bounds[j];
+    }
   }
 }
 

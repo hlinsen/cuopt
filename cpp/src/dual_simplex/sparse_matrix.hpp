@@ -96,6 +96,12 @@ class csc_matrix_t {
   // Prints the matrix to a file
   void print_matrix(FILE* fid) const;
 
+  // Ensures no repeated row indices within a column
+  void check_matrix() const;
+
+  // Writes the matrix to a file in Matrix Market format
+  void write_matrix_market(FILE* fid) const;
+
   // Compute || A ||_1 = max_j (sum {i = 1 to m} | A(i, j) | )
   f_t norm1() const;
 
@@ -190,9 +196,9 @@ class csc_matrix_t {
     return d;
   }
 
-  i_t nz_max;                  // maximum number of entries
   i_t m;                       // number of rows
   i_t n;                       // number of columns
+  i_t nz_max;                  // maximum number of entries
   std::vector<i_t> col_start;  // column pointers (size n + 1)
   std::vector<i_t> i;          // row indices, size nz_max
   std::vector<f_t> x;          // numerical values, size nz_max
@@ -300,6 +306,8 @@ class csr_matrix_t {
     d.x         = cuopt::device_copy(x, stream);
     return d;
   }
+  // Ensures no repeated column indices within a row
+  void check_matrix() const;
 
   i_t nz_max;                  // maximum number of nonzero entries
   i_t m;                       // number of rows

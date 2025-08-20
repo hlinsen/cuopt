@@ -373,6 +373,20 @@ void csc_matrix_t<i_t, f_t>::print_matrix(FILE* fid) const
 }
 
 template <typename i_t, typename f_t>
+void csc_matrix_t<i_t, f_t>::write_matrix_market(FILE* fid) const
+{
+  fprintf(fid, "%%%%MatrixMarket matrix coordinate real general\n");
+  fprintf(fid, "%d %d %d\n", this->m, this->n, this->col_start[this->n]);
+  for (i_t j = 0; j < this->n; ++j) {
+    const i_t col_beg = this->col_start[j];
+    const i_t col_end = this->col_start[j + 1];
+    for (i_t p = col_beg; p < col_end; ++p) {
+      fprintf(fid, "%d %d %.16e\n", this->i[p] + 1, j + 1, this->x[p]);
+    }
+  }
+}
+
+template <typename i_t, typename f_t>
 void csc_matrix_t<i_t, f_t>::print_matrix() const
 {
   this->print_matrix(stdout);
@@ -492,6 +506,36 @@ i_t scatter(const csc_matrix_t<i_t, f_t>& A,
     }
   }
   return nz;
+}
+
+template <typename i_t, typename f_t>
+void csc_matrix_t<i_t, f_t>::check_matrix() const
+{
+  std::vector<i_t> row_marker(this->m, -1);
+  for (i_t j = 0; j < this->n; ++j) {
+    const i_t col_start = this->col_start[j];
+    const i_t col_end   = this->col_start[j + 1];
+    for (i_t p = col_start; p < col_end; ++p) {
+      const i_t i = this->i[p];
+      if (row_marker[i] == j) { printf("CSC error: repeated row index %d in column %d\n", i, j); }
+      row_marker[i] = j;
+    }
+  }
+}
+
+template <typename i_t, typename f_t>
+void csr_matrix_t<i_t, f_t>::check_matrix() const
+{
+  std::vector<i_t> col_marker(this->n, -1);
+  for (i_t i = 0; i < this->m; ++i) {
+    const i_t row_start = this->row_start[i];
+    const i_t row_end   = this->row_start[i + 1];
+    for (i_t p = row_start; p < row_end; ++p) {
+      const i_t j = this->j[p];
+      if (col_marker[j] == i) { printf("CSR Error: repeated column index %d in row %d\n", j, i); }
+      col_marker[j] = i;
+    }
+  }
 }
 
 // x <- x + alpha * A(:, j)

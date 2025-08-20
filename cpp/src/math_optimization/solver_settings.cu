@@ -105,7 +105,10 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_LOG_TO_CONSOLE, &pdlp_settings.log_to_console, true},
     {CUOPT_LOG_TO_CONSOLE, &mip_settings.log_to_console, true},
     {CUOPT_CROSSOVER, &pdlp_settings.crossover, false},
-    {CUOPT_USE_CUDSS, &pdlp_settings.use_cudss, false}
+    {CUOPT_USE_CUDSS, &pdlp_settings.use_cudss, false},
+    {CUOPT_ELIMINATE_DENSE_COLUMNS, &pdlp_settings.eliminate_dense_columns, true},
+    {CUOPT_PRESOLVE, &pdlp_settings.presolve, false},
+    {CUOPT_PRESOLVE, &mip_settings.presolve, true}
   };
   // String parameters
   string_parameters = {
