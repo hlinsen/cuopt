@@ -22,9 +22,17 @@
 #include <dual_simplex/tic_toc.hpp>
 #include <dual_simplex/types.hpp>
 
+#include <rmm/device_uvector.hpp>
+#include <rmm/device_scalar.hpp>
+
+#include <utilities/copy_helpers.hpp>
+
 #include <numeric>
 
 #include <raft/common/nvtx.hpp>
+#include <raft/sparse/detail/cusparse_wrappers.h>
+
+#include <thrust/iterator/permutation_iterator.h>
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -964,7 +972,7 @@ class iteration_data_t {
   }
 
   i_t n_upper_bounds;
-  dense_vector_t<i_t, f_t> upper_bounds;
+  dense_vector_t<i_t, i_t> upper_bounds;
   dense_vector_t<i_t, f_t> c;
   dense_vector_t<i_t, f_t> b;
 
@@ -1234,6 +1242,35 @@ void barrier_solver_t<i_t, f_t>::my_pop_range()
 
 }
 
+template <typename f_t>
+struct scatter_compl
+{
+  __host__ __device__ inline
+  f_t operator()(f_t bound_rhs,
+                 f_t v,
+                 f_t complementarity_wv_rhs,
+                 f_t w) const
+  {
+    return (complementarity_wv_rhs - v * bound_rhs) / w;
+  }
+};
+
+template <typename f_t>
+struct inv_time_compl
+{
+  __host__ __device__ inline
+  thrust::tuple<f_t, f_t> operator()(f_t inv_diag,
+                 f_t tmp3,
+                 f_t complementarity_xz_rhs,
+                 f_t x,
+                 f_t dual_rhs)
+  {
+    const f_t tmp = tmp3 + -(complementarity_xz_rhs / x) + dual_rhs;
+    return {tmp, inv_diag * tmp};
+  }
+};
+
+
 template <typename i_t, typename f_t>
 i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                                          dense_vector_t<i_t, f_t>& dw,
@@ -1294,43 +1331,177 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   raft::common::nvtx::push_range("Barrier: post A*D*A' formation");
 
 
-  // Compute h = primal_rhs + A*inv_diag*(dual_rhs - complementarity_xz_rhs ./ x +
-  // E*((complementarity_wv_rhs - v .* bound_rhs) ./ w) )
-  raft::common::nvtx::push_range("Barrier: compute H");
-
+  // Compute h = primal_rhs + A*inv_diag*(dual_rhs - complementarity_xz_rhs ./ x + E*((complementarity_wv_rhs - v .* bound_rhs) ./ w) )
   dense_vector_t<i_t, f_t> tmp1(data.n_upper_bounds);
   dense_vector_t<i_t, f_t> tmp2(data.n_upper_bounds);
   dense_vector_t<i_t, f_t> tmp3(lp.num_cols);
   dense_vector_t<i_t, f_t> tmp4(lp.num_cols);
+  dense_vector_t<i_t, f_t> r1(lp.num_cols);
+  dense_vector_t<i_t, f_t> r1_prime(lp.num_cols);
+  dense_vector_t<i_t, f_t> h(data.primal_rhs.size());
+  if (false)
+  {
+    raft::common::nvtx::push_range("Barrier: CPU compute H");
 
-  // tmp2 <- v .* bound_rhs
-  data.v.pairwise_product(data.bound_rhs, tmp2);
-  // tmp2 <- complementarity_wv_rhs - v .* bound_rhs
-  tmp2.axpy(1.0, data.complementarity_wv_rhs, -1.0);
-  // tmp1 <- (complementarity_wv_rhs - v .* bound_rhs) ./ w
-  tmp2.pairwise_divide(data.w, tmp1);
-  tmp3.set_scalar(0.0);
-  // tmp3 <- E * tmp1
-  data.scatter_upper_bounds(tmp1, tmp3);
+    // A
 
-  // tmp4 <- complementarity_xz_rhs ./ x
-  data.complementarity_xz_rhs.pairwise_divide(data.x, tmp4);
-  // tmp3 <- -complementarity_xz_rhs ./ x + E * ((complementarity_wv_rhs - v .* bound_rhs) ./ w)
-  tmp3.axpy(-1.0, tmp4, 1.0);
-  // tmp3 <- dual_rhs -complementarity_xz_rhs ./ x + E * ((complementarity_wv_rhs - v .* bound_rhs)
-  // ./ w)
-  tmp3.axpy(1.0, data.dual_rhs, 1.0);
-  // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
-  // ./ w)
-  dense_vector_t<i_t, f_t> r1       = tmp3;
-  dense_vector_t<i_t, f_t> r1_prime = r1;
-  // tmp4 <- inv_diag * ( dual_rhs -complementarity_xz_rhs ./ x + E *((complementarity_wv_rhs - v .*
-  // bound_rhs) ./ w))
-  data.inv_diag.pairwise_product(tmp3, tmp4);
+    // tmp2 <- v .* bound_rhs
+    data.v.pairwise_product(data.bound_rhs, tmp2);
+    // tmp2 <- complementarity_wv_rhs - v .* bound_rhs
+    tmp2.axpy(1.0, data.complementarity_wv_rhs, -1.0);
+    // tmp1 <- (complementarity_wv_rhs - v .* bound_rhs) ./ w
+    tmp2.pairwise_divide(data.w, tmp1);
+    tmp3.set_scalar(0.0);
+    // tmp3 <- E * tmp1
+    data.scatter_upper_bounds(tmp1, tmp3);
 
-  dense_vector_t<i_t, f_t> h = data.primal_rhs;
-  // h <- 1.0 * A * tmp4 + primal_rhs
-  matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
+    // tmp4 <- complementarity_xz_rhs ./ x
+    data.complementarity_xz_rhs.pairwise_divide(data.x, tmp4);
+    // tmp3 <- -(complementarity_xz_rhs ./ x) + E * ((complementarity_wv_rhs - v .* bound_rhs) ./ w)
+    tmp3.axpy(-1.0, tmp4, 1.0);
+    // tmp3 <- dual_rhs + -(complementarity_xz_rhs ./ x) + E * ((complementarity_wv_rhs - v .* bound_rhs) ./ w)
+    tmp3.axpy(1.0, data.dual_rhs, 1.0);
+    // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
+    // ./ w)
+    r1       = tmp3;
+    r1_prime = r1;
+    // tmp4 <- inv_diag * ( dual_rhs -complementarity_xz_rhs ./ x + E *((complementarity_wv_rhs - v .*
+    // bound_rhs) ./ w))
+    data.inv_diag.pairwise_product(tmp3, tmp4);
+
+    h = data.primal_rhs;
+    // h <- 1.0 * A * tmp4 + primal_rhs
+    matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
+
+    print("h", h);
+  }
+  else
+  {
+    // TODO wrap everything with RAFT safe calls
+    // TMP all of this data should already be on the GPU and reuse correct stream
+    rmm::cuda_stream_view stream_view;
+    rmm::device_uvector<f_t> d_tmp3(tmp3.size(), stream_view);
+    rmm::device_uvector<f_t> d_tmp4(tmp4.size(), stream_view);
+    rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view);
+    rmm::device_uvector<f_t> d_v = device_copy(data.v, stream_view);
+    rmm::device_uvector<f_t> d_complementarity_wv_rhs = device_copy(data.complementarity_wv_rhs, stream_view);
+    rmm::device_uvector<f_t> d_w = device_copy(data.w, stream_view);
+    rmm::device_uvector<f_t> d_complementarity_xz_rhs = device_copy(data.complementarity_xz_rhs, stream_view);
+    rmm::device_uvector<f_t> d_x = device_copy(data.x, stream_view);
+    rmm::device_uvector<f_t> d_dual_rhs = device_copy(data.dual_rhs, stream_view);
+    rmm::device_uvector<f_t> d_inv_diag = device_copy(data.inv_diag, stream_view);
+    rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view);
+
+    // A & B fused
+    cudaMemsetAsync(d_tmp3.data(), 0, sizeof(f_t) * d_tmp3.size(), stream_view);
+    cub::DeviceTransform::Transform(
+      cuda::std::make_tuple(d_bound_rhs.data(),
+                            d_v.data(),
+                            d_complementarity_wv_rhs.data(),
+                            d_w.data()),
+      thrust::make_permutation_iterator(
+          d_tmp3.data(),
+          d_upper_bounds.data()
+        
+      ),
+      data.n_upper_bounds,
+      scatter_compl<f_t>(),
+      stream_view
+    );
+
+    cub::DeviceTransform::Transform(
+      cuda::std::make_tuple(d_inv_diag.data(),
+                            d_tmp3.data(),
+                            d_complementarity_xz_rhs.data(),
+                            d_x.data(),
+                            d_dual_rhs.data()),
+      thrust::make_zip_iterator(d_tmp3.data(), d_tmp4.data()),
+      lp.num_cols,
+      inv_time_compl<f_t>(),
+      stream_view
+    );
+
+    // D
+
+    // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
+    // ./ w)
+    // TMP no copy should happen
+    tmp3 = host_copy(d_tmp3);
+    r1       = tmp3;
+    r1_prime = r1;
+    h = data.primal_rhs;
+    // h <- 1.0 * A * tmp4 + primal_rhs
+
+    // TMP should only be done once in the constructor
+    cusparseSpMatDescr_t cusparse_A;
+    rmm::device_uvector<i_t> d_A_offsets = device_copy(lp.A.col_start, stream_view);
+    rmm::device_uvector<i_t> d_A_indices = device_copy(lp.A.i, stream_view);
+    rmm::device_uvector<f_t> d_A_data = device_copy(lp.A.x, stream_view);
+    // TODO test with CSR
+    // TODO shoudl be in RAFT
+    cusparseCreateCsc(&cusparse_A,
+                        lp.A.m,
+                        lp.A.n,
+                        lp.A.nz_max,
+                        d_A_offsets.data(),
+                        d_A_indices.data(),
+                        d_A_data.data(),
+                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                      CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
+    cusparseDnVecDescr_t cusparse_tmp;
+    raft::sparse::detail::cusparsecreatednvec(
+    &cusparse_tmp,
+    d_tmp4.size(),
+    d_tmp4.data());
+
+    // TMP no copy should happen
+    rmm::device_uvector<f_t> d_h = device_copy(h, stream_view);
+
+    // TMP should be in the associated cusparse view
+    cusparseDnVecDescr_t cusparse_h;
+    raft::sparse::detail::cusparsecreatednvec(
+    &cusparse_h,
+    d_h.size(),
+    d_h.data());
+
+    // TMP should be in the constructor
+    rmm::device_scalar<f_t> d_one(1, stream_view);
+
+    // TMP should be done in the associated cusparse view
+    rmm::device_buffer spmv_buffer(0, stream_view);
+    size_t buffer_size_spmv = 0;
+    cusparseHandle_t handle;
+    cusparseCreate(&handle);
+    raft::sparse::detail::cusparsesetpointermode(handle, CUSPARSE_POINTER_MODE_DEVICE, stream_view);
+    raft::sparse::detail::cusparsespmv_buffersize(handle,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                  d_one.data(),
+                                                  cusparse_A,
+                                                  cusparse_tmp,
+                                                  d_one.data(),
+                                                  cusparse_h,
+                                                  CUSPARSE_SPMV_CSR_ALG2,
+                                                  &buffer_size_spmv,
+                                                  stream_view);
+    spmv_buffer.resize(buffer_size_spmv, stream_view);
+
+
+    // TODO call preprocess in a associated cusparse view
+    raft::sparse::detail::cusparsespmv(handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      d_one.data(),
+                                      cusparse_A,
+                                      cusparse_tmp,
+                                      d_one.data(),
+                                      cusparse_h,
+                                      CUSPARSE_SPMV_CSR_ALG2,
+                                      (f_t*)spmv_buffer.data(),
+                                      stream_view);
+    
+    h = host_copy(d_h);
+    print("h", h);
+  }
+
 
   my_pop_range();
 
