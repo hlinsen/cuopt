@@ -166,8 +166,16 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     FILE* fid = fopen("A.mtx", "w");
     A_in.write_matrix_market(fid);
     fclose(fid);
+    settings_.log.printf("Wrote A.mtx\n");
 #endif
     A_in.to_compressed_row(Arow);
+
+#ifdef CHECK_MATRIX
+    settings_.log.printf("Checking matrices\n");
+    A_in.check_matrix();
+    Arow.check_matrix();
+    settings_.log.printf("Finished checking matrices\n");
+#endif
 
     nnz = A_in.col_start[A_in.n];
 

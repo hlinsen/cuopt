@@ -314,7 +314,10 @@ class iteration_data_t {
     std::vector<i_t> dense_columns_unordered;
     if (settings.eliminate_dense_columns) {
       f_t start_column_density = tic();
-      column_density(lp.A, settings, dense_columns_unordered);
+      find_dense_columns(lp.A, settings, dense_columns_unordered);
+      for (i_t j : dense_columns_unordered) {
+        settings.log.printf("Dense column %6d\n", j);
+      }
       float64_t column_density_time = toc(start_column_density);
       n_dense_columns               = static_cast<i_t>(dense_columns_unordered.size());
       settings.log.printf(
@@ -396,7 +399,10 @@ class iteration_data_t {
     float64_t adat_time = toc(start_form_adat);
     if (num_factorizations == 0) {
       settings_.log.printf("ADAT time %.2fs\n", adat_time);
-      settings_.log.printf("ADAT nonzeros %e\n", static_cast<float64_t>(ADAT.col_start[m]));
+      settings_.log.printf("ADAT nonzeros %e density %.2f\n",
+                           static_cast<float64_t>(ADAT.col_start[m]),
+                           static_cast<float64_t>(ADAT.col_start[m]) /
+                             (static_cast<float64_t>(m) * static_cast<float64_t>(m)));
     }
   }
 
@@ -768,42 +774,219 @@ class iteration_data_t {
     solution.l2_dual_residual = dual_residual;
   }
 
-  void column_density(const csc_matrix_t<i_t, f_t>& A,
+  void find_dense_columns(const csc_matrix_t<i_t, f_t>& A,
                       const simplex_solver_settings_t<i_t, f_t>& settings,
                       std::vector<i_t>& columns_to_remove)
   {
     f_t start_column_density = tic();
     const i_t m = A.m;
     const i_t n = A.n;
-    if (n < 2) { return; }
-    std::vector<f_t> col_nz(n);
-    for (i_t j = 0; j < n; j++) {
-      const i_t nnz = A.col_start[j + 1] - A.col_start[j];
-      col_nz[j]    = static_cast<f_t>(nnz);
-    }
 
-    std::vector<i_t> permutation(n);
-    std::iota(permutation.begin(), permutation.end(), 0);
-    std::sort(permutation.begin(), permutation.end(), [&col_nz](i_t i, i_t j) {
-      return col_nz[i] < col_nz[j];
+    // Quick return if the problem is small
+    if (m < 500) { return; }
+
+    // The goal of this function is to find a set of dense columns in A
+    // If a column of A is (partially) dense, it will cause A*A^T to be completely full.
+    //
+    // We can write A*A^T = sum_j A(:, j) * A(:, j)^T
+    // We can split A*A^T into two parts
+    // A*A^T =  sum_{j such that A(:, j) is sparse} A(:, j) * A(:, j)^T
+    //        + sum_{j such that A(:, j) is dense} A(:, j) * A(:, j)^T
+    // We call the first term A_sparse * A_sparse^T and the second term A_dense * A_dense^T
+    //
+    // We can then perform a sparse factorization of A_sparse * A_sparse^T
+    // And use Schur complement techniques to extend this to allow us to solve with all of A*A^T
+
+    // Thus, our goal is to find the columns that add the largest number of nonzeros to A*A^T
+    // It is too expensive for us to compute the exact sparsity pattern that each column of A
+    // contributes to A*A^T. Instead, we will use a heuristic method to estimate this.
+    // This function roughly follows the approach taken in the paper:
+    //
+    //
+    //  Meszaros, C. Detecting "dense" columns in interior point methods for linear programs.
+    //  Comput Optim Appl 36, 309-320 (2007). https://doi.org/10.1007/s10589-006-9008-6
+    //
+    // But the reason for this detailed comment is to explain what the algorithm
+    // given in the paper is doing.
+    //
+    // A loose upper bound is that column j contributes  |A(:, j) |^2 nonzeros to A*A^T
+    // However, this upper bound assumes that each column of A is independent, when in
+    // fact there is overlap in the sparsity pattern of A(:, j_1) and A(:, j_2)
+    //
+    //
+    // Sort the columns of A according to their number of nonzeros
+    std::vector<i_t> column_nz(n);
+    i_t max_col_nz = 0;
+    for (i_t j = 0; j < n; j++) {
+      column_nz[j] = A.col_start[j + 1] - A.col_start[j];
+      max_col_nz = std::max(column_nz[j], max_col_nz);
+    }
+    if (max_col_nz < 100) { return; }  // Quick return if all columns of A have few nonzeros
+    std::vector<i_t> column_nz_permutation(n);
+    std::iota(column_nz_permutation.begin(), column_nz_permutation.end(), 0);
+    std::sort(column_nz_permutation.begin(), column_nz_permutation.end(), [&column_nz](i_t i, i_t j) {
+      return column_nz[i] < column_nz[j];
     });
 
+
+
+    // We then compute the exact sparsity pattern for columns of A whose where
+    // the number of nonzeros is less than a threshold. This part can be done
+    // quickly given that each column has only a few nonzeros. We will approximate
+    // the effect of the dense columns a little later.
+
+    const i_t threshold = 300;
+
+    // Let C = A * A^T, the kth column of C is given by
+    //
+    // C(:, k) = A * A^T(:, k)
+    //         = A * A(k, :)^T
+    //         = sum_{j=1}^n A(:, j) * A(k, j)
+    //         = sum_{j : A(k, j) != 0} A(:, j) * A(k, j)
+    //
+    // Thus we can compute the sparsity pattern associated with
+    // the kth column of C by maintaining a single array of size m
+    // and adding entries into that array as we traverse different
+    // columns A(:, j)
+
+    std::vector<i_t> mark(m, 0);
+
+    // We will compute two arrays
+    std::vector<i_t> column_count(m, 0);  // column_count[k] = number of nonzeros in C(:, k)
+    std::vector<int64_t> delta_nz(n, 0);      // delta_nz[j] = additional fill in C due to A(:, j)
+
+    // Note that we need to find j such that A(k, j) != 0.
+    // The best way to do that is to have A stored in CSR format.
+    csr_matrix_t<i_t, f_t> A_row;
+    A.to_compressed_row(A_row);
+
+    std::vector<i_t> histogram(m, 0);
+    for (i_t j = 0; j < n; j++) {
+      const i_t col_nz_j = A.col_start[j + 1] - A.col_start[j];
+      histogram[col_nz_j]++;
+    }
+    settings.log.printf("Col Nz  # cols\n");
+    for (i_t k = 0; k < m; k++) {
+      if (histogram[k] > 0) {
+        settings.log.printf("%6d %6d\n", k, histogram[k]);
+      }
+    }
+    settings.log.printf("\n");
+
+    std::vector<i_t> row_nz(m, 0);
+    for (i_t j = 0; j < n; j++) {
+      const i_t col_start = A.col_start[j];
+      const i_t col_end   = A.col_start[j + 1];
+      for (i_t p = col_start; p < col_end; p++) {
+        row_nz[A.i[p]]++;
+      }
+    }
+
+    std::vector<i_t> histogram_row(m, 0);
+    for (i_t k = 0; k < m; k++) {
+      histogram_row[row_nz[k]]++;
+    }
+    settings.log.printf("Row Nz  # rows\n");
+    for (i_t k = 0; k < m; k++) {
+      if (histogram_row[k] > 0) {
+        settings.log.printf("%6d %6d\n", k, histogram_row[k]);
+      }
+    }
+
+    for (i_t k = 0; k < m; k++) {
+      // The nonzero pattern of C(:, k) will be those entries with mark[i] = k
+      const i_t row_start = A_row.row_start[k];
+      const i_t row_end   = A_row.row_start[k + 1];
+      for (i_t p = row_start; p < row_end; p++) {
+        const i_t j = A_row.j[p];
+        int64_t fill = 0; // This will hold the additional fill coming from A(:, j) in the current pass
+        const i_t col_start = A.col_start[j];
+        const i_t col_end   = A.col_start[j + 1];
+        const i_t col_nz_j = col_end - col_start;
+        //settings.log.printf("col_nz_j %6d j %6d\n", col_nz_j, j);
+        if (col_nz_j > threshold) { continue; }  // Skip columns above the threshold
+        for (i_t q = col_start; q < col_end; q++) {
+          const i_t i = A.i[q];
+          //settings.log.printf("A(%d, %d) i %6d mark[%d] = %6d =? %6d\n", i, j, i, i, mark[i], k);
+          if (mark[i] != k) {  // We have generated some fill in C(:, k)
+            mark[i] = k;
+            fill++;
+            //settings.log.printf("Fill %6d %6d\n", k, i);
+          }
+        }
+        column_count[k] += fill;  // Add in the contributions from A(:, j) to C(:, k). Since fill will be zeroed at next iteration.
+        delta_nz[j] += fill;      // Capture contributions from A(:, j). j will be encountered multiple times
+      }
+    }
+
+    int64_t sparse_nz_C = 0;
+    for (i_t j = 0; j < n; j++) {
+      sparse_nz_C += delta_nz[j];
+    }
+    settings.log.printf("Sparse nz AAT %e\n", static_cast<f_t>(sparse_nz_C));
+
+    // Now we estimate the fill in C due to the dense columns
+    i_t num_estimated_columns = 0;
+    for (i_t k = 0; k < n; k++) {
+      const i_t j = column_nz_permutation[k]; // We want to traverse columns in order of increasing number of nonzeros
+      const i_t col_nz_j = A.col_start[j + 1] - A.col_start[j];
+      if (col_nz_j <= threshold) { continue; }
+      num_estimated_columns++;
+      // This column will contribute A(:, j) * A(: j)^T to C
+      // The columns of C that will be affected are k such that A(k, j) ! = 0
+      const i_t col_start = A.col_start[j];
+      const i_t col_end   = A.col_start[j + 1];
+      for (i_t q = col_start; q < col_end; q++) {
+        const i_t k = A.i[q];
+        // The max possible fill in C(:, k) is | A(:, j) |
+        f_t max_possible = static_cast<f_t>(col_nz_j);
+        // But if the C(:, k) = m, i.e the column is already full, there will be no fill.
+        // So we use the following heuristic
+        const f_t fraction_filled = 1.0 * static_cast<f_t>(column_count[k]) / static_cast<f_t>(m);
+        f_t fill_estimate = max_possible * ( 1.0 - fraction_filled);
+        column_count[k] = std::min(m, column_count[k] + static_cast<i_t>(fill_estimate));  // Capture the estimated fill to C(:, k)
+        delta_nz[j] = std::min( static_cast<int64_t>(m) * static_cast<int64_t>(m), delta_nz[j] + static_cast<int64_t>(fill_estimate));      // Capture the estimated fill associated with column j
+      }
+    }
+
+    int64_t estimated_nz_C = 0;
+    for (i_t i = 0; i < m; i++) {
+      estimated_nz_C += static_cast<int64_t>(column_count[i]);
+    }
+    settings.log.printf("Estimated nz AAT %e\n", static_cast<f_t>(estimated_nz_C));
+
+     // Sort the columns of A according to their additional fill
+     std::vector<i_t> permutation(n);
+     std::iota(permutation.begin(), permutation.end(), 0);
+     std::sort(permutation.begin(), permutation.end(), [&delta_nz](i_t i, i_t j) {
+       return delta_nz[i] < delta_nz[j];
+     });
+
+    // Now we make a forward pass and compute the number of nonzeros in C
+    // assuming we had included column j
+    std::vector<f_t> cumulative_nonzeros(n, 0.0);
+    int64_t nnz_C = 0;
+    for (i_t k = 0; k < n; k++) {
+      const i_t j = permutation[k];
+      //settings.log.printf("Column %6d delta nz %d\n", j, delta_nz[j]);
+      nnz_C += delta_nz[j];
+      cumulative_nonzeros[k] = static_cast<f_t>(nnz_C);
+      if (n - k < 10) {
+        settings.log.printf("Cumulative nonzeros %ld %6.2e k %6d delta nz %ld col %6d\n", nnz_C, cumulative_nonzeros[k], k, delta_nz[j], j);
+      }
+    }
+    settings.log.printf("Cumulative nonzeros %ld %6.2e\n", nnz_C, cumulative_nonzeros[n-1]);
+
+    // Forward pass again to pick up the dense columns
     columns_to_remove.reserve(n);
-
-    f_t nz_max = static_cast<f_t>(m) * static_cast<f_t>(m);
-
-    settings.log.printf("Column density time %.2fs\n", toc(start_column_density));
-
-    const f_t threshold = 10 * sqrt(m);
-    for (i_t i = 0; i < n; i++) {
-      const i_t j         = permutation[i];
-
-
-      if ( col_nz[j] > threshold && n - i < 100) {
-        settings.log.printf("Dense column: nz %10d col %6d in %.2fs\n",
-          static_cast<i_t>(col_nz[j]),
-          j,
-          toc(start_column_density));
+    f_t total_nz_estimate = cumulative_nonzeros[n-1];
+    for (i_t k = 1; k < n; k++) {
+      const i_t j = permutation[k];
+      i_t col_nz = A.col_start[j + 1] - A.col_start[j];
+      f_t delta_nz_j = std::max(static_cast<f_t>(col_nz * col_nz), cumulative_nonzeros[k] - cumulative_nonzeros[k-1]);
+      const f_t ratio = delta_nz_j / total_nz_estimate;
+      if (ratio > .01) {
+        settings.log.printf("Column: nz %10d cumulative nz %6.2e estimated delta nz %6.2e percent %.2f col %6d\n", col_nz, cumulative_nonzeros[k], delta_nz_j, ratio, j);
         columns_to_remove.push_back(j);
       }
     }
@@ -962,7 +1145,7 @@ class iteration_data_t {
   }
 
   i_t n_upper_bounds;
-  dense_vector_t<i_t, f_t> upper_bounds;
+  std::vector<i_t> upper_bounds;
   dense_vector_t<i_t, f_t> c;
   dense_vector_t<i_t, f_t> b;
 
@@ -1574,31 +1757,43 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
   f_t& relative_complementarity_residual,
   lp_solution_t<i_t, f_t>& solution)
 {
+  f_t primal_residual_norm;
+  f_t dual_residual_norm;
+  f_t complementarity_residual_norm;
+  compute_residual_norms(data.w_save,
+                         data.x_save,
+                         data.y_save,
+                         data.v_save,
+                         data.z_save,
+                         data,
+                         primal_residual_norm,
+                         dual_residual_norm,
+                         complementarity_residual_norm);
     if (relative_primal_residual < 100 * options.feasibility_tol &&
         relative_dual_residual < 100 * options.optimality_tol &&
         relative_complementarity_residual < 100 * options.complementarity_tol) {
-      settings.log.printf("Suboptimal solution found\n");
       data.to_solution(lp,
-        iter,
+                       iter,
                        primal_objective,
                        primal_objective + lp.obj_constant,
                        vector_norm2<i_t, f_t>(data.primal_residual),
                        vector_norm2<i_t, f_t>(data.dual_residual),
                        solution);
+      settings.log.printf(
+        "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
+      settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
+      settings.log.printf("Primal infeasibility (abs/rel): %8.2e/%8.2e\n",
+                          primal_residual_norm,
+                          relative_primal_residual);
+      settings.log.printf("Dual infeasibility   (abs/rel): %8.2e/%8.2e\n",
+                          dual_residual_norm,
+                          relative_dual_residual);
+      settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
+                          complementarity_residual_norm,
+                          relative_complementarity_residual);
       return lp_status_t::OPTIMAL; // TODO: Barrier should probably have a separate suboptimal status
     }
-    f_t primal_residual_norm;
-    f_t dual_residual_norm;
-    f_t complementarity_residual_norm;
-    compute_residual_norms(data.w_save,
-                           data.x_save,
-                           data.y_save,
-                           data.v_save,
-                           data.z_save,
-                           data,
-                           primal_residual_norm,
-                           dual_residual_norm,
-                           complementarity_residual_norm);
+
     primal_objective         = data.c.inner_product(data.x_save);
     relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
     relative_dual_residual   = dual_residual_norm / (1.0 + norm_c);

@@ -87,6 +87,9 @@ class csc_matrix_t {
   // Prints the matrix to a file
   void print_matrix(FILE* fid) const;
 
+  // Ensures no repeated row indices within a column
+  void check_matrix() const;
+
   // Writes the matrix to a file in Matrix Market format
   void write_matrix_market(FILE* fid) const;
 
@@ -116,6 +119,9 @@ class csr_matrix_t {
 
   // Create a new matrix with the marked rows removed
   i_t remove_rows(std::vector<i_t>& row_marker, csr_matrix_t<i_t, f_t>& Aout) const;
+
+  // Ensures no repeated column indices within a row
+  void check_matrix() const;
 
   i_t nz_max;                  // maximum number of nonzero entries
   i_t m;                       // number of rows
