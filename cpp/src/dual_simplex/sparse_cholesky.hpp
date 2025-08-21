@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,8 @@ class sparse_cholesky_base_t {
   virtual ~sparse_cholesky_base_t()                                                 = default;
   virtual i_t analyze(const csc_matrix_t<i_t, f_t>& A_in)                           = 0;
   virtual i_t factorize(const csc_matrix_t<i_t, f_t>& A_in)                         = 0;
+  virtual i_t analyze(typename csr_matrix_t<i_t, f_t>::device_t& A_in)              = 0;
+  virtual i_t factorize(typename csr_matrix_t<i_t, f_t>::device_t& A_in)            = 0;
   virtual i_t solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) = 0;
   virtual void set_positive_definite(bool positive_definite)                        = 0;
 };
@@ -63,26 +65,30 @@ class sparse_cholesky_base_t {
     }                                                                                  \
   } while (0);
 
-#define CUDSS_CALL_AND_CHECK(call, status, msg)                                               \
-  do {                                                                                        \
-    status = call;                                                                            \
-    if (status != CUDSS_STATUS_SUCCESS) {                                                     \
-      printf("FAILED: CUDSS call ended unsuccessfully with status = %d, details: " #msg "\n", \
-             status);                                                                         \
-      CUDSS_EXAMPLE_FREE;                                                                     \
-      return -2;                                                                              \
-    }                                                                                         \
+#define CUDSS_CALL_AND_CHECK(call, status, msg)                      \
+  do {                                                               \
+    status = call;                                                   \
+    if (status != CUDSS_STATUS_SUCCESS) {                            \
+      printf(                                                        \
+        "FAILED: CUDSS call ended unsuccessfully with status = %d, " \
+        "details: " #msg "\n",                                       \
+        status);                                                     \
+      CUDSS_EXAMPLE_FREE;                                            \
+      return -2;                                                     \
+    }                                                                \
   } while (0);
 
-#define CUDSS_CALL_AND_CHECK_EXIT(call, status, msg)                                          \
-  do {                                                                                        \
-    status = call;                                                                            \
-    if (status != CUDSS_STATUS_SUCCESS) {                                                     \
-      printf("FAILED: CUDSS call ended unsuccessfully with status = %d, details: " #msg "\n", \
-             status);                                                                         \
-      CUDSS_EXAMPLE_FREE;                                                                     \
-      exit(-2);                                                                               \
-    }                                                                                         \
+#define CUDSS_CALL_AND_CHECK_EXIT(call, status, msg)                 \
+  do {                                                               \
+    status = call;                                                   \
+    if (status != CUDSS_STATUS_SUCCESS) {                            \
+      printf(                                                        \
+        "FAILED: CUDSS call ended unsuccessfully with status = %d, " \
+        "details: " #msg "\n",                                       \
+        status);                                                     \
+      CUDSS_EXAMPLE_FREE;                                            \
+      exit(-2);                                                      \
+    }                                                                \
   } while (0);
 
 template <typename i_t, typename f_t>
@@ -161,15 +167,143 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDA_CALL_AND_CHECK_EXIT(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
     CUDA_CALL_AND_CHECK_EXIT(cudaStreamDestroy(stream), "cudaStreamDestroy");
   }
+
+  i_t analyze(typename csr_matrix_t<i_t, f_t>::device_t& Arow) override
+  {
+    // csr_matrix_t<i_t, f_t> Arow;
+    // A_in.to_compressed_row(Arow);
+    nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
+
+    // CUDA_CALL_AND_CHECK(cudaMalloc(&csr_offset_d, (n + 1) * sizeof(i_t)),
+    //                     "cudaMalloc for csr_offset");
+    // CUDA_CALL_AND_CHECK(cudaMalloc(&csr_columns_d, nnz * sizeof(i_t)),
+    //                     "cudaMalloc for csr_columns");
+    // CUDA_CALL_AND_CHECK(cudaMalloc(&csr_values_d, nnz * sizeof(f_t)),
+    //                     "cudaMalloc for csr_values");
+
+    // CUDA_CALL_AND_CHECK(cudaMemcpy(csr_offset_d, Arow.row_start.data(),
+    //                                (n + 1) * sizeof(i_t),
+    //                                cudaMemcpyHostToDevice),
+    //                     "cudaMemcpy for csr_offset");
+    // CUDA_CALL_AND_CHECK(cudaMemcpy(csr_columns_d, Arow.j.data(),
+    //                                nnz * sizeof(i_t),
+    //                                cudaMemcpyHostToDevice),
+    //                     "cudaMemcpy for csr_columns");
+    // CUDA_CALL_AND_CHECK(cudaMemcpy(csr_values_d, Arow.x.data(),
+    //                                nnz * sizeof(f_t),
+    //                                cudaMemcpyHostToDevice),
+    //                     "cudaMemcpy for csr_values");
+
+    if (!first_factor) {
+      CUDSS_CALL_AND_CHECK(cudssMatrixDestroy(A), status, "cudssMatrixDestroy for A");
+    }
+
+    CUDSS_CALL_AND_CHECK(
+      cudssMatrixCreateCsr(&A,
+                           n,
+                           n,
+                           nnz,
+                           Arow.row_start.data(),
+                           nullptr,
+                           Arow.j.data(),
+                           Arow.x.data(),
+                           CUDA_R_32I,
+                           CUDA_R_64F,
+                           positive_definite ? CUDSS_MTYPE_SPD : CUDSS_MTYPE_SYMMETRIC,
+                           CUDSS_MVIEW_FULL,
+                           CUDSS_BASE_ZERO),
+      status,
+      "cudssMatrixCreateCsr");
+
+    // Perform symbolic analysis
+    f_t start_symbolic = tic();
+
+    CUDSS_CALL_AND_CHECK(
+      cudssExecute(handle, CUDSS_PHASE_ANALYSIS, solverConfig, solverData, A, cudss_x, cudss_b),
+      status,
+      "cudssExecute for analysis");
+
+    f_t symbolic_time = toc(start_symbolic);
+    printf("Symbolic time %.2fs\n", symbolic_time);
+    int64_t lu_nz       = 0;
+    size_t size_written = 0;
+    CUDSS_CALL_AND_CHECK(
+      cudssDataGet(handle, solverData, CUDSS_DATA_LU_NNZ, &lu_nz, sizeof(int64_t), &size_written),
+      status,
+      "cudssDataGet for LU_NNZ");
+    printf("Symbolic nonzeros in factor %e\n", static_cast<f_t>(lu_nz) / 2.0);
+    // TODO: Is there any way to get nonzeros in the factors?
+    // TODO: Is there any way to get flops for the factorization?
+
+    return 0;
+  }
+  i_t factorize(typename csr_matrix_t<i_t, f_t>::device_t& Arow) override
+  {
+    // csr_matrix_t<i_t, f_t> Arow;
+    // A_in.to_compressed_row(Arow);
+
+    auto d_nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
+    if (nnz != d_nnz) {
+      printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, d_nnz);
+      exit(1);
+    }
+
+    // CUDA_CALL_AND_CHECK(cudaMemcpy(csr_values_d, Arow.x.data(),
+    //                                nnz * sizeof(f_t),
+    //                                cudaMemcpyHostToDevice),
+    //                     "cudaMemcpy for csr_values");
+
+    CUDSS_CALL_AND_CHECK(
+      cudssMatrixSetValues(A, Arow.x.data()), status, "cudssMatrixSetValues for A");
+
+    f_t start_numeric = tic();
+    CUDSS_CALL_AND_CHECK(
+      cudssExecute(
+        handle, CUDSS_PHASE_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b),
+      status,
+      "cudssExecute for factorization");
+
+    f_t numeric_time = toc(start_numeric);
+
+    int info;
+    size_t sizeWritten = 0;
+    CUDSS_CALL_AND_CHECK(
+      cudssDataGet(handle, solverData, CUDSS_DATA_INFO, &info, sizeof(info), &sizeWritten),
+      status,
+      "cudssDataGet for info");
+    if (info != 0) {
+      printf("Factorization failed info %d\n", info);
+      return -1;
+    }
+
+    if (first_factor) {
+      printf("Factor time %.2fs\n", numeric_time);
+      first_factor = false;
+    }
+    if (status != CUDSS_STATUS_SUCCESS) {
+      printf("cuDSS Factorization failed\n");
+      return -1;
+    }
+    return 0;
+  }
+
   i_t analyze(const csc_matrix_t<i_t, f_t>& A_in) override
   {
-    csr_matrix_t<i_t, f_t> Arow;
+    csr_matrix_t<i_t, f_t> Arow(A_in.n, A_in.m, A_in.col_start[A_in.n]);
 #ifdef WRITE_MATRIX_MARKET
     FILE* fid = fopen("A.mtx", "w");
     A_in.write_matrix_market(fid);
     fclose(fid);
+    settings_.log.printf("Wrote A.mtx\n");
 #endif
     A_in.to_compressed_row(Arow);
+
+#ifdef CHECK_MATRIX
+    settings_.log.printf("Checking matrices\n");
+    A_in.check_matrix();
+    Arow.check_matrix();
+    settings_.log.printf("Finished checking matrices\n");
+#endif
 
     nnz = A_in.col_start[A_in.n];
 
@@ -225,7 +359,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     f_t start_symbolic = tic();
 
     CUDSS_CALL_AND_CHECK(
-      cudssExecute(handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b),
+      cudssExecute(
+        handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b),
       status,
       "cudssExecute for symbolic factorization");
 
@@ -247,11 +382,12 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   }
   i_t factorize(const csc_matrix_t<i_t, f_t>& A_in) override
   {
-    csr_matrix_t<i_t, f_t> Arow;
+    csr_matrix_t<i_t, f_t> Arow(A_in.n, A_in.m, A_in.col_start[A_in.n]);
     A_in.to_compressed_row(Arow);
 
     if (nnz != A_in.col_start[A_in.n]) {
-      settings_.log.printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, A_in.col_start[A_in.n]);
+      settings_.log.printf(
+        "Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, A_in.col_start[A_in.n]);
       exit(1);
     }
 

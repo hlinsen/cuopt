@@ -225,7 +225,7 @@ i_t remove_rows(lp_problem_t<i_t, f_t>& problem,
 {
   constexpr bool verbose = true;
   if (verbose) { printf("Removing rows %d %ld\n", Arow.m, row_marker.size()); }
-  csr_matrix_t<i_t, f_t> Aout;
+  csr_matrix_t<i_t, f_t> Aout(0, 0, 0);
   Arow.remove_rows(row_marker, Aout);
   i_t new_rows = Aout.m;
   if (verbose) { printf("Cleaning up rhs. New rows %d\n", new_rows); }
@@ -261,7 +261,7 @@ i_t remove_empty_rows(lp_problem_t<i_t, f_t>& problem,
 {
   constexpr bool verbose = false;
   if (verbose) { printf("Problem has %d empty rows\n", num_empty_rows); }
-  csr_matrix_t<i_t, f_t> Arow;
+  csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
   problem.A.to_compressed_row(Arow);
   std::vector<i_t> row_marker(problem.num_rows);
 
@@ -351,7 +351,7 @@ i_t convert_less_than_to_equal(const user_problem_t<i_t, f_t>& user_problem,
   // We must convert rows in the form: a_i^T x <= beta
   // into: a_i^T x + s_i = beta, s_i >= 0
 
-  csr_matrix_t<i_t, f_t> Arow;
+  csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
   problem.A.to_compressed_row(Arow);
   i_t num_cols = problem.num_cols + less_rows;
   i_t nnz      = problem.A.col_start[problem.num_cols] + less_rows;
@@ -403,7 +403,7 @@ i_t convert_greater_to_less(const user_problem_t<i_t, f_t>& user_problem,
   // sum_{j : a_ij != 0} -a_ij * x_j <= -beta
 
   // First construct a compressed sparse row representation of the A matrix
-  csr_matrix_t<i_t, f_t> Arow;
+  csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
   problem.A.to_compressed_row(Arow);
 
   for (i_t i = 0; i < problem.num_rows; i++) {
@@ -757,7 +757,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
         problem.obj_constant += problem.objective[j] * problem.lower[j];
         problem.upper[j] -= problem.lower[j];
         presolve_info.removed_lower_bounds[j] = problem.lower[j];
-        problem.lower[j] = 0.0;
+        problem.lower[j]                      = 0.0;
       }
     }
   }
@@ -819,7 +819,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
         problem.lower[j]                                = 0.0;
       }
     }
-    assert(problem.A.col_start[num_cols] == nnz);
+    // assert(problem.A.p[num_cols] == nnz);
     problem.A.n      = num_cols;
     problem.num_cols = num_cols;
   }
@@ -827,7 +827,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   // Check for empty rows
   i_t num_empty_rows = 0;
   {
-    csr_matrix_t<i_t, f_t> Arow;
+    csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
     problem.A.to_compressed_row(Arow);
     for (i_t i = 0; i < problem.num_rows; i++) {
       if (Arow.row_start[i + 1] - Arow.row_start[i] == 0) { num_empty_rows++; }
@@ -866,7 +866,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     if (independent_rows < problem.num_rows) {
       const i_t num_dependent_rows = problem.num_rows - independent_rows;
       settings.log.printf("%d dependent rows\n", num_dependent_rows);
-      csr_matrix_t<i_t, f_t> Arow;
+      csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
       problem.A.to_compressed_row(Arow);
       remove_rows(problem, row_sense, Arow, dependent_rows, false);
     }
@@ -1108,7 +1108,8 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
     uncrushed_z = crushed_z;
   } else {
     printf("Presolve info removed variables %d\n", presolve_info.removed_variables.size());
-    // We removed some variables, so we need to map the crushed solution back to the original variables
+    // We removed some variables, so we need to map the crushed solution back to the original
+    // variables
     const i_t n = presolve_info.removed_variables.size() + presolve_info.remaining_variables.size();
     uncrushed_x.resize(n);
     uncrushed_z.resize(n);
@@ -1132,8 +1133,7 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   if (num_free_variables > 0) {
     printf("Presolve info free variables %d\n", num_free_variables);
     // We added free variables so we need to map the crushed solution back to the original variables
-    for (i_t k = 0; k < 2 * num_free_variables; k+= 2)
-    {
+    for (i_t k = 0; k < 2 * num_free_variables; k += 2) {
       const i_t u = presolve_info.free_variable_pairs[k];
       const i_t v = presolve_info.free_variable_pairs[k + 1];
       uncrushed_x[u] -= uncrushed_x[v];
@@ -1145,7 +1145,8 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
 
   if (presolve_info.removed_lower_bounds.size() > 0) {
     printf("Presolve info removed lower bounds %d\n", presolve_info.removed_lower_bounds.size());
-    // We removed some lower bounds so we need to map the crushed solution back to the original variables
+    // We removed some lower bounds so we need to map the crushed solution back to the original
+    // variables
     for (i_t j = 0; j < uncrushed_x.size(); j++) {
       uncrushed_x[j] += presolve_info.removed_lower_bounds[j];
     }

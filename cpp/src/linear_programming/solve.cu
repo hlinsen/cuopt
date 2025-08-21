@@ -305,12 +305,12 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   f_t norm_rhs            = dual_simplex::vector_norm2<i_t, f_t>(user_problem.rhs);
 
   dual_simplex::simplex_solver_settings_t<i_t, f_t> dual_simplex_settings;
-  dual_simplex_settings.time_limit      = settings.time_limit;
-  dual_simplex_settings.iteration_limit = settings.iteration_limit;
-  dual_simplex_settings.concurrent_halt = settings.concurrent_halt;
-  dual_simplex_settings.use_cudss       = settings.use_cudss;
-  dual_simplex_settings.barrier         = true;
-  dual_simplex_settings.crossover       = settings.crossover;
+  dual_simplex_settings.time_limit              = settings.time_limit;
+  dual_simplex_settings.iteration_limit         = settings.iteration_limit;
+  dual_simplex_settings.concurrent_halt         = settings.concurrent_halt;
+  dual_simplex_settings.use_cudss               = settings.use_cudss;
+  dual_simplex_settings.barrier                 = true;
+  dual_simplex_settings.crossover               = settings.crossover;
   dual_simplex_settings.eliminate_dense_columns = settings.eliminate_dense_columns;
   if (dual_simplex_settings.concurrent_halt != nullptr) {
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
@@ -461,7 +461,7 @@ optimization_problem_solution_t<i_t, f_t> run_pdlp(detail::problem_t<i_t, f_t>& 
   if (do_crossover && sol.get_termination_status() == pdlp_termination_status_t::Optimal) {
     crossover_info = -1;
 
-    dual_simplex::lp_problem_t<i_t, f_t> lp(1, 1, 1);
+    dual_simplex::lp_problem_t<i_t, f_t> lp(problem.handle_ptr, 1, 1, 1);
     dual_simplex::lp_solution_t<i_t, f_t> initial_solution(1, 1);
     translate_to_crossover_problem(problem, sol, lp, initial_solution);
     dual_simplex::simplex_solver_settings_t<i_t, f_t> dual_simplex_settings;

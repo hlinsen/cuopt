@@ -27,8 +27,9 @@ namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
 struct lp_problem_t {
-  lp_problem_t(i_t m, i_t n, i_t nz)
-    : num_rows(m),
+  lp_problem_t(raft::handle_t const* handle_ptr_, i_t m, i_t n, i_t nz)
+    : handle_ptr(handle_ptr_),
+      num_rows(m),
       num_cols(n),
       objective(n),
       A(m, n, nz),
@@ -38,6 +39,7 @@ struct lp_problem_t {
       obj_constant(0.0)
   {
   }
+  raft::handle_t const* handle_ptr;
   i_t num_rows;
   i_t num_cols;
   std::vector<f_t> objective;
