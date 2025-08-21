@@ -14,5 +14,5 @@
 # limitations under the License.
 
 ConfigureTest(DUAL_SIMPLEX_TEST
-    ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/solve.cu
+    ${CMAKE_CURRENT_SOURCE_DIR}/unit_tests/solve.cpp
 )
