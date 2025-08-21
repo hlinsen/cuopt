@@ -1644,7 +1644,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     // TODO wrap everything with RAFT safe calls
     // TMP all of this data should already be on the GPU and reuse correct stream
-    rmm::cuda_stream_view stream_view;
+    rmm::cuda_stream_view stream_view = lp.handle_ptr->get_stream();
     rmm::device_uvector<f_t> d_tmp3(tmp3.size(), stream_view);
     rmm::device_uvector<f_t> d_tmp4(tmp4.size(), stream_view);
     rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view);
@@ -1732,10 +1732,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // TMP should be done in the associated cusparse view
     rmm::device_buffer spmv_buffer(0, stream_view);
     size_t buffer_size_spmv = 0;
-    cusparseHandle_t handle;
-    cusparseCreate(&handle);
-    raft::sparse::detail::cusparsesetpointermode(handle, CUSPARSE_POINTER_MODE_DEVICE, stream_view);
-    raft::sparse::detail::cusparsespmv_buffersize(handle,
+    raft::sparse::detail::cusparsesetpointermode(lp.handle_ptr->get_cusparse_handle(), CUSPARSE_POINTER_MODE_DEVICE, stream_view);
+    raft::sparse::detail::cusparsespmv_buffersize(lp.handle_ptr->get_cusparse_handle(),
                                                   CUSPARSE_OPERATION_NON_TRANSPOSE,
                                                   d_one.data(),
                                                   cusparse_A,
@@ -1751,7 +1749,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // h <- A @ tmp4 .+ primal_rhs
     
     // TODO call preprocess in a associated cusparse view
-    raft::sparse::detail::cusparsespmv(handle,
+    raft::sparse::detail::cusparsespmv(lp.handle_ptr->get_cusparse_handle(),
                                       CUSPARSE_OPERATION_NON_TRANSPOSE,
                                       d_one.data(),
                                       cusparse_A,
