@@ -1343,8 +1343,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   {
     raft::common::nvtx::push_range("Barrier: CPU compute H");
 
-    // A
-
     // tmp2 <- v .* bound_rhs
     data.v.pairwise_product(data.bound_rhs, tmp2);
     // tmp2 <- complementarity_wv_rhs - v .* bound_rhs
@@ -1372,11 +1370,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     h = data.primal_rhs;
     // h <- 1.0 * A * tmp4 + primal_rhs
     matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
-
-    print("h", h);
   }
   else
   {
+    raft::common::nvtx::push_range("Barrier: GPU compute H");
+
     // TODO wrap everything with RAFT safe calls
     // TMP all of this data should already be on the GPU and reuse correct stream
     rmm::cuda_stream_view stream_view;
@@ -1392,7 +1390,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     rmm::device_uvector<f_t> d_inv_diag = device_copy(data.inv_diag, stream_view);
     rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view);
 
-    // A & B fused
+    // tmp3 <- E * ((complementarity_wv_rhs .- v .* bound_rhs) ./ w)
     cudaMemsetAsync(d_tmp3.data(), 0, sizeof(f_t) * d_tmp3.size(), stream_view);
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_bound_rhs.data(),
@@ -1409,6 +1407,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       stream_view
     );
 
+    // tmp3 <- tmp3 .+ -(complementarity_xz_rhs ./ x) .+ dual_rhs 
+    // tmp4 <- inv_diag .* tmp3
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_inv_diag.data(),
                             d_tmp3.data(),
@@ -1421,16 +1421,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       stream_view
     );
 
-    // D
-
-    // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
-    // ./ w)
     // TMP no copy should happen
     tmp3 = host_copy(d_tmp3);
     r1       = tmp3;
     r1_prime = r1;
     h = data.primal_rhs;
-    // h <- 1.0 * A * tmp4 + primal_rhs
 
     // TMP should only be done once in the constructor
     cusparseSpMatDescr_t cusparse_A;
@@ -1438,11 +1433,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     rmm::device_uvector<i_t> d_A_indices = device_copy(lp.A.i, stream_view);
     rmm::device_uvector<f_t> d_A_data = device_copy(lp.A.x, stream_view);
     // TODO test with CSR
-    // TODO shoudl be in RAFT
+    // TODO should be in RAFT
     cusparseCreateCsc(&cusparse_A,
                         lp.A.m,
                         lp.A.n,
-                        lp.A.nz_max,
+                        d_A_data.size(),
                         d_A_offsets.data(),
                         d_A_indices.data(),
                         d_A_data.data(),
@@ -1486,6 +1481,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     spmv_buffer.resize(buffer_size_spmv, stream_view);
 
 
+    // h <- A @ tmp4 .+ primal_rhs
+    
     // TODO call preprocess in a associated cusparse view
     raft::sparse::detail::cusparsespmv(handle,
                                       CUSPARSE_OPERATION_NON_TRANSPOSE,
@@ -1498,8 +1495,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
                                       (f_t*)spmv_buffer.data(),
                                       stream_view);
     
+    
+    // TMP no copy should happen
     h = host_copy(d_h);
-    print("h", h);
   }
 
 
