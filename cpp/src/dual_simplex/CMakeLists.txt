@@ -14,6 +14,7 @@
 # limitations under the License.
 
 set(DUAL_SIMPLEX_SRC_FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/cusparse_view.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/barrier.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/basis_solves.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/basis_updates.cu

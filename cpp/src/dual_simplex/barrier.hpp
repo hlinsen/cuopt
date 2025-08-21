@@ -25,6 +25,7 @@
 #include "dual_simplex/sparse_cholesky.hpp"
 #include "dual_simplex/sparse_matrix.hpp"
 #include "dual_simplex/tic_toc.hpp"
+#include "dual_simplex/cusparse_view.hpp"
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -45,10 +46,7 @@ class barrier_solver_t {
  public:
   barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
                    const presolve_info_t<i_t, f_t>& presolve,
-                   const simplex_solver_settings_t<i_t, f_t>& settings)
-    : lp(lp), settings(settings), presolve_info(presolve)
-  {
-  }
+                   const simplex_solver_settings_t<i_t, f_t>& settings);
   lp_status_t solve(const barrier_solver_settings_t<i_t, f_t>& options,
                     lp_solution_t<i_t, f_t>& solution);
 
@@ -98,6 +96,9 @@ class barrier_solver_t {
   const lp_problem_t<i_t, f_t>& lp;
   const simplex_solver_settings_t<i_t, f_t>& settings;
   const presolve_info_t<i_t, f_t>& presolve_info;
+  cusparse_view_t<i_t, f_t> cusparse_view_;
+  cusparseDnVecDescr_t cusparse_tmp_;
+  cusparseDnVecDescr_t cusparse_h_;
 };
 
 }  // namespace cuopt::linear_programming::dual_simplex
