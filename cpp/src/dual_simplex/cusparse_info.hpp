@@ -34,7 +34,9 @@ struct cusparse_info_t {
       beta(handle->get_stream()),
       buffer_size(0, handle->get_stream()),
       buffer_size_2(0, handle->get_stream()),
-      buffer_size_3(0, handle->get_stream())
+      buffer_size_3(0, handle->get_stream()),
+      buffer_size_4(0, handle->get_stream()),
+      buffer_size_5(0, handle->get_stream())
   {
     f_t v{1};
     alpha.set_value_async(v, handle->get_stream());
@@ -49,7 +51,13 @@ struct cusparse_info_t {
   rmm::device_uvector<uint8_t> buffer_size;
   rmm::device_uvector<uint8_t> buffer_size_2;
   rmm::device_uvector<uint8_t> buffer_size_3;
+  rmm::device_uvector<uint8_t> buffer_size_4;
+  rmm::device_uvector<uint8_t> buffer_size_5;
+  size_t buffer_size_size;
   size_t buffer_size_2_size;
+  size_t buffer_size_3_size;
+  size_t buffer_size_4_size;
+  size_t buffer_size_5_size;
 };
 
 }  // namespace cuopt::linear_programming::dual_simplex

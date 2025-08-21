@@ -295,6 +295,7 @@ class iteration_data_t {
       device_AD(lp.num_cols, lp.num_rows, 0, lp.handle_ptr->get_stream()),
       device_A(lp.num_cols, lp.num_rows, 0, lp.handle_ptr->get_stream()),
       device_ADAT(lp.num_rows, lp.num_rows, 0, lp.handle_ptr->get_stream()),
+      device_A_x_values(0, lp.handle_ptr->get_stream()),
       has_factorization(false),
       num_factorizations(0),
       settings_(settings),
@@ -362,19 +363,14 @@ class iteration_data_t {
     AD.transpose(AT);
 
     if (use_gpu) {
-      csr_matrix_t<i_t, f_t> host_A_CSR(lp.num_rows, lp.num_cols, 0);
+      device_AD.copy(AD, handle_ptr->get_stream());
+      device_A_x_values.resize(original_A_values.size(), handle_ptr->get_stream());
+      raft::copy(
+        device_A_x_values.data(), device_AD.x.data(), device_AD.x.size(), handle_ptr->get_stream());
+      csr_matrix_t<i_t, f_t> host_A_CSR(0, 0, 0);
       AD.to_compressed_row(host_A_CSR);
       device_A.copy(host_A_CSR, lp.handle_ptr->get_stream());
-      // device_AD.m      = AD.m;
-      // device_AD.n      = AD.n;
-      // device_A.m       = host_A_CSR.m;
-      // device_A.n       = host_A_CSR.n;
-      // device_AD.nz_max = AD.col_start[AD.n];
-      // device_A.nz_max  = host_A_CSR.row_start[host_A_CSR.m];
-      // std::cout << "AD.m " << AD.m << " AD.n " << AD.n << " device_AD.m " << device_AD.m
-      //           << " device_AD.n " << device_AD.n << " device_AD.nz_max " << device_AD.nz_max
-      //           << " device_A.m " << device_A.m << " device_A.n " << device_A.n
-      //           << " device_A.nz_max " << device_A.nz_max << std::endl;
+      RAFT_CHECK_CUDA(handle_ptr->get_stream());
     }
     form_adat(true);
 
@@ -417,7 +413,11 @@ class iteration_data_t {
     }
 
     if (use_gpu) {
-      device_AD.copy(AD, handle_ptr->get_stream());
+      raft::copy(device_AD.x.data(),
+                 original_A_values.data(),
+                 original_A_values.size(),
+                 handle_ptr->get_stream());
+
       auto d_inv_diag_prime = cuopt::device_copy(inv_diag_prime, handle_ptr->get_stream());
 
       auto n_blocks = AD.n;  // one block per col
@@ -435,12 +435,17 @@ class iteration_data_t {
                    device_ADAT.x.data() + device_ADAT.x.size(),
                    0.0);
 
+      // float64_t start_multiply = tic();
+      // handle_ptr->sync_stream();
       multiply_kernels<i_t, f_t>(handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
       handle_ptr->sync_stream();
-
-      auto host_ADAT = device_ADAT.to_host(handle_ptr->get_stream());
-      host_ADAT.to_compressed_col(ADAT);
-      AD = device_AD.to_host(handle_ptr->get_stream());
+      // float64_t multiply_time = toc(start_multiply);
+      // settings_.log.printf("multiply_time %.2fs\n", multiply_time);
+      if (0) {
+        auto host_ADAT = device_ADAT.to_host(handle_ptr->get_stream());
+        host_ADAT.to_compressed_col(ADAT);
+        AD = device_AD.to_host(handle_ptr->get_stream());
+      }
     } else {
       AD.scale_columns(inv_diag_prime);
       multiply(AD, AT, ADAT);
@@ -1236,6 +1241,7 @@ class iteration_data_t {
   typename csr_matrix_t<i_t, f_t>::device_t device_ADAT;
   typename csr_matrix_t<i_t, f_t>::device_t device_A;
   typename csc_matrix_t<i_t, f_t>::device_t device_AD;
+  rmm::device_uvector<f_t> device_A_x_values;
 
   i_t n_dense_columns;
   std::vector<i_t> dense_columns;
@@ -1516,6 +1522,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     float64_t start_time = tic();
     // compute ADAT = A Dinv * A^T
     data.form_adat();
+    settings.log.printf("in loop form_adat: %.2fs\n", toc(start_time));
     // factorize
     if (use_gpu) {
       status = data.chol->factorize(data.device_ADAT);
@@ -1526,7 +1533,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       settings.log.printf("Factorization failed.\n");
       return -1;
     }
-    settings.log.printf("in loop spgemm: %.2fs\n", toc(start_time));
     data.has_factorization = true;
     data.num_factorizations++;
   }

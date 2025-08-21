@@ -44,7 +44,7 @@ void initialize_cusparse_data(raft::handle_t const* handle,
 {
   auto A_nnz         = A.nz_max;    // A.row_start.element(A.m, A.row_start.stream());
   auto DAT_nnz       = DAT.nz_max;  // DAT.col_start.element(DAT.n, DAT.col_start.stream());
-  f_t chunk_fraction = 1;
+  f_t chunk_fraction = 0.15;
 
   // Create matrix descriptors
   RAFT_CUSPARSE_TRY(raft::sparse::detail::cusparsecreatecsr(
