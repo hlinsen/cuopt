@@ -31,7 +31,8 @@ class dense_vector_t : public std::vector<f_t> {
   dense_vector_t(const std::vector<f_t>& in)
   {
     this->resize(in.size());
-    for (i_t i = 0; i < in.size(); i++) {
+    const i_t n = static_cast<i_t>(in.size());
+    for (i_t i = 0; i < n; i++) {
       (*this)[i] = in[i];
     }
   }
@@ -112,12 +113,12 @@ class dense_vector_t : public std::vector<f_t> {
   void pairwise_product(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& c) const
   {
     const i_t n = this->size();
-    if (b.size() != n) {
-      printf("Error: b.size() %d != n %d\n", b.size(), n);
+    if (static_cast<i_t>(b.size()) != n) {
+      printf("Error: b.size() %d != n %d\n", static_cast<i_t>(b.size()), n);
       exit(1);
     }
-    if (c.size() != n) {
-      printf("Error: c.size() %d != n %d\n", c.size(), n);
+    if (static_cast<i_t>(c.size()) != n) {
+      printf("Error: c.size() %d != n %d\n", static_cast<i_t>(c.size()), n);
       exit(1);
     }
     for (i_t i = 0; i < n; i++) {

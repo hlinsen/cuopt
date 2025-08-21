@@ -18,28 +18,28 @@
 #pragma once
 
 #include <dual_simplex/cusparse_info.hpp>
-#include <dual_simplex/sparse_matrix.hpp>
+#include <dual_simplex/device_sparse_matrix.cuh>
 
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
-__global__ void scale_columns_kernel(typename csc_matrix_t<i_t, f_t>::view_t csc_view,
+__global__ void scale_columns_kernel(csc_view_t<i_t, f_t> csc,
                                      raft::device_span<const f_t> scale)
 {
-  auto j         = blockIdx.x;
-  auto col_start = csc_view.col_start[j];
-  auto col_end   = csc_view.col_start[j + 1];
+  i_t j         = blockIdx.x;
+  i_t col_start = csc.col_start[j];
+  i_t col_end   = csc.col_start[j + 1];
 
   for (i_t p = threadIdx.x; p < col_end - col_start; p += blockDim.x) {
-    csc_view.x[col_start + p] *= scale[j];
+    csc.x[col_start + p] *= scale[j];
   }
 }
 
 template <typename i_t, typename f_t>
 void initialize_cusparse_data(raft::handle_t const* handle,
-                              typename csr_matrix_t<i_t, f_t>::device_t& A,
-                              typename csc_matrix_t<i_t, f_t>::device_t& DAT,
-                              typename csr_matrix_t<i_t, f_t>::device_t& ADAT,
+                              device_csr_matrix_t<i_t, f_t>& A,
+                              device_csc_matrix_t<i_t, f_t>& DAT,
+                              device_csr_matrix_t<i_t, f_t>& ADAT,
                               cusparse_info_t<i_t, f_t>& cusparse_data)
 {
   auto A_nnz         = A.nz_max;    // A.row_start.element(A.m, A.row_start.stream());
@@ -159,9 +159,9 @@ void initialize_cusparse_data(raft::handle_t const* handle,
 
 template <typename i_t, typename f_t>
 void multiply_kernels(raft::handle_t const* handle,
-                      typename csr_matrix_t<i_t, f_t>::device_t& A,
-                      typename csc_matrix_t<i_t, f_t>::device_t& DAT,
-                      typename csr_matrix_t<i_t, f_t>::device_t& ADAT,
+                      device_csr_matrix_t<i_t, f_t>& A,
+                      device_csc_matrix_t<i_t, f_t>& DAT,
+                      device_csr_matrix_t<i_t, f_t>& ADAT,
                       cusparse_info_t<i_t, f_t>& cusparse_data)
 {
   RAFT_CUSPARSE_TRY(

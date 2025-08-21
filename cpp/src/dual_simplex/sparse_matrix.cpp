@@ -20,10 +20,12 @@
 
 #include <dual_simplex/types.hpp>
 
+#include <iostream>
+#include <vector>
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
-#include <vector>
 
 namespace cuopt::linear_programming::dual_simplex {
 
