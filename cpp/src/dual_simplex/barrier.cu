@@ -1090,6 +1090,59 @@ class iteration_data_t {
 
   // v = alpha * A * Dinv * A^T * y + beta * v
   void adat_multiply(f_t alpha,
+                     const rmm::device_uvector<f_t>& y,
+                     f_t beta,
+                     rmm::device_uvector<f_t>& v,
+                     cusparse_view_t<i_t, f_t>& cusparse_view) const
+  {
+    const i_t m = A.m;
+    const i_t n = A.n;
+    rmm::cuda_stream_view stream_view = cusparse_view.handle_ptr_->get_stream();
+
+    if (y.size() != m) {
+      printf("adat_multiply: y.size() %d != m %d\n", static_cast<i_t>(y.size()), m);
+      exit(1);
+    }
+
+    if (v.size() != m) {
+      printf("adat_multiply: v.size() %d != m %d\n", static_cast<i_t>(v.size()), m);
+      exit(1);
+    }
+
+    // v = alpha * A * Dinv * A^T * y + beta * v
+
+    // u = A^T * y
+    // TMP we should have tmp data always ready not reallocate everytime
+    rmm::device_uvector<f_t> d_u(n, stream_view);
+    // TMP should not have to reinit each time
+    cusparseDnVecDescr_t c_u = cusparse_view.create_vector(d_u);
+    cusparseDnVecDescr_t c_y = cusparse_view.create_vector(y);
+    cusparseDnVecDescr_t c_v = cusparse_view.create_vector(v);
+    // TMP no copy this should alaways be on the GPU
+    rmm::device_uvector<f_t> d_inv_diag = device_copy(inv_diag, stream_view);
+
+    cusparse_view.transpose_spmv(1.0, c_y, 0.0, c_u);
+
+    // u = Dinv * u
+    cub::DeviceTransform::Transform(
+      cuda::std::make_tuple(
+                            d_u.data(),
+                            d_inv_diag.data()),
+      d_u.data(),
+      d_u.size(),
+      cuda::std::multiplies<>{},
+      stream_view
+    );
+
+    // y = alpha * A * w + beta * v = alpha * A * Dinv * A^T * y + beta * v
+    cusparse_view.spmv(alpha, c_u, beta, c_v);
+
+    // TMP would not need that sync if we were not using local variable
+    RAFT_CUDA_TRY(cudaDeviceSynchronize());
+  }
+
+  // v = alpha * A * Dinv * A^T * y + beta * v
+  void adat_multiply(f_t alpha,
                      const dense_vector_t<i_t, f_t>& y,
                      f_t beta,
                      dense_vector_t<i_t, f_t>& v) const
@@ -1117,7 +1170,7 @@ class iteration_data_t {
     dense_vector_t<i_t, f_t> w(n);
     inv_diag.pairwise_product(u, w);
 
-    // y = alpha * A * w + beta * v = alpha * A * Dinv * A^T * y + beta * v
+    // v = alpha * A * w + beta * v = alpha * A * Dinv * A^T * y + beta * v
     matrix_vector_multiply(A, alpha, w, beta, v);
   }
 
@@ -1292,6 +1345,18 @@ class iteration_data_t {
 
   const simplex_solver_settings_t<i_t, f_t>& settings_;
 };
+
+template <typename i_t, typename f_t>
+barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
+                   const presolve_info_t<i_t, f_t>& presolve,
+                   const simplex_solver_settings_t<i_t, f_t>& settings)
+    : lp(lp), settings(settings), presolve_info(presolve),
+    cusparse_view_(lp.handle_ptr,
+                   lp.A.m, lp.A.n, lp.A.x.size(),
+                   lp.A.col_start, lp.A.i, lp.A.x // TMP we should pass a GPU CSR view directly
+                  )
+  {
+  }
 
 template <typename i_t, typename f_t>
 void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
@@ -1543,6 +1608,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   raft::common::nvtx::range fun_scope("Barrier: compute_search_direction");
 
   const bool debug = true;
+  rmm::cuda_stream_view stream_view = lp.handle_ptr->get_stream();
   // Solves the linear system
   //
   //  dw dx dy dv dz
@@ -1644,7 +1710,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     // TODO wrap everything with RAFT safe calls
     // TMP all of this data should already be on the GPU and reuse correct stream
-    rmm::cuda_stream_view stream_view = lp.handle_ptr->get_stream();
     rmm::device_uvector<f_t> d_tmp3(tmp3.size(), stream_view);
     rmm::device_uvector<f_t> d_tmp4(tmp4.size(), stream_view);
     rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view);
@@ -1694,72 +1759,16 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     r1_prime = r1;
     h = data.primal_rhs;
 
-    // TMP should only be done once in the constructor
-    cusparseSpMatDescr_t cusparse_A;
-    rmm::device_uvector<i_t> d_A_offsets = device_copy(lp.A.col_start, stream_view);
-    rmm::device_uvector<i_t> d_A_indices = device_copy(lp.A.i, stream_view);
-    rmm::device_uvector<f_t> d_A_data = device_copy(lp.A.x, stream_view);
-    // TODO test with CSR
-    // TODO should be in RAFT
-    cusparseCreateCsc(&cusparse_A,
-                        lp.A.m,
-                        lp.A.n,
-                        d_A_data.size(),
-                        d_A_offsets.data(),
-                        d_A_indices.data(),
-                        d_A_data.data(),
-                      CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                      CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
-    cusparseDnVecDescr_t cusparse_tmp;
-    raft::sparse::detail::cusparsecreatednvec(
-    &cusparse_tmp,
-    d_tmp4.size(),
-    d_tmp4.data());
+    // TMP we shouldn't have to call that everytime
+    cusparse_tmp_ = cusparse_view_.create_vector(d_tmp4);
 
-    // TMP no copy should happen
+    // TMP no copy should happen and shouldn't have to call that everytime
     rmm::device_uvector<f_t> d_h = device_copy(h, stream_view);
-
-    // TMP should be in the associated cusparse view
-    cusparseDnVecDescr_t cusparse_h;
-    raft::sparse::detail::cusparsecreatednvec(
-    &cusparse_h,
-    d_h.size(),
-    d_h.data());
-
-    // TMP should be in the constructor
-    rmm::device_scalar<f_t> d_one(1, stream_view);
-
-    // TMP should be done in the associated cusparse view
-    rmm::device_buffer spmv_buffer(0, stream_view);
-    size_t buffer_size_spmv = 0;
-    raft::sparse::detail::cusparsesetpointermode(lp.handle_ptr->get_cusparse_handle(), CUSPARSE_POINTER_MODE_DEVICE, stream_view);
-    raft::sparse::detail::cusparsespmv_buffersize(lp.handle_ptr->get_cusparse_handle(),
-                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                                  d_one.data(),
-                                                  cusparse_A,
-                                                  cusparse_tmp,
-                                                  d_one.data(),
-                                                  cusparse_h,
-                                                  CUSPARSE_SPMV_CSR_ALG2,
-                                                  &buffer_size_spmv,
-                                                  stream_view);
-    spmv_buffer.resize(buffer_size_spmv, stream_view);
-
+    cusparse_h_ = cusparse_view_.create_vector(d_h);
 
     // h <- A @ tmp4 .+ primal_rhs
     
-    // TODO call preprocess in a associated cusparse view
-    raft::sparse::detail::cusparsespmv(lp.handle_ptr->get_cusparse_handle(),
-                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                      d_one.data(),
-                                      cusparse_A,
-                                      cusparse_tmp,
-                                      d_one.data(),
-                                      cusparse_h,
-                                      CUSPARSE_SPMV_CSR_ALG2,
-                                      (f_t*)spmv_buffer.data(),
-                                      stream_view);
-    
+    cusparse_view_.spmv(1, cusparse_tmp_, 1, cusparse_h_);
     
     // TMP no copy should happen
     h = host_copy(d_h);
@@ -1781,30 +1790,55 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   my_pop_range();
 
   // y_residual <- ADAT*dy - h
-  raft::common::nvtx::push_range("Barrier: y_residual");
   dense_vector_t<i_t, f_t> y_residual = h;
-  // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
-  data.adat_multiply(1.0, dy, -1.0, y_residual);
-  const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
-  max_residual              = std::max(max_residual, y_residual_norm);
-  if (y_residual_norm > 1e-2) {
-    settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h));
-    settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
-  }
-  if (y_residual_norm > 10) { return -1; }
+  if (false)
+  {
+    raft::common::nvtx::push_range("Barrier: CPU y_residual");
+    data.adat_multiply(1.0, dy, -1.0, y_residual);
+    print("y_residual", y_residual);
+    const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
+    max_residual              = std::max(max_residual, y_residual_norm);
+    if (y_residual_norm > 1e-2) {
+      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h));
+      settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
+    }
+    if (y_residual_norm > 10) { return -1; }
 
-  if (0 && y_residual_norm > 1e-10) {
-    settings.log.printf("Running PCG to improve residual 2-norm %e inf-norm %e\n",
-                        vector_norm2<i_t, f_t>(y_residual),
-                        y_residual_norm);
-    data.preconditioned_conjugate_gradient(
-      settings, h, std::min(y_residual_norm / 100.0, 1e-6), dy);
-    y_residual = h;
-    matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
-    const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual);
-    settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n", y_residual_norm_pcg);
+    if (0 && y_residual_norm > 1e-10) {
+      settings.log.printf("Running PCG to improve residual 2-norm %e inf-norm %e\n",
+                          vector_norm2<i_t, f_t>(y_residual),
+                          y_residual_norm);
+      data.preconditioned_conjugate_gradient(
+        settings, h, std::min(y_residual_norm / 100.0, 1e-6), dy);
+      y_residual = h;
+      matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
+      const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual);
+      settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n", y_residual_norm_pcg);
+    }
+    my_pop_range();
   }
-  my_pop_range();
+  else
+  {
+    raft::common::nvtx::push_range("Barrier: GPU y_residual");
+
+    // TMP everything should already be on the GPU
+    rmm::device_uvector<f_t> d_y = device_copy(dy, stream_view);
+    rmm::device_uvector<f_t> d_y_residual = device_copy(y_residual, stream_view);
+    data.adat_multiply(1.0, d_y, -1.0, d_y_residual, cusparse_view_);
+    y_residual = host_copy(d_y_residual);
+
+    // TODO Hugo for now still on the CPU 
+    const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
+    max_residual              = std::max(max_residual, y_residual_norm);
+    if (y_residual_norm > 1e-2) {
+      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h));
+      settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
+    }
+    if (y_residual_norm > 10) { return -1; }
+
+    my_pop_range();
+
+  }
 
   // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
   // v

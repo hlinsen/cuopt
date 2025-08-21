@@ -43,16 +43,21 @@ public:
 
   static cusparseDnVecDescr_t create_vector(const rmm::device_uvector<f_t>& vec);
 
-  void spmv(cusparseDnVecDescr_t x, cusparseDnVecDescr_t y) const;
+  void spmv(f_t alpha, cusparseDnVecDescr_t x, f_t beta, cusparseDnVecDescr_t y);
+  void transpose_spmv(f_t alpha, cusparseDnVecDescr_t x, f_t beta, cusparseDnVecDescr_t y);
+  
+  raft::handle_t const* handle_ptr_{nullptr};
 
 private:
-  raft::handle_t const* handle_ptr_{nullptr};
 
   rmm::device_uvector<i_t> offsets_;
   rmm::device_uvector<i_t> indices_;
   rmm::device_uvector<f_t> data_;
   cusparseSpMatDescr_t A_;
   rmm::device_buffer spmv_buffer_;
+  rmm::device_buffer spmv_buffer_transpose_;
   rmm::device_scalar<f_t> d_one_;
+  rmm::device_scalar<f_t> d_minus_one_;
+  rmm::device_scalar<f_t> d_zero_;
 };
 }
