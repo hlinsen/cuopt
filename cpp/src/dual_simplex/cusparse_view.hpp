@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@
 
 #include <cusparse_v2.h>
 
-#include <rmm/device_uvector.hpp>
 #include <rmm/device_scalar.hpp>
+#include <rmm/device_uvector.hpp>
 
 #include <raft/core/handle.hpp>
 
@@ -30,26 +30,25 @@
 namespace cuopt::linear_programming::dual_simplex {
 template <typename i_t, typename f_t>
 class cusparse_view_t {
-public:
+ public:
   // TMP matrix data should already be on the GPU and in CSR not CSC
-  cusparse_view_t(
-  raft::handle_t const* handle_ptr,
-  i_t rows,
-  i_t cols,
-  i_t nnz,
-  const std::vector<i_t>& offsets, // Host CSC matrix
-  const std::vector<i_t>& indices,
-  const std::vector<f_t>& data);
+  cusparse_view_t(raft::handle_t const* handle_ptr,
+                  i_t rows,
+                  i_t cols,
+                  i_t nnz,
+                  const std::vector<i_t>& offsets,  // Host CSC matrix
+                  const std::vector<i_t>& indices,
+                  const std::vector<f_t>& data);
 
   static cusparseDnVecDescr_t create_vector(const rmm::device_uvector<f_t>& vec);
 
+  void spmv(f_t alpha, const std::vector<f_t>& x, f_t beta, std::vector<f_t>& y);
   void spmv(f_t alpha, cusparseDnVecDescr_t x, f_t beta, cusparseDnVecDescr_t y);
   void transpose_spmv(f_t alpha, cusparseDnVecDescr_t x, f_t beta, cusparseDnVecDescr_t y);
-  
+
   raft::handle_t const* handle_ptr_{nullptr};
 
-private:
-
+ private:
   rmm::device_uvector<i_t> offsets_;
   rmm::device_uvector<i_t> indices_;
   rmm::device_uvector<f_t> data_;
@@ -60,4 +59,4 @@ private:
   rmm::device_scalar<f_t> d_minus_one_;
   rmm::device_scalar<f_t> d_zero_;
 };
-}
+}  // namespace cuopt::linear_programming::dual_simplex
