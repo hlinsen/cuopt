@@ -67,8 +67,7 @@ f_t device_custom_vector_norm_inf(InputIteratorT in, i_t size, rmm::cuda_stream_
 }
 
 template <typename i_t, typename f_t>
-f_t device_custom_vector_norm_inf(const rmm::device_uvector<f_t>& in,
-                                  rmm::cuda_stream_view stream_view)
+f_t device_vector_norm_inf(const rmm::device_uvector<f_t>& in, rmm::cuda_stream_view stream_view)
 {
   return device_custom_vector_norm_inf<i_t, f_t>(in.data(), in.size(), stream_view);
 }
@@ -77,7 +76,7 @@ template <typename i_t, typename f_t>
 f_t vector_norm_inf(const std::vector<f_t>& x, rmm::cuda_stream_view stream_view)
 {
   const auto d_x = device_copy(x, stream_view);
-  return device_custom_vector_norm_inf<i_t, f_t>(d_x, stream_view);
+  return device_vector_norm_inf<i_t, f_t>(d_x, stream_view);
 }
 
 }  // namespace cuopt::linear_programming::dual_simplex

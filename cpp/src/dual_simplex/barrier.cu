@@ -1988,9 +1988,13 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     cusparse_view_.spmv(1.0, cusparse_dx_residual_5_, 0.0, cusparse_dx_residual_6_);
     cusparse_view_.spmv(-1.0, cusparse_dx_, 1.0, cusparse_dx_residual_6_);
 
-    // TMP no copy should happen and data should stay on the GPU
-    dx_residual_5 = host_copy(d_dx_residual_5);
-    dx_residual_6 = host_copy(d_dx_residual_6);
+    const f_t dx_residual_6_norm = device_vector_norm_inf<i_t, f_t>(d_dx_residual_6, stream_view_);
+    max_residual                 = std::max(max_residual, dx_residual_6_norm);
+    if (dx_residual_6_norm > 1e-2) {
+      settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
+    }
+
+    my_pop_range();
   } else {
     raft::common::nvtx::push_range("Barrier: CPU dx_residual_5_6");
 
@@ -2000,14 +2004,15 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     matrix_vector_multiply(lp.A, 1.0, dx_residual_5, 0.0, dx_residual_6);
     // dx_residual_6 <- A * D^-1 (A'*dy - r1) - A * dx
     matrix_vector_multiply(lp.A, -1.0, dx, 1.0, dx_residual_6);
-  }
 
-  const f_t dx_residual_6_norm = vector_norm_inf<i_t, f_t>(dx_residual_6, stream_view_);
-  max_residual                 = std::max(max_residual, dx_residual_6_norm);
-  if (dx_residual_6_norm > 1e-2) {
-    settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
+    const f_t dx_residual_6_norm = vector_norm_inf<i_t, f_t>(dx_residual_6, stream_view_);
+    max_residual                 = std::max(max_residual, dx_residual_6_norm);
+    if (dx_residual_6_norm > 1e-2) {
+      settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
+    }
+
+    my_pop_range();
   }
-  my_pop_range();
 
   raft::common::nvtx::push_range("Barrier: dx_residual_3_4");
 
