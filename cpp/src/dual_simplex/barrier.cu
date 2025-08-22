@@ -2110,12 +2110,15 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   raft::common::nvtx::push_range("Barrier: x_residual");
   // x_residual <- A * dx - primal_rhs
+  // TMP data should only be on the GPU
   dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
   if (use_gpu) {
     cusparse_view_.spmv(1.0, dx, -1.0, x_residual);
   } else {
     matrix_vector_multiply(lp.A, 1.0, dx, -1.0, x_residual);
   }
+
+  // Only debug so not ported to the GPU
   if (debug) {
     const f_t x_residual_norm = vector_norm_inf<i_t, f_t>(x_residual, stream_view_);
     max_residual              = std::max(max_residual, x_residual_norm);
@@ -2125,15 +2128,44 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   }
   my_pop_range();
 
-  raft::common::nvtx::push_range("Barrier: dz formation");
-  // dz = (complementarity_xz_rhs - z.* dx) ./ x;
-  // tmp3 <- z .* dx
-  data.z.pairwise_product(dx, tmp3);
-  // tmp3 <- 1.0 * complementarity_xz_rhs - tmp3
-  tmp3.axpy(1.0, data.complementarity_xz_rhs, -1.0);
-  // dz <- tmp3 ./ x
-  tmp3.pairwise_divide(data.x, dz);
-  my_pop_range();
+  if (use_gpu) {
+    raft::common::nvtx::push_range("Barrier: dz formation GPU");
+
+    // TMP no copy should happen and data should already be on the GPU
+    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view);
+    rmm::device_uvector<f_t> d_z  = device_copy(data.z, stream_view);
+    rmm::device_uvector<f_t> d_complementarity_xz_rhs =
+      device_copy(data.complementarity_xz_rhs, stream_view);
+    rmm::device_uvector<f_t> d_x = device_copy(data.x, stream_view);
+    rmm::device_uvector<f_t> d_dz(dz.size(), stream_view);
+
+    // dz = (complementarity_xz_rhs - z.* dx) ./ x;
+    cub::DeviceTransform::Transform(
+      cuda::std::make_tuple(d_complementarity_xz_rhs.data(), d_z.data(), d_dx.data(), d_x.data()),
+      d_dz.data(),
+      d_dz.size(),
+      [] HD(f_t complementarity_xz_rhs, f_t z, f_t dx, f_t x) {
+        return (complementarity_xz_rhs - z * dx) / x;
+      },
+      stream_view);
+
+    // TMP no copy should happen, data should stay on the GPU
+    dz = host_copy(d_dz);
+
+    my_pop_range();
+  } else {
+    raft::common::nvtx::push_range("Barrier: dz formation CPU");
+
+    // dz = (complementarity_xz_rhs - z.* dx) ./ x;
+    // tmp3 <- z .* dx
+    data.z.pairwise_product(dx, tmp3);
+    // tmp3 <- 1.0 * complementarity_xz_rhs - tmp3
+    tmp3.axpy(1.0, data.complementarity_xz_rhs, -1.0);
+    // dz <- tmp3 ./ x
+    tmp3.pairwise_divide(data.x, dz);
+
+    my_pop_range();
+  }
 
   raft::common::nvtx::push_range("Barrier: xz_residual");
   // xz_residual <- z .* dx + x .* dz - complementarity_xz_rhs
