@@ -2167,6 +2167,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     my_pop_range();
   }
 
+  // TODO Chris: if indeed only useful for debug, we should move the whole block in if debug
   raft::common::nvtx::push_range("Barrier: xz_residual");
   // xz_residual <- z .* dx + x .* dz - complementarity_xz_rhs
   dense_vector_t<i_t, f_t> xz_residual = data.complementarity_xz_rhs;
@@ -2185,21 +2186,55 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   }
   my_pop_range();
 
-  raft::common::nvtx::push_range("Barrier: dv formation");
-  // dv = (v .* E' dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
-  // tmp1 <- E' * dx
-  data.gather_upper_bounds(dx, tmp1);
-  // tmp2 <- v .* E' * dx
-  data.v.pairwise_product(tmp1, tmp2);
-  // tmp1 <- v .* bound_rhs
-  data.v.pairwise_product(data.bound_rhs, tmp1);
-  // tmp1 <- v .* E' * dx - v . * bound_rhs
-  tmp1.axpy(1.0, tmp2, -1.0);
-  // tmp1 <- v .* E' * dx + complementarity_wv_rhs - v.* bound_rhs
-  tmp1.axpy(1.0, data.complementarity_wv_rhs, 1.0);
-  // dv <- tmp1 ./ w
-  tmp1.pairwise_divide(data.w, dv);
-  my_pop_range();
+  if (use_gpu) {
+    raft::common::nvtx::push_range("Barrier: dv formation GPU");
+
+    // TMP no copy should happen and data should already be on the GPU
+    rmm::device_uvector<f_t> d_v         = device_copy(data.v, stream_view);
+    rmm::device_uvector<f_t> d_dx        = device_copy(dx, stream_view);
+    rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view);
+    rmm::device_uvector<f_t> d_complementarity_wv_rhs =
+      device_copy(data.complementarity_wv_rhs, stream_view);
+    rmm::device_uvector<f_t> d_w            = device_copy(data.w, stream_view);
+    rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view_);
+    rmm::device_uvector<f_t> d_dv(dv.size(), stream_view);
+
+    // dv <- (v .* E' * dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
+    cub::DeviceTransform::Transform(
+      cuda::std::make_tuple(d_v.data(),
+                            thrust::make_permutation_iterator(d_dx.data(), d_upper_bounds.data()),
+                            d_bound_rhs.data(),
+                            d_complementarity_wv_rhs.data(),
+                            d_w.data()),
+      d_dv.data(),
+      d_dv.size(),
+      [] HD(f_t v, f_t gathered_dx, f_t bound_rhs, f_t complementarity_wv_rhs, f_t w) {
+        return (v * gathered_dx - bound_rhs * v + complementarity_wv_rhs) / w;
+      },
+      stream_view);
+
+    dv = host_copy(d_dv);
+
+    my_pop_range();
+  } else {
+    raft::common::nvtx::push_range("Barrier: dv formation CPU");
+
+    // dv = (v .* E' dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
+    // tmp1 <- E' * dx
+    data.gather_upper_bounds(dx, tmp1);
+    // tmp2 <- v .* E' * dx
+    data.v.pairwise_product(tmp1, tmp2);
+    // tmp1 <- v .* bound_rhs
+    data.v.pairwise_product(data.bound_rhs, tmp1);
+    // tmp1 <- v .* E' * dx - v . * bound_rhs
+    tmp1.axpy(1.0, tmp2, -1.0);
+    // tmp1 <- v .* E' * dx + complementarity_wv_rhs - v .* bound_rhs
+    tmp1.axpy(1.0, data.complementarity_wv_rhs, 1.0);
+    // dv <- tmp1 ./ w
+    tmp1.pairwise_divide(data.w, dv);
+
+    my_pop_range();
+  }
 
   raft::common::nvtx::push_range("Barrier: dv_residual");
   dense_vector_t<i_t, f_t> dv_residual(data.n_upper_bounds);
