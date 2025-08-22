@@ -107,6 +107,8 @@ class barrier_solver_t {
   cusparseDnVecDescr_t cusparse_dx_residual_5_;
   cusparseDnVecDescr_t cusparse_dx_residual_6_;
   cusparseDnVecDescr_t cusparse_dx_;
+  cusparseDnVecDescr_t cusparse_dx_residual_3_;
+  cusparseDnVecDescr_t cusparse_dx_residual_4_;
 
   rmm::cuda_stream_view stream_view_;
 };
