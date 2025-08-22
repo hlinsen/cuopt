@@ -1961,7 +1961,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     my_pop_range();
   }
 
-  // TMP data should only be
+  // TMP data should only be on the GPU
   dense_vector_t<i_t, f_t> dx_residual_5(lp.num_cols);
   dense_vector_t<i_t, f_t> dx_residual_6(lp.num_rows);
   if (use_gpu) {
@@ -2078,16 +2078,35 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   }
 #endif
 
-  raft::common::nvtx::push_range("Barrier: dx_residual_7");
-  dense_vector_t<i_t, f_t> dx_residual_7 = h;
-  // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
-  data.adat_multiply(1.0, dy, -1.0, dx_residual_7);
-  const f_t dx_residual_7_norm = vector_norm_inf<i_t, f_t>(dx_residual_7, stream_view_);
-  max_residual                 = std::max(max_residual, dx_residual_7_norm);
-  if (dx_residual_7_norm > 1e-2) {
-    settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
+  if (use_gpu) {
+    raft::common::nvtx::push_range("Barrier: GPU dx_residual_7");
+
+    // TMP data should already be on the GPU
+    rmm::device_uvector<f_t> d_dx_residual_7 = device_copy(h, stream_view);
+    rmm::device_uvector<f_t> d_dy            = device_copy(dy, stream_view);
+
+    // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
+    data.adat_multiply(1.0, d_dy, -1.0, d_dx_residual_7, cusparse_view_);
+    const f_t dx_residual_7_norm = device_vector_norm_inf<i_t, f_t>(d_dx_residual_7, stream_view);
+    max_residual                 = std::max(max_residual, dx_residual_7_norm);
+    if (dx_residual_7_norm > 1e-2) {
+      settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
+    }
+
+    my_pop_range();
+  } else {
+    raft::common::nvtx::push_range("Barrier: CPU dx_residual_7");
+
+    dense_vector_t<i_t, f_t> dx_residual_7 = h;
+    // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
+    data.adat_multiply(1.0, dy, -1.0, dx_residual_7);
+    const f_t dx_residual_7_norm = vector_norm_inf<i_t, f_t>(dx_residual_7);
+    max_residual                 = std::max(max_residual, dx_residual_7_norm);
+    if (dx_residual_7_norm > 1e-2) {
+      settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
+    }
+    my_pop_range();
   }
-  my_pop_range();
 
   raft::common::nvtx::push_range("Barrier: x_residual");
   // x_residual <- A * dx - primal_rhs
