@@ -44,6 +44,7 @@ class cusparse_view_t {
 
   void spmv(f_t alpha, const std::vector<f_t>& x, f_t beta, std::vector<f_t>& y);
   void spmv(f_t alpha, cusparseDnVecDescr_t x, f_t beta, cusparseDnVecDescr_t y);
+  void transpose_spmv(f_t alpha, const std::vector<f_t>& x, f_t beta, std::vector<f_t>& y);
   void transpose_spmv(f_t alpha, cusparseDnVecDescr_t x, f_t beta, cusparseDnVecDescr_t y);
 
   raft::handle_t const* handle_ptr_{nullptr};

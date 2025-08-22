@@ -813,6 +813,7 @@ class iteration_data_t {
                    f_t user_objective,
                    f_t primal_residual,
                    f_t dual_residual,
+                   cusparse_view_t<i_t, f_t>& cusparse_view,
                    lp_solution_t<i_t, f_t>& solution)
   {
     solution.x = x;
@@ -824,7 +825,12 @@ class iteration_data_t {
 
     dense_vector_t<i_t, f_t> dual_res = z_tilde;
     dual_res.axpy(-1.0, lp.objective, 1.0);
-    matrix_transpose_vector_multiply(lp.A, 1.0, solution.y, 1.0, dual_res);
+    if (use_gpu) {
+      cusparse_view.transpose_spmv(1.0, solution.y, 1.0, dual_res);
+
+    } else {
+      matrix_transpose_vector_multiply(lp.A, 1.0, solution.y, 1.0, dual_res);
+    }
     f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_res, stream_view_);
     settings_.log.printf("Solution Dual residual: %e\n", dual_residual_norm);
 
@@ -1412,7 +1418,11 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   // x = Dinv*(F*u - A'*q)
   data.inv_diag.pairwise_product(Fu, data.x);
   // Fu <- -1.0 * A' * q + 1.0 * Fu
-  matrix_transpose_vector_multiply(lp.A, -1.0, q, 1.0, Fu);
+  if (use_gpu) {
+    cusparse_view_.transpose_spmv(-1.0, q, 1.0, Fu);
+  } else {
+    matrix_transpose_vector_multiply(lp.A, -1.0, q, 1.0, Fu);
+  }
 
   // x <- Dinv * (F*u - A'*q)
   data.inv_diag.pairwise_product(Fu, data.x);
@@ -1459,7 +1469,11 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 
   // z = Dinv*(c - A'*y)
   dense_vector_t<i_t, f_t> cmATy = data.c;
-  matrix_transpose_vector_multiply(lp.A, -1.0, data.y, 1.0, cmATy);
+  if (use_gpu) {
+    cusparse_view_.transpose_spmv(-1.0, data.y, 1.0, cmATy);
+  } else {
+    matrix_transpose_vector_multiply(lp.A, -1.0, data.y, 1.0, cmATy);
+  }
   // z <- Dinv * (c - A'*y)
   data.inv_diag.pairwise_product(cmATy, data.z);
 
@@ -1469,7 +1483,11 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 
   // Verify A'*y + z - E*v = c
   data.z.pairwise_subtract(data.c, data.dual_residual);
-  matrix_transpose_vector_multiply(lp.A, 1.0, data.y, 1.0, data.dual_residual);
+  if (use_gpu) {
+    cusparse_view_.transpose_spmv(1.0, data.y, 1.0, data.dual_residual);
+  } else {
+    matrix_transpose_vector_multiply(lp.A, 1.0, data.y, 1.0, data.dual_residual);
+  }
   if (data.n_upper_bounds > 0) {
     for (i_t k = 0; k < data.n_upper_bounds; k++) {
       i_t j = data.upper_bounds[k];
@@ -1512,7 +1530,11 @@ void barrier_solver_t<i_t, f_t>::compute_residuals(const dense_vector_t<i_t, f_t
 
   // Compute dual_residual = c - A'*y - z + E*v
   data.c.pairwise_subtract(z, data.dual_residual);
-  matrix_transpose_vector_multiply(lp.A, -1.0, y, 1.0, data.dual_residual);
+  if (use_gpu) {
+    cusparse_view_.transpose_spmv(-1.0, y, 1.0, data.dual_residual);
+  } else {
+    matrix_transpose_vector_multiply(lp.A, -1.0, y, 1.0, data.dual_residual);
+  }
   if (data.n_upper_bounds > 0) {
     for (i_t k = 0; k < data.n_upper_bounds; k++) {
       i_t j = data.upper_bounds[k];
@@ -1849,7 +1871,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // .* bound_rhs) ./ w))
   raft::common::nvtx::push_range("Barrier: dx formation");
   // r1 <- A'*dy - r1
-  matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, r1);
+  if (use_gpu) {
+    cusparse_view_.transpose_spmv(1.0, dy, -1.0, r1);
+  } else {
+    matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, r1);
+  }
   // dx <- dinv .* r1
   data.inv_diag.pairwise_product(r1, dx);
 
@@ -1858,7 +1884,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // dx_residual <- D*dx
   data.diag.pairwise_product(dx, dx_residual);
   // dx_residual <- -A'*dy + D*dx
-  matrix_transpose_vector_multiply(lp.A, -1.0, dy, 1.0, dx_residual);
+  if (use_gpu) {
+    cusparse_view_.transpose_spmv(-1.0, dy, 1.0, dx_residual);
+  } else {
+    matrix_transpose_vector_multiply(lp.A, -1.0, dy, 1.0, dx_residual);
+  }
   // dx_residual <- D*dx - A'*dy + r1
   dx_residual.axpy(1.0, r1_prime, 1.0);
   if (debug) {
@@ -2060,7 +2090,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // dual_residual <- E * dv
   data.scatter_upper_bounds(dv, dual_residual);
   // dual_residual <- A' * dy - E * dv
-  matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, dual_residual);
+  if (use_gpu) {
+    cusparse_view_.transpose_spmv(1.0, dy, -1.0, dual_residual);
+  } else {
+    matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, dual_residual);
+  }
   // dual_residual <- A' * dy - E * dv + dz
   dual_residual.axpy(1.0, dz, 1.0);
   // dual_residual <- A' * dy - E * dv + dz - dual_rhs
@@ -2151,6 +2185,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
                      primal_objective + lp.obj_constant,
                      vector_norm2<i_t, f_t>(data.primal_residual),
                      vector_norm2<i_t, f_t>(data.dual_residual),
+                     cusparse_view_,
                      solution);
     settings.log.printf(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
@@ -2186,6 +2221,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
                      primal_objective + lp.obj_constant,
                      vector_norm2<i_t, f_t>(data.primal_residual),
                      vector_norm2<i_t, f_t>(data.dual_residual),
+                     cusparse_view_,
                      solution);
     settings.log.printf(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
@@ -2543,6 +2579,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                        primal_objective + lp.obj_constant,
                        primal_residual_norm,
                        dual_residual_norm,
+                       cusparse_view_,
                        solution);
       return lp_status_t::OPTIMAL;
     }
@@ -2553,6 +2590,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                    primal_objective + lp.obj_constant,
                    vector_norm2<i_t, f_t>(data.primal_residual),
                    vector_norm2<i_t, f_t>(data.dual_residual),
+                   cusparse_view_,
                    solution);
   return lp_status_t::ITERATION_LIMIT;
 }

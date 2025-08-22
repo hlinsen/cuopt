@@ -293,6 +293,20 @@ void cusparse_view_t<i_t, f_t>::spmv(f_t alpha,
 
 template <typename i_t, typename f_t>
 void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
+                                               const std::vector<f_t>& x,
+                                               f_t beta,
+                                               std::vector<f_t>& y)
+{
+  auto d_x                        = device_copy(x, handle_ptr_->get_stream());
+  auto d_y                        = device_copy(y, handle_ptr_->get_stream());
+  cusparseDnVecDescr_t x_cusparse = create_vector(d_x);
+  cusparseDnVecDescr_t y_cusparse = create_vector(d_y);
+  transpose_spmv(alpha, x_cusparse, beta, y_cusparse);
+  y = cuopt::host_copy(d_y);
+}
+
+template <typename i_t, typename f_t>
+void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
                                                cusparseDnVecDescr_t x,
                                                f_t beta,
                                                cusparseDnVecDescr_t y)
