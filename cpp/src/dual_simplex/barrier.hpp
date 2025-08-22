@@ -73,6 +73,8 @@ class barrier_solver_t {
                            i_t& index) const;
   f_t max_step_to_boundary(const dense_vector_t<i_t, f_t>& x,
                            const dense_vector_t<i_t, f_t>& dx) const;
+  // To be able to directly pass lambdas to transform functions
+ public:
   i_t compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                dense_vector_t<i_t, f_t>& dw,
                                dense_vector_t<i_t, f_t>& dx,
@@ -81,6 +83,7 @@ class barrier_solver_t {
                                dense_vector_t<i_t, f_t>& dz,
                                f_t& max_residual);
 
+ private:
   lp_status_t check_for_suboptimal_solution(const barrier_solver_settings_t<i_t, f_t>& options,
                                             iteration_data_t<i_t, f_t>& data,
                                             f_t start_time,

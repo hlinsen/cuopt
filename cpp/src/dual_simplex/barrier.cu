@@ -27,6 +27,7 @@
 #include <rmm/device_uvector.hpp>
 
 #include <utilities/copy_helpers.hpp>
+#include <utilities/cuda_helpers.cuh>
 
 #include <numeric>
 
@@ -1609,27 +1610,6 @@ void barrier_solver_t<i_t, f_t>::my_pop_range()
   raft::common::nvtx::pop_range();
 }
 
-template <typename f_t>
-struct scatter_compl {
-  __host__ __device__ inline f_t operator()(f_t bound_rhs,
-                                            f_t v,
-                                            f_t complementarity_wv_rhs,
-                                            f_t w) const
-  {
-    return (complementarity_wv_rhs - v * bound_rhs) / w;
-  }
-};
-
-template <typename f_t>
-struct inv_time_compl {
-  __host__ __device__ inline thrust::tuple<f_t, f_t> operator()(
-    f_t inv_diag, f_t tmp3, f_t complementarity_xz_rhs, f_t x, f_t dual_rhs)
-  {
-    const f_t tmp = tmp3 + -(complementarity_xz_rhs / x) + dual_rhs;
-    return {tmp, inv_diag * tmp};
-  }
-};
-
 template <typename i_t, typename f_t>
 i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                                          dense_vector_t<i_t, f_t>& dw,
@@ -1769,20 +1749,27 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
                                           ),
       data.n_upper_bounds,
-      scatter_compl<f_t>(),
+      [] HD(f_t bound_rhs, f_t v, f_t complementarity_wv_rhs, f_t w) {
+        return (complementarity_wv_rhs - v * bound_rhs) / w;
+      },
       stream_view_);
 
     // tmp3 <- tmp3 .+ -(complementarity_xz_rhs ./ x) .+ dual_rhs
     // tmp4 <- inv_diag .* tmp3
-    cub::DeviceTransform::Transform(cuda::std::make_tuple(d_inv_diag.data(),
-                                                          d_tmp3.data(),
-                                                          d_complementarity_xz_rhs.data(),
-                                                          d_x.data(),
-                                                          d_dual_rhs.data()),
-                                    thrust::make_zip_iterator(d_tmp3.data(), d_tmp4.data()),
-                                    lp.num_cols,
-                                    inv_time_compl<f_t>(),
-                                    stream_view_);
+    cub::DeviceTransform::Transform(
+      cuda::std::make_tuple(d_inv_diag.data(),
+                            d_tmp3.data(),
+                            d_complementarity_xz_rhs.data(),
+                            d_x.data(),
+                            d_dual_rhs.data()),
+      thrust::make_zip_iterator(d_tmp3.data(), d_tmp4.data()),
+      lp.num_cols,
+      [] HD(f_t inv_diag, f_t tmp3, f_t complementarity_xz_rhs, f_t x, f_t dual_rhs)
+        -> thrust::tuple<f_t, f_t> {
+        const f_t tmp = tmp3 + -(complementarity_xz_rhs / x) + dual_rhs;
+        return {tmp, inv_diag * tmp};
+      },
+      stream_view_);
 
     // TMP no copy should happen
     tmp3     = host_copy(d_tmp3);
