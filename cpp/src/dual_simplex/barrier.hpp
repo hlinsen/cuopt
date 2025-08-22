@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #pragma once
 
 #include "dual_simplex/cusparse_info.hpp"
+#include "dual_simplex/cusparse_view.hpp"
 #include "dual_simplex/dense_vector.hpp"
 #include "dual_simplex/presolve.hpp"
 #include "dual_simplex/simplex_solver_settings.hpp"
@@ -25,7 +26,6 @@
 #include "dual_simplex/sparse_cholesky.hpp"
 #include "dual_simplex/sparse_matrix.hpp"
 #include "dual_simplex/tic_toc.hpp"
-#include "dual_simplex/cusparse_view.hpp"
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -99,6 +99,7 @@ class barrier_solver_t {
   cusparse_view_t<i_t, f_t> cusparse_view_;
   cusparseDnVecDescr_t cusparse_tmp_;
   cusparseDnVecDescr_t cusparse_h_;
+  rmm::cuda_stream_view stream_view_;
 };
 
 }  // namespace cuopt::linear_programming::dual_simplex

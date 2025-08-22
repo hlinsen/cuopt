@@ -21,6 +21,7 @@
 #include <dual_simplex/sparse_matrix_kernels.cuh>
 #include <dual_simplex/tic_toc.hpp>
 #include <dual_simplex/types.hpp>
+#include <dual_simplex/vector_math.cuh>
 
 #include <rmm/device_scalar.hpp>
 #include <rmm/device_uvector.hpp>
@@ -309,7 +310,8 @@ class iteration_data_t {
       has_factorization(false),
       num_factorizations(0),
       settings_(settings),
-      handle_ptr(lp.handle_ptr)
+      handle_ptr(lp.handle_ptr),
+      stream_view_(lp.handle_ptr->get_stream())
   {
     // Create the upper bounds vector
     n_upper_bounds = 0;
@@ -823,7 +825,7 @@ class iteration_data_t {
     dense_vector_t<i_t, f_t> dual_res = z_tilde;
     dual_res.axpy(-1.0, lp.objective, 1.0);
     matrix_transpose_vector_multiply(lp.A, 1.0, solution.y, 1.0, dual_res);
-    f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_res);
+    f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_res, stream_view_);
     settings_.log.printf("Solution Dual residual: %e\n", dual_residual_norm);
 
     solution.iterations         = iterations;
@@ -1199,7 +1201,7 @@ class iteration_data_t {
     if (show_pcg_info) {
       settings.log.printf("PCG initial residual 2-norm %e inf-norm %e\n",
                           norm_residual,
-                          vector_norm_inf<i_t, f_t>(residual));
+                          vector_norm_inf<i_t, f_t>(residual, stream_view_));
     }
 
     f_t rTy = residual.inner_product(y);
@@ -1250,7 +1252,7 @@ class iteration_data_t {
         settings.log.printf("PCG iter %3d 2-norm_residual %.2e inf-norm_residual %.2e\n",
                             iter,
                             norm_residual,
-                            vector_norm_inf<i_t, f_t>(residual));
+                            vector_norm_inf<i_t, f_t>(residual, stream_view_));
       }
     }
 
@@ -1338,6 +1340,7 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> dv;
   dense_vector_t<i_t, f_t> dz;
   cusparse_info_t<i_t, f_t> cusparse_info;
+  rmm::cuda_stream_view stream_view_;
 
   const simplex_solver_settings_t<i_t, f_t>& settings_;
 };
@@ -1356,7 +1359,8 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
                    lp.A.col_start,
                    lp.A.i,
                    lp.A.x  // TMP we should pass a GPU CSR view directly
-    )
+                   ),
+    stream_view_(lp.handle_ptr->get_stream())
 {
 }
 
@@ -1535,12 +1539,12 @@ void barrier_solver_t<i_t, f_t>::compute_residual_norms(const dense_vector_t<i_t
                                                         f_t& complementarity_residual_norm)
 {
   compute_residuals(w, x, y, v, z, data);
-  primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual),
-                                  vector_norm_inf<i_t, f_t>(data.bound_residual));
-  dual_residual_norm   = vector_norm_inf<i_t, f_t>(data.dual_residual);
+  primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual, stream_view_),
+                                  vector_norm_inf<i_t, f_t>(data.bound_residual, stream_view_));
+  dual_residual_norm   = vector_norm_inf<i_t, f_t>(data.dual_residual, stream_view_);
   complementarity_residual_norm =
-    std::max(vector_norm_inf<i_t, f_t>(data.complementarity_xz_residual),
-             vector_norm_inf<i_t, f_t>(data.complementarity_wv_residual));
+    std::max(vector_norm_inf<i_t, f_t>(data.complementarity_xz_residual, stream_view_),
+             vector_norm_inf<i_t, f_t>(data.complementarity_wv_residual, stream_view_));
 }
 
 template <typename i_t, typename f_t>
@@ -1720,22 +1724,22 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     // TODO wrap everything with RAFT safe calls
     // TMP all of this data should already be on the GPU and reuse correct stream
-    rmm::device_uvector<f_t> d_tmp3(tmp3.size(), stream_view);
-    rmm::device_uvector<f_t> d_tmp4(tmp4.size(), stream_view);
-    rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view);
-    rmm::device_uvector<f_t> d_v         = device_copy(data.v, stream_view);
+    rmm::device_uvector<f_t> d_tmp3(tmp3.size(), stream_view_);
+    rmm::device_uvector<f_t> d_tmp4(tmp4.size(), stream_view_);
+    rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view_);
+    rmm::device_uvector<f_t> d_v         = device_copy(data.v, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_wv_rhs =
-      device_copy(data.complementarity_wv_rhs, stream_view);
-    rmm::device_uvector<f_t> d_w = device_copy(data.w, stream_view);
+      device_copy(data.complementarity_wv_rhs, stream_view_);
+    rmm::device_uvector<f_t> d_w = device_copy(data.w, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_xz_rhs =
-      device_copy(data.complementarity_xz_rhs, stream_view);
-    rmm::device_uvector<f_t> d_x            = device_copy(data.x, stream_view);
-    rmm::device_uvector<f_t> d_dual_rhs     = device_copy(data.dual_rhs, stream_view);
-    rmm::device_uvector<f_t> d_inv_diag     = device_copy(data.inv_diag, stream_view);
-    rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view);
+      device_copy(data.complementarity_xz_rhs, stream_view_);
+    rmm::device_uvector<f_t> d_x            = device_copy(data.x, stream_view_);
+    rmm::device_uvector<f_t> d_dual_rhs     = device_copy(data.dual_rhs, stream_view_);
+    rmm::device_uvector<f_t> d_inv_diag     = device_copy(data.inv_diag, stream_view_);
+    rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view_);
 
     // tmp3 <- E * ((complementarity_wv_rhs .- v .* bound_rhs) ./ w)
-    cudaMemsetAsync(d_tmp3.data(), 0, sizeof(f_t) * d_tmp3.size(), stream_view);
+    cudaMemsetAsync(d_tmp3.data(), 0, sizeof(f_t) * d_tmp3.size(), stream_view_);
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(
         d_bound_rhs.data(), d_v.data(), d_complementarity_wv_rhs.data(), d_w.data()),
@@ -1744,7 +1748,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
                                           ),
       data.n_upper_bounds,
       scatter_compl<f_t>(),
-      stream_view);
+      stream_view_);
 
     // tmp3 <- tmp3 .+ -(complementarity_xz_rhs ./ x) .+ dual_rhs
     // tmp4 <- inv_diag .* tmp3
@@ -1756,7 +1760,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
                                     thrust::make_zip_iterator(d_tmp3.data(), d_tmp4.data()),
                                     lp.num_cols,
                                     inv_time_compl<f_t>(),
-                                    stream_view);
+                                    stream_view_);
 
     // TMP no copy should happen
     tmp3     = host_copy(d_tmp3);
@@ -1768,7 +1772,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     cusparse_tmp_ = cusparse_view_.create_vector(d_tmp4);
 
     // TMP no copy should happen and shouldn't have to call that everytime
-    rmm::device_uvector<f_t> d_h = device_copy(h, stream_view);
+    rmm::device_uvector<f_t> d_h = device_copy(h, stream_view_);
     cusparse_h_                  = cusparse_view_.create_vector(d_h);
 
     // h <- A @ tmp4 .+ primal_rhs
@@ -1799,10 +1803,10 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: CPU y_residual");
     data.adat_multiply(1.0, dy, -1.0, y_residual);
     print("y_residual", y_residual);
-    const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
+    const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual, stream_view_);
     max_residual              = std::max(max_residual, y_residual_norm);
     if (y_residual_norm > 1e-2) {
-      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h));
+      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h, stream_view_));
       settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
     }
     if (y_residual_norm > 10) { return -1; }
@@ -1815,7 +1819,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
         settings, h, std::min(y_residual_norm / 100.0, 1e-6), dy);
       y_residual = h;
       matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
-      const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual);
+      const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual, stream_view_);
       settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n",
                           y_residual_norm_pcg);
     }
@@ -1824,16 +1828,15 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: GPU y_residual");
 
     // TMP everything should already be on the GPU
-    rmm::device_uvector<f_t> d_y          = device_copy(dy, stream_view);
-    rmm::device_uvector<f_t> d_y_residual = device_copy(y_residual, stream_view);
+    rmm::device_uvector<f_t> d_y          = device_copy(dy, stream_view_);
+    rmm::device_uvector<f_t> d_y_residual = device_copy(y_residual, stream_view_);
     data.adat_multiply(1.0, d_y, -1.0, d_y_residual, cusparse_view_);
     y_residual = host_copy(d_y_residual);
 
-    // TODO Hugo for now still on the CPU
-    const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
+    f_t const y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual, stream_view_);
     max_residual              = std::max(max_residual, y_residual_norm);
     if (y_residual_norm > 1e-2) {
-      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h));
+      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h, stream_view_));
       settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
     }
     if (y_residual_norm > 10) { return -1; }
@@ -1859,7 +1862,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // dx_residual <- D*dx - A'*dy + r1
   dx_residual.axpy(1.0, r1_prime, 1.0);
   if (debug) {
-    const f_t dx_residual_norm = vector_norm_inf<i_t, f_t>(dx_residual);
+    const f_t dx_residual_norm = vector_norm_inf<i_t, f_t>(dx_residual, stream_view_);
     max_residual               = std::max(max_residual, dx_residual_norm);
     if (dx_residual_norm > 1e-2) {
       settings.log.printf("|| D * dx - A'*y + r1 || = %.2e\n", dx_residual_norm);
@@ -1874,7 +1877,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
   dx_residual_2.axpy(-1.0, dx, 1.0);
   // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
-  const f_t dx_residual_2_norm = vector_norm_inf<i_t, f_t>(dx_residual_2);
+  const f_t dx_residual_2_norm = vector_norm_inf<i_t, f_t>(dx_residual_2, stream_view_);
   max_residual                 = std::max(max_residual, dx_residual_2_norm);
   if (dx_residual_2_norm > 1e-2) {
     settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
@@ -1898,7 +1901,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   } else {
     matrix_vector_multiply(lp.A, -1.0, dx, 1.0, dx_residual_6);
   }
-  const f_t dx_residual_6_norm = vector_norm_inf<i_t, f_t>(dx_residual_6);
+  const f_t dx_residual_6_norm = vector_norm_inf<i_t, f_t>(dx_residual_6, stream_view_);
   max_residual                 = std::max(max_residual, dx_residual_6_norm);
   if (dx_residual_6_norm > 1e-2) {
     settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
@@ -1934,7 +1937,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   lp.A.transpose(Atranspose);
   multiply(ADinv, Atranspose, ADinvAT);
   matrix_vector_multiply(ADinvAT, 1.0, dy, -1.0, dx_residual_4);
-  const f_t dx_residual_4_norm = vector_norm_inf<i_t, f_t>(dx_residual_4);
+  const f_t dx_residual_4_norm = vector_norm_inf<i_t, f_t>(dx_residual_4, stream_view_);
   max_residual                 = std::max(max_residual, dx_residual_4_norm);
   if (dx_residual_4_norm > 1e-2) {
     settings.log.printf("|| ADAT * dy - A * D^-1 * r1 - A * dx || = %.2e\n", dx_residual_4_norm);
@@ -1953,7 +1956,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   dense_vector_t<i_t, f_t> dx_residual_7 = h;
   // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
   data.adat_multiply(1.0, dy, -1.0, dx_residual_7);
-  const f_t dx_residual_7_norm = vector_norm_inf<i_t, f_t>(dx_residual_7);
+  const f_t dx_residual_7_norm = vector_norm_inf<i_t, f_t>(dx_residual_7, stream_view_);
   max_residual                 = std::max(max_residual, dx_residual_7_norm);
   if (dx_residual_7_norm > 1e-2) {
     settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
@@ -1969,7 +1972,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     matrix_vector_multiply(lp.A, 1.0, dx, -1.0, x_residual);
   }
   if (debug) {
-    const f_t x_residual_norm = vector_norm_inf<i_t, f_t>(x_residual);
+    const f_t x_residual_norm = vector_norm_inf<i_t, f_t>(x_residual, stream_view_);
     max_residual              = std::max(max_residual, x_residual_norm);
     if (x_residual_norm > 1e-2) {
       settings.log.printf("|| A * dx - rp || = %.2e\n", x_residual_norm);
@@ -1997,7 +2000,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   xz_residual.axpy(1.0, zdx, -1.0);
   xz_residual.axpy(1.0, xdz, 1.0);
   if (debug) {
-    const f_t xz_residual_norm = vector_norm_inf<i_t, f_t>(xz_residual);
+    const f_t xz_residual_norm = vector_norm_inf<i_t, f_t>(xz_residual, stream_view_);
     max_residual               = std::max(max_residual, xz_residual_norm);
     if (xz_residual_norm > 1e-2) {
       settings.log.printf("|| Z dx + X dz - rxz || = %.2e\n", xz_residual_norm);
@@ -2041,7 +2044,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // dv_residual <- -v .* E' * dx + w .* dv - complementarity_wv_rhs + v .* bound_rhs
   dv_residual.axpy(1.0, dv_residual_2, 1.0);
   if (debug) {
-    const f_t dv_residual_norm = vector_norm_inf<i_t, f_t>(dv_residual);
+    const f_t dv_residual_norm = vector_norm_inf<i_t, f_t>(dv_residual, stream_view_);
     max_residual               = std::max(max_residual, dv_residual_norm);
     if (dv_residual_norm > 1e-2) {
       settings.log.printf(
@@ -2063,7 +2066,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // dual_residual <- A' * dy - E * dv + dz - dual_rhs
   dual_residual.axpy(-1.0, data.dual_rhs, 1.0);
   if (debug) {
-    const f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_residual);
+    const f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_residual, stream_view_);
     max_residual                 = std::max(max_residual, dual_residual_norm);
     if (dual_residual_norm > 1e-2) {
       settings.log.printf("|| A' * dy - E * dv  + dz -  dual_rhs || = %.2e\n", dual_residual_norm);
@@ -2082,7 +2085,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   dw_residual.axpy(1.0, dw, 1.0);
   dw_residual.axpy(-1.0, data.bound_rhs, 1.0);
   if (debug) {
-    const f_t dw_residual_norm = vector_norm_inf<i_t, f_t>(dw_residual);
+    const f_t dw_residual_norm = vector_norm_inf<i_t, f_t>(dw_residual, stream_view_);
     max_residual               = std::max(max_residual, dw_residual_norm);
     if (dw_residual_norm > 1e-2) {
       settings.log.printf("|| dw + E'*dx - bound_rhs || = %.2e\n", dw_residual_norm);
@@ -2100,7 +2103,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   wv_residual.axpy(1.0, vdw, -1.0);
   wv_residual.axpy(1.0, wdv, 1.0);
   if (debug) {
-    const f_t wv_residual_norm = vector_norm_inf<i_t, f_t>(wv_residual);
+    const f_t wv_residual_norm = vector_norm_inf<i_t, f_t>(wv_residual, stream_view_);
     max_residual               = std::max(max_residual, wv_residual_norm);
     if (wv_residual_norm > 1e-2) {
       settings.log.printf("|| V dw + W dv - rwv || = %.2e\n", wv_residual_norm);
@@ -2251,17 +2254,17 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   }
   compute_residuals(data.w, data.x, data.y, data.v, data.z, data);
 
-  f_t primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual),
-                                      vector_norm_inf<i_t, f_t>(data.bound_residual));
-  f_t dual_residual_norm   = vector_norm_inf<i_t, f_t>(data.dual_residual);
+  f_t primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual, stream_view_),
+                                      vector_norm_inf<i_t, f_t>(data.bound_residual, stream_view_));
+  f_t dual_residual_norm   = vector_norm_inf<i_t, f_t>(data.dual_residual, stream_view_);
   f_t complementarity_residual_norm =
-    std::max(vector_norm_inf<i_t, f_t>(data.complementarity_xz_residual),
-             vector_norm_inf<i_t, f_t>(data.complementarity_wv_residual));
+    std::max(vector_norm_inf<i_t, f_t>(data.complementarity_xz_residual, stream_view_),
+             vector_norm_inf<i_t, f_t>(data.complementarity_wv_residual, stream_view_));
   f_t mu = (data.complementarity_xz_residual.sum() + data.complementarity_wv_residual.sum()) /
            (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
 
-  f_t norm_b = vector_norm_inf<i_t, f_t>(data.b);
-  f_t norm_c = vector_norm_inf<i_t, f_t>(data.c);
+  f_t norm_b = vector_norm_inf<i_t, f_t>(data.b, stream_view_);
+  f_t norm_c = vector_norm_inf<i_t, f_t>(data.c, stream_view_);
 
   f_t primal_objective = data.c.inner_product(data.x);
 
