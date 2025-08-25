@@ -35,6 +35,7 @@
 #include <raft/common/nvtx.hpp>
 
 #include <thrust/iterator/permutation_iterator.h>
+#include <thrust/iterator/transform_output_iterator.h>
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -1631,26 +1632,84 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // [ 0 Z  0   0  X ] [ dv ]   [ rxz ]
   // [ V 0  0   W  0 ] [ dz ]   [ rwv ]
 
-  raft::common::nvtx::push_range("Barrier: pre A*D*A' formation");
-
   max_residual = 0.0;
-  // diag = z ./ x
-  data.z.pairwise_divide(data.x, data.diag);
-  // diag = z ./ x + E * (v ./ w) * E'
-  if (data.n_upper_bounds > 0) {
-    for (i_t k = 0; k < data.n_upper_bounds; k++) {
-      i_t j = data.upper_bounds[k];
-      data.diag[j] += data.v[k] / data.w[k];
+  if (use_gpu) {
+    raft::common::nvtx::push_range("Barrier: GPU diag, inv diag and sqrt inv diag formation");
+
+    // TMP all of this data should already be on the GPU and reuse correct stream
+    rmm::device_uvector<f_t> d_x            = device_copy(data.x, stream_view_);
+    rmm::device_uvector<f_t> d_z            = device_copy(data.z, stream_view_);
+    rmm::device_uvector<f_t> d_w            = device_copy(data.w, stream_view_);
+    rmm::device_uvector<f_t> d_v            = device_copy(data.v, stream_view_);
+    rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view_);
+    rmm::device_uvector<f_t> d_diag(data.diag.size(), stream_view_);
+    rmm::device_uvector<f_t> d_inv_diag(data.inv_diag.size(), stream_view_);
+    rmm::device_uvector<f_t> d_inv_sqrt_diag(data.inv_sqrt_diag.size(), stream_view_);
+
+    // diag = z ./ x
+    cub::DeviceTransform::Transform(cuda::std::make_tuple(d_z.data(), d_x.data()),
+                                    d_diag.data(),
+                                    d_diag.size(),
+                                    cuda::std::divides<>{},
+                                    stream_view_);
+
+    // Returns v / w and diag so that we can reuse it in the output iterator to do diag = diag + v /
+    // w
+    const auto diag_and_v_divide_w_iterator = thrust::make_transform_iterator(
+      thrust::make_zip_iterator(d_v.data(), d_w.data(), d_diag.data()),
+      [] HD(const thrust::tuple<double, double, double> t) -> thrust::tuple<f_t, f_t> {
+        return {thrust::get<0>(t) / thrust::get<1>(t), thrust::get<2>(t)};
+      });
+
+    // diag = z ./ x + E * (v ./ w) * E'
+    thrust::scatter(rmm::exec_policy(stream_view_),
+                    diag_and_v_divide_w_iterator,
+                    diag_and_v_divide_w_iterator + d_upper_bounds.size(),
+                    d_upper_bounds.data(),
+                    thrust::make_transform_output_iterator(
+                      d_diag.data(), [] HD(const thrust::tuple<double, double> t) {
+                        return thrust::get<0>(t) + thrust::get<1>(t);
+                      }));
+
+    // inv_diag = 1.0 ./ diag
+    // inv_sqrt_diag <- sqrt(inv_diag)
+    cub::DeviceTransform::Transform(
+      d_diag.data(),
+      thrust::make_zip_iterator(d_inv_diag.data(), d_inv_sqrt_diag.data()),
+      d_diag.size(),
+      [] HD(f_t diag) -> thrust::tuple<f_t, f_t> {
+        const f_t inv_diag = f_t(1) / diag;
+        return {inv_diag, cuda::std::sqrt(inv_diag)};
+      },
+      stream_view_);
+
+    // TMP data should always be on the GPU
+    data.diag          = host_copy(d_diag);
+    data.inv_diag      = host_copy(d_inv_diag);
+    data.inv_sqrt_diag = host_copy(d_inv_sqrt_diag);
+
+    my_pop_range();
+  } else {
+    raft::common::nvtx::push_range("Barrier: CPU diag, inv diag and sqrt inv diag formation");
+
+    // diag = z ./ x
+    data.z.pairwise_divide(data.x, data.diag);
+    // diag = z ./ x + E * (v ./ w) * E'
+    if (data.n_upper_bounds > 0) {
+      for (i_t k = 0; k < data.n_upper_bounds; k++) {
+        i_t j = data.upper_bounds[k];
+        data.diag[j] += data.v[k] / data.w[k];
+      }
     }
+
+    // inv_diag = 1.0 ./ diag
+    data.diag.inverse(data.inv_diag);
+
+    // inv_sqrt_diag <- sqrt(inv_diag)
+    data.inv_diag.sqrt(data.inv_sqrt_diag);
+
+    my_pop_range();
   }
-
-  // inv_diag = 1.0 ./ diag
-  data.diag.inverse(data.inv_diag);
-
-  // inv_sqrt_diag <- sqrt(inv_diag)
-  data.inv_diag.sqrt(data.inv_sqrt_diag);
-
-  my_pop_range();
 
   // Form A*D*A'
   if (!data.has_factorization) {
@@ -1723,7 +1782,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   } else {
     raft::common::nvtx::push_range("Barrier: GPU compute H");
 
-    // TODO wrap everything with RAFT safe calls
     // TMP all of this data should already be on the GPU and reuse correct stream
     rmm::device_uvector<f_t> d_tmp3(tmp3.size(), stream_view_);
     rmm::device_uvector<f_t> d_tmp4(tmp4.size(), stream_view_);
@@ -1740,7 +1798,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view_);
 
     // tmp3 <- E * ((complementarity_wv_rhs .- v .* bound_rhs) ./ w)
-    cudaMemsetAsync(d_tmp3.data(), 0, sizeof(f_t) * d_tmp3.size(), stream_view_);
+    RAFT_CUDA_TRY(cudaMemsetAsync(d_tmp3.data(), 0, sizeof(f_t) * d_tmp3.size(), stream_view_));
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(
         d_bound_rhs.data(), d_v.data(), d_complementarity_wv_rhs.data(), d_w.data()),
