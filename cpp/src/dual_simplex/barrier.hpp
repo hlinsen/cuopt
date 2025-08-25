@@ -109,6 +109,8 @@ class barrier_solver_t {
   cusparseDnVecDescr_t cusparse_dx_;
   cusparseDnVecDescr_t cusparse_dx_residual_3_;
   cusparseDnVecDescr_t cusparse_dx_residual_4_;
+  cusparseDnVecDescr_t cusparse_r1_;
+  cusparseDnVecDescr_t cusparse_dual_residual_;
   rmm::device_uvector<f_t> d_diag_;
   rmm::device_uvector<f_t> d_inv_diag_;
   rmm::device_uvector<f_t> d_bound_rhs_;
@@ -117,6 +119,11 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_w_;
   rmm::device_uvector<f_t> d_v_;
   rmm::device_uvector<i_t> d_upper_bounds_;
+  rmm::device_uvector<f_t> d_tmp3_;
+  rmm::device_uvector<f_t> d_r1_;
+  rmm::device_uvector<f_t> d_r1_prime_;
+  rmm::device_uvector<f_t> d_dy_;
+  rmm::device_uvector<f_t> d_dual_residual_;
 
   rmm::cuda_stream_view stream_view_;
 };
