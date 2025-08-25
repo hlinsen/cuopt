@@ -1369,7 +1369,8 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
                    ),
     stream_view_(lp.handle_ptr->get_stream()),
     d_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
-    d_inv_diag_(lp.num_cols, lp.handle_ptr->get_stream())
+    d_inv_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
+    d_bound_rhs_(0, lp.handle_ptr->get_stream())
 {
 }
 
@@ -1623,6 +1624,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 {
   raft::common::nvtx::range fun_scope("Barrier: compute_search_direction");
 
+  // TMP allocation and copy should happen only once where it's written in a first place
+  if (d_bound_rhs_.size() != data.bound_rhs.size())
+    d_bound_rhs_.resize(data.bound_rhs.size(), stream_view_);
+  raft::copy(d_bound_rhs_.data(), data.bound_rhs.data(), data.bound_rhs.size(), stream_view_);
+
   const bool debug = true;
   // Solves the linear system
   //
@@ -1778,8 +1784,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // TMP all of this data should already be on the GPU and reuse correct stream
     rmm::device_uvector<f_t> d_tmp3(tmp3.size(), stream_view_);
     rmm::device_uvector<f_t> d_tmp4(tmp4.size(), stream_view_);
-    rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view_);
-    rmm::device_uvector<f_t> d_v         = device_copy(data.v, stream_view_);
+    rmm::device_uvector<f_t> d_v = device_copy(data.v, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_wv_rhs =
       device_copy(data.complementarity_wv_rhs, stream_view_);
     rmm::device_uvector<f_t> d_w = device_copy(data.w, stream_view_);
@@ -1793,7 +1798,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     RAFT_CUDA_TRY(cudaMemsetAsync(d_tmp3.data(), 0, sizeof(f_t) * d_tmp3.size(), stream_view_));
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(
-        d_bound_rhs.data(), d_v.data(), d_complementarity_wv_rhs.data(), d_w.data()),
+        d_bound_rhs_.data(), d_v.data(), d_complementarity_wv_rhs.data(), d_w.data()),
       thrust::make_permutation_iterator(d_tmp3.data(), d_upper_bounds.data()),
       data.n_upper_bounds,
       [] HD(f_t bound_rhs, f_t v, f_t complementarity_wv_rhs, f_t w) {
@@ -2232,9 +2237,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: dv formation GPU");
 
     // TMP no copy should happen and data should already be on the GPU
-    rmm::device_uvector<f_t> d_v         = device_copy(data.v, stream_view_);
-    rmm::device_uvector<f_t> d_dx        = device_copy(dx, stream_view_);
-    rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view_);
+    rmm::device_uvector<f_t> d_v  = device_copy(data.v, stream_view_);
+    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_wv_rhs =
       device_copy(data.complementarity_wv_rhs, stream_view_);
     rmm::device_uvector<f_t> d_w            = device_copy(data.w, stream_view_);
@@ -2245,7 +2249,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_v.data(),
                             thrust::make_permutation_iterator(d_dx.data(), d_upper_bounds.data()),
-                            d_bound_rhs.data(),
+                            d_bound_rhs_.data(),
                             d_complementarity_wv_rhs.data(),
                             d_w.data()),
       d_dv.data(),
@@ -2302,10 +2306,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: dv_residual GPU");
     rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
     rmm::device_uvector<f_t> d_dv_residual(data.n_upper_bounds, stream_view_);
-    rmm::device_uvector<f_t> d_v         = device_copy(data.v, stream_view_);
-    rmm::device_uvector<f_t> d_dv        = device_copy(dv, stream_view_);
-    rmm::device_uvector<f_t> d_w         = device_copy(data.w, stream_view_);
-    rmm::device_uvector<f_t> d_bound_rhs = device_copy(data.bound_rhs, stream_view_);
+    rmm::device_uvector<f_t> d_v  = device_copy(data.v, stream_view_);
+    rmm::device_uvector<f_t> d_dv = device_copy(dv, stream_view_);
+    rmm::device_uvector<f_t> d_w  = device_copy(data.w, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_wv_rhs =
       device_copy(data.complementarity_wv_rhs, stream_view_);
     rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view_);
@@ -2314,7 +2317,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       cuda::std::make_tuple(d_v.data(),
                             thrust::make_permutation_iterator(d_dx.data(), d_upper_bounds.data()),
                             d_dv.data(),
-                            d_bound_rhs.data(),
+                            d_bound_rhs_.data(),
                             d_complementarity_wv_rhs.data(),
                             d_w.data()),
       d_dv_residual.data(),
@@ -2441,7 +2444,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     rmm::device_uvector<f_t> d_dw           = device_copy(data.bound_rhs, stream_view_);
     rmm::device_uvector<f_t> d_dx           = device_copy(dx, stream_view_);
     rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view_);
-    rmm::device_uvector<f_t> d_bound_rhs    = device_copy(data.bound_rhs, stream_view_);
 
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_dw.data(),
@@ -2459,7 +2461,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_dw.data(),
                             thrust::make_permutation_iterator(d_dx.data(), d_upper_bounds.data()),
-                            d_bound_rhs.data()),
+                            d_bound_rhs_.data()),
       d_dw_residual.data(),
       d_dw_residual.size(),
       [] HD(f_t dw, f_t gathered_dx, f_t bound_rhs) { return dw + gathered_dx - bound_rhs; },
