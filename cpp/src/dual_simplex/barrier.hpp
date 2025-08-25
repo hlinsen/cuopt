@@ -127,6 +127,9 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_dx_;
   rmm::device_uvector<f_t> d_dy_;
   rmm::device_uvector<f_t> d_dual_residual_;
+  rmm::device_uvector<f_t> d_complementarity_xz_rhs_;
+  rmm::device_uvector<f_t> d_complementarity_wv_rhs_;
+  rmm::device_uvector<f_t> d_dual_rhs_;
 
   rmm::cuda_stream_view stream_view_;
 };
