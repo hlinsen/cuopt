@@ -1948,10 +1948,10 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     cusparse_view_.transpose_spmv(-1.0, cusparse_dy_, 1.0, cusparse_dx_residual_);
     cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(d_dx_residual.data(), d_r1_.data()),
+      cuda::std::make_tuple(d_dx_residual.data(), d_r1_prime_.data()),
       d_dx_residual.data(),
       d_dx_residual.size(),
-      [] HD(f_t dx_residual, f_t r1) { return dx_residual * r1; },
+      [] HD(f_t dx_residual, f_t r1_prime) { return dx_residual + r1_prime; },
       stream_view_);
 
     // TMP no copy should happen, should just be on the GPU
@@ -2253,28 +2253,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       },
       stream_view_);
 
-    auto tmp_dv = host_copy(d_dv);
-
-    // dv = (v .* E' dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
-    // tmp1 <- E' * dx
-    data.gather_upper_bounds(dx, tmp1);
-    // tmp2 <- v .* E' * dx
-    data.v.pairwise_product(tmp1, tmp2);
-    // tmp1 <- v .* bound_rhs
-    data.v.pairwise_product(data.bound_rhs, tmp1);
-    // tmp1 <- v .* E' * dx - v . * bound_rhs
-    tmp1.axpy(1.0, tmp2, -1.0);
-    // tmp1 <- v .* E' * dx + complementarity_wv_rhs - v .* bound_rhs
-    tmp1.axpy(1.0, data.complementarity_wv_rhs, 1.0);
-    // dv <- tmp1 ./ w
-    tmp1.pairwise_divide(data.w, dv);
-
-    for (i_t i = 0; i < dv.size(); i++) {
-      if (std::abs(dv[i] - tmp_dv[i]) > 1e-6) {
-        settings.log.printf("dv[%d] = %.2e, tmp_dv[%d] = %.2e\n", i, dv[i], i, tmp_dv[i]);
-      }
-    }
-
+    dv = host_copy(d_dv);
     my_pop_range();
   } else {
     raft::common::nvtx::push_range("Barrier: dv formation CPU");
