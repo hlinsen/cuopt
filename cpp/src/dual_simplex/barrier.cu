@@ -1370,7 +1370,8 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     stream_view_(lp.handle_ptr->get_stream()),
     d_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_inv_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
-    d_bound_rhs_(0, lp.handle_ptr->get_stream())
+    d_bound_rhs_(0, lp.handle_ptr->get_stream()),
+    d_x_(0, lp.handle_ptr->get_stream())
 {
 }
 
@@ -1628,6 +1629,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (d_bound_rhs_.size() != data.bound_rhs.size())
     d_bound_rhs_.resize(data.bound_rhs.size(), stream_view_);
   raft::copy(d_bound_rhs_.data(), data.bound_rhs.data(), data.bound_rhs.size(), stream_view_);
+  if (d_x_.size() != data.x.size())
+    d_x_.resize(data.x.size(), stream_view_);
+  raft::copy(d_x_.data(), data.x.data(), data.x.size(), stream_view_);
 
   const bool debug = true;
   // Solves the linear system
@@ -1644,14 +1648,13 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: GPU diag, inv diag and sqrt inv diag formation");
 
     // TMP all of this data should already be on the GPU and reuse correct stream
-    rmm::device_uvector<f_t> d_x            = device_copy(data.x, stream_view_);
     rmm::device_uvector<f_t> d_z            = device_copy(data.z, stream_view_);
     rmm::device_uvector<f_t> d_w            = device_copy(data.w, stream_view_);
     rmm::device_uvector<f_t> d_v            = device_copy(data.v, stream_view_);
     rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view_);
 
     // diag = z ./ x
-    cub::DeviceTransform::Transform(cuda::std::make_tuple(d_z.data(), d_x.data()),
+    cub::DeviceTransform::Transform(cuda::std::make_tuple(d_z.data(), d_x_.data()),
                                     d_diag_.data(),
                                     d_diag_.size(),
                                     cuda::std::divides<>{},
@@ -1790,7 +1793,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     rmm::device_uvector<f_t> d_w = device_copy(data.w, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_xz_rhs =
       device_copy(data.complementarity_xz_rhs, stream_view_);
-    rmm::device_uvector<f_t> d_x            = device_copy(data.x, stream_view_);
     rmm::device_uvector<f_t> d_dual_rhs     = device_copy(data.dual_rhs, stream_view_);
     rmm::device_uvector<i_t> d_upper_bounds = device_copy(data.upper_bounds, stream_view_);
 
@@ -1812,7 +1814,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       cuda::std::make_tuple(d_inv_diag_.data(),
                             d_tmp3.data(),
                             d_complementarity_xz_rhs.data(),
-                            d_x.data(),
+                            d_x_.data(),
                             d_dual_rhs.data()),
       thrust::make_zip_iterator(d_tmp3.data(), d_tmp4.data()),
       lp.num_cols,
@@ -1924,8 +1926,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       thrust::make_zip_iterator(d_dx.data(), d_dx_residual.data()),
       d_inv_diag_.size(),
       [] HD(f_t inv_diag, f_t r1, f_t diag) -> thrust::tuple<f_t, f_t> {
-        const f_t d_x = inv_diag * r1;
-        return {d_x, d_x * diag};
+        const f_t dx = inv_diag * r1;
+        return {dx, dx * diag};
       },
       stream_view_);
     // TMP no copy should happen
@@ -2183,12 +2185,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     rmm::device_uvector<f_t> d_z  = device_copy(data.z, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_xz_rhs =
       device_copy(data.complementarity_xz_rhs, stream_view_);
-    rmm::device_uvector<f_t> d_x = device_copy(data.x, stream_view_);
     rmm::device_uvector<f_t> d_dz(dz.size(), stream_view_);
 
     // dz = (complementarity_xz_rhs - z.* dx) ./ x;
     cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(d_complementarity_xz_rhs.data(), d_z.data(), d_dx.data(), d_x.data()),
+      cuda::std::make_tuple(d_complementarity_xz_rhs.data(), d_z.data(), d_dx.data(), d_x_.data()),
       d_dz.data(),
       d_dz.size(),
       [] HD(f_t complementarity_xz_rhs, f_t z, f_t dx, f_t x) {

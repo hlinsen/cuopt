@@ -112,6 +112,7 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_diag_;
   rmm::device_uvector<f_t> d_inv_diag_;
   rmm::device_uvector<f_t> d_bound_rhs_;
+  rmm::device_uvector<f_t> d_x_;
 
   rmm::cuda_stream_view stream_view_;
 };
