@@ -1388,7 +1388,8 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_complementarity_wv_rhs_(0, lp.handle_ptr->get_stream()),
     d_dual_rhs_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_dz_(0, lp.handle_ptr->get_stream()),
-    d_dv_(0, lp.handle_ptr->get_stream())
+    d_dv_(0, lp.handle_ptr->get_stream()),
+    d_y_residual_(lp.num_rows, lp.handle_ptr->get_stream())
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
   cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
@@ -1879,8 +1880,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   my_pop_range();
 
   // y_residual <- ADAT*dy - h
-  dense_vector_t<i_t, f_t> y_residual = h;
   if (!use_gpu) {
+    dense_vector_t<i_t, f_t> y_residual = h;
     raft::common::nvtx::push_range("Barrier: CPU y_residual");
     data.adat_multiply(1.0, dy, -1.0, y_residual);
     print("y_residual", y_residual);
@@ -1908,12 +1909,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   } else {
     raft::common::nvtx::push_range("Barrier: GPU y_residual");
 
-    // TMP everything should already be on the GPU
-    rmm::device_uvector<f_t> d_y_residual = device_copy(y_residual, stream_view_);
-    data.gpu_adat_multiply(1.0, d_dy_, -1.0, d_y_residual, cusparse_view_, d_inv_diag_);
-    y_residual = host_copy(d_y_residual);
+    raft::copy(d_y_residual_.data(), d_h_.data(), d_h_.size(), stream_view_);
 
-    f_t const y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual, stream_view_);
+    data.gpu_adat_multiply(1.0, d_dy_, -1.0, d_y_residual_, cusparse_view_, d_inv_diag_);
+
+    f_t const y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
     max_residual              = std::max(max_residual, y_residual_norm);
     if (y_residual_norm > 1e-2) {
       settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h, stream_view_));
