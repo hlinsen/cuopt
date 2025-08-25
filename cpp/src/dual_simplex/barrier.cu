@@ -2477,15 +2477,15 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       },
       stream_view_);
 
-    auto wv_residual = host_copy(d_wv_residual);
-
     if (debug) {
+      auto wv_residual           = host_copy(d_wv_residual);
       const f_t wv_residual_norm = vector_norm_inf<i_t, f_t>(wv_residual, stream_view_);
       max_residual               = std::max(max_residual, wv_residual_norm);
       if (wv_residual_norm > 1e-2) {
         settings.log.printf("|| V dw + W dv - rwv || = %.2e\n", wv_residual_norm);
       }
     }
+
     my_pop_range();
   } else {
     raft::common::nvtx::push_range("Barrier: wv_residual CPU");
