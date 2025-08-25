@@ -1386,7 +1386,9 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_dual_residual_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_complementarity_xz_rhs_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_complementarity_wv_rhs_(0, lp.handle_ptr->get_stream()),
-    d_dual_rhs_(lp.num_cols, lp.handle_ptr->get_stream())
+    d_dual_rhs_(lp.num_cols, lp.handle_ptr->get_stream()),
+    d_dz_(0, lp.handle_ptr->get_stream()),
+    d_dv_(0, lp.handle_ptr->get_stream())
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
   cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
@@ -1675,6 +1677,8 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
              data.complementarity_wv_rhs.size(),
              stream_view_);
   raft::copy(d_dual_rhs_.data(), data.dual_rhs.data(), data.dual_rhs.size(), stream_view_);
+  if (d_dz_.size() != dz.size()) d_dz_.resize(dz.size(), stream_view_);
+  if (d_dv_.size() != dv.size()) d_dv_.resize(dv.size(), stream_view_);
 
   const bool debug = true;
   // Solves the linear system
@@ -2185,22 +2189,20 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (use_gpu) {
     raft::common::nvtx::push_range("Barrier: dz formation GPU");
 
-    // TMP no copy should happen and data should already be on the GPU
-    rmm::device_uvector<f_t> d_dz(dz.size(), stream_view_);
-
     // dz = (complementarity_xz_rhs - z.* dx) ./ x;
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(
         d_complementarity_xz_rhs_.data(), d_z_.data(), d_dx_.data(), d_x_.data()),
-      d_dz.data(),
-      d_dz.size(),
+      d_dz_.data(),
+      d_dz_.size(),
       [] HD(f_t complementarity_xz_rhs, f_t z, f_t dx, f_t x) {
         return (complementarity_xz_rhs - z * dx) / x;
       },
       stream_view_);
 
-    // TMP no copy should happen, data should stay on the GPU
-    dz = host_copy(d_dz);
+    // TODO Chris, we need to write to cpu because dx is used outside
+    // Can't we also GPUify what's usinng this dv?
+    dz = host_copy(d_dz_);
 
     my_pop_range();
   } else {
@@ -2239,9 +2241,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (use_gpu) {
     raft::common::nvtx::push_range("Barrier: dv formation GPU");
 
-    // TMP no copy should happen and data should already be on the GPU
-    rmm::device_uvector<f_t> d_dv(dv.size(), stream_view_);
-
     // dv <- (v .* E' * dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_v_.data(),
@@ -2249,14 +2248,16 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
                             d_bound_rhs_.data(),
                             d_complementarity_wv_rhs_.data(),
                             d_w_.data()),
-      d_dv.data(),
-      d_dv.size(),
+      d_dv_.data(),
+      d_dv_.size(),
       [] HD(f_t v, f_t gathered_dx, f_t bound_rhs, f_t complementarity_wv_rhs, f_t w) {
         return (v * gathered_dx - bound_rhs * v + complementarity_wv_rhs) / w;
       },
       stream_view_);
 
-    dv = host_copy(d_dv);
+    // TODO Chris, we need to write to cpu because dx is used outside
+    // Can't we also GPUify what's usinng this dv?
+    dv = host_copy(d_dv_);
     my_pop_range();
   } else {
     raft::common::nvtx::push_range("Barrier: dv formation CPU");
