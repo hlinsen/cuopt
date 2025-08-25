@@ -1375,6 +1375,7 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_z_(0, lp.handle_ptr->get_stream()),
     d_w_(0, lp.handle_ptr->get_stream()),
     d_v_(0, lp.handle_ptr->get_stream()),
+    d_h_(lp.num_rows, lp.handle_ptr->get_stream()),
     d_upper_bounds_(0, lp.handle_ptr->get_stream()),
     d_tmp3_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_tmp4_(lp.num_cols, lp.handle_ptr->get_stream()),
@@ -1386,6 +1387,7 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
   cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
   cusparse_tmp4_          = cusparse_view_.create_vector(d_tmp4_);
+  cusparse_h_ = cusparse_view_.create_vector(d_h_);
 }
 
 template <typename i_t, typename f_t>
@@ -1656,6 +1658,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     d_upper_bounds_.data(), data.upper_bounds.data(), data.upper_bounds.size(), stream_view_);
   if (d_dy_.size() != dy.size()) d_dy_.resize(dy.size(), stream_view_);
   raft::copy(d_dy_.data(), dy.data(), dy.size(), stream_view_);
+  raft::copy(d_h_.data(), data.primal_rhs.data(), data.primal_rhs.size(), stream_view_);
 
   const bool debug = true;
   // Solves the linear system
@@ -1837,19 +1840,13 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     raft::copy(d_r1_.data(), d_tmp3_.data(), d_tmp3_.size(), stream_view_);
     raft::copy(d_r1_prime_.data(), d_tmp3_.data(), d_tmp3_.size(), stream_view_);
-    // TMP host no copy should happen
-    h = data.primal_rhs;
-
-    // TMP no copy should happen and shouldn't have to call that everytime
-    rmm::device_uvector<f_t> d_h = device_copy(h, stream_view_);
-    cusparse_h_                  = cusparse_view_.create_vector(d_h);
 
     // h <- A @ tmp4 .+ primal_rhs
 
     cusparse_view_.spmv(1, cusparse_tmp4_, 1, cusparse_h_);
 
     // TMP until solve adat is on the CPU
-    h = host_copy(d_h);
+    h = host_copy(d_h_);
   }
 
   my_pop_range();
