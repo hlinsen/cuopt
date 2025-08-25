@@ -1382,12 +1382,13 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_r1_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_r1_prime_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_dy_(0, lp.handle_ptr->get_stream()),
+    d_dx_(0, lp.handle_ptr->get_stream()),
     d_dual_residual_(lp.num_cols, lp.handle_ptr->get_stream())
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
   cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
   cusparse_tmp4_          = cusparse_view_.create_vector(d_tmp4_);
-  cusparse_h_ = cusparse_view_.create_vector(d_h_);
+  cusparse_h_             = cusparse_view_.create_vector(d_h_);
 }
 
 template <typename i_t, typename f_t>
@@ -1658,6 +1659,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     d_upper_bounds_.data(), data.upper_bounds.data(), data.upper_bounds.size(), stream_view_);
   if (d_dy_.size() != dy.size()) d_dy_.resize(dy.size(), stream_view_);
   raft::copy(d_dy_.data(), dy.data(), dy.size(), stream_view_);
+  if (d_dx_.size() != dx.size()) d_dx_.resize(dx.size(), stream_view_);
   raft::copy(d_h_.data(), data.primal_rhs.data(), data.primal_rhs.size(), stream_view_);
 
   const bool debug = true;
@@ -1915,7 +1917,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // v
   // .* bound_rhs) ./ w))
 
-  // TMP this data should already be on the GPU
+  // TMP should not be allocated if we are on the GPU
   dense_vector_t<i_t, f_t> dx_residual(lp.num_cols);
   if (use_gpu) {
     raft::common::nvtx::push_range("Barrier: dx formation GPU");
@@ -1927,18 +1929,19 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     // TMP this data should already be on the GPU
     rmm::device_uvector<f_t> d_dx_residual(dx_residual.size(), stream_view_);
-    rmm::device_uvector<f_t> d_dx(dx.size(), stream_view_);
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_inv_diag_.data(), d_r1_.data(), d_diag_.data()),
-      thrust::make_zip_iterator(d_dx.data(), d_dx_residual.data()),
+      thrust::make_zip_iterator(d_dx_.data(), d_dx_residual.data()),
       d_inv_diag_.size(),
       [] HD(f_t inv_diag, f_t r1, f_t diag) -> thrust::tuple<f_t, f_t> {
         const f_t dx = inv_diag * r1;
         return {dx, dx * diag};
       },
       stream_view_);
-    // TMP no copy should happen
-    dx = host_copy(d_dx);
+
+    // TODO Chris, we need to write to cpu because dx is used outside
+    // Can't we also GPUify what's usinng this dx?
+    dx = host_copy(d_dx_);
 
     // TMP should be created only once and already be on the GPU
     cusparse_dx_residual_ = cusparse_view_.create_vector(d_dx_residual);
@@ -1983,20 +1986,17 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (use_gpu) {
     raft::common::nvtx::push_range("Barrier: dx_residual_2 GPU");
 
-    // TMP data should already be on the GPU
-    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
-
     // norm_inf(D^-1 * (A'*dy - r1) - dx)
     const f_t dx_residual_2_norm = device_custom_vector_norm_inf<i_t, f_t>(
       thrust::make_transform_iterator(
-        thrust::make_zip_iterator(d_inv_diag_.data(), d_r1_.data(), d_dx.data()),
+        thrust::make_zip_iterator(d_inv_diag_.data(), d_r1_.data(), d_dx_.data()),
         [] HD(thrust::tuple<f_t, f_t, f_t> t) -> f_t {
           f_t inv_diag = thrust::get<0>(t);
           f_t r1       = thrust::get<1>(t);
           f_t dx       = thrust::get<2>(t);
           return inv_diag * r1 - dx;
         }),
-      d_dx.size(),
+      d_dx_.size(),
       stream_view_);
     max_residual = std::max(max_residual, dx_residual_2_norm);
     if (dx_residual_2_norm > 1e-2)
@@ -2025,7 +2025,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // TMP data should already be on the GPU
     rmm::device_uvector<f_t> d_dx_residual_5(dx_residual_5.size(), stream_view_);
     rmm::device_uvector<f_t> d_dx_residual_6(dx_residual_6.size(), stream_view_);
-    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
 
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_inv_diag_.data(), d_r1_.data()),
@@ -2037,7 +2036,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // TMP should be done just one in the constructor
     cusparse_dx_residual_5_ = cusparse_view_.create_vector(d_dx_residual_5);
     cusparse_dx_residual_6_ = cusparse_view_.create_vector(d_dx_residual_6);
-    cusparse_dx_            = cusparse_view_.create_vector(d_dx);
+    cusparse_dx_            = cusparse_view_.create_vector(d_dx_);
 
     cusparse_view_.spmv(1.0, cusparse_dx_residual_5_, 0.0, cusparse_dx_residual_6_);
     cusparse_view_.spmv(-1.0, cusparse_dx_, 1.0, cusparse_dx_residual_6_);
@@ -2082,11 +2081,10 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       [] HD(f_t ind_diag, f_t r1_prime) { return ind_diag * r1_prime; },
       stream_view_);
 
-    // TMP should already be on the GPU and no copy
-    cusparse_dx_residual_3_       = cusparse_view_.create_vector(d_dx_residual_3);
-    cusparse_dx_residual_4_       = cusparse_view_.create_vector(d_dx_residual_4);
-    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
-    cusparse_dx_                  = cusparse_view_.create_vector(d_dx);
+    // TMP vector creation should only be done once
+    cusparse_dx_residual_3_ = cusparse_view_.create_vector(d_dx_residual_3);
+    cusparse_dx_residual_4_ = cusparse_view_.create_vector(d_dx_residual_4);
+    cusparse_dx_            = cusparse_view_.create_vector(d_dx_);
 
     cusparse_view_.spmv(1.0, cusparse_dx_residual_3_, 0.0, cusparse_dx_residual_4_);
     cusparse_view_.spmv(1.0, cusparse_dx_, 1.0, cusparse_dx_residual_4_);
@@ -2158,18 +2156,17 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     my_pop_range();
   }
 
-  raft::common::nvtx::push_range("Barrier: x_residual");
-  // x_residual <- A * dx - primal_rhs
-  // TMP data should only be on the GPU
-  dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
-  if (use_gpu) {
-    cusparse_view_.spmv(1.0, dx, -1.0, x_residual);
-  } else {
-    matrix_vector_multiply(lp.A, 1.0, dx, -1.0, x_residual);
-  }
-
   // Only debug so not ported to the GPU
   if (debug) {
+    raft::common::nvtx::push_range("Barrier: x_residual");
+    // x_residual <- A * dx - primal_rhs
+    // TMP data should only be on the GPU
+    dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
+    if (use_gpu) {
+      cusparse_view_.spmv(1.0, dx, -1.0, x_residual);
+    } else {
+      matrix_vector_multiply(lp.A, 1.0, dx, -1.0, x_residual);
+    }
     const f_t x_residual_norm = vector_norm_inf<i_t, f_t>(x_residual, stream_view_);
     max_residual              = std::max(max_residual, x_residual_norm);
     if (x_residual_norm > 1e-2) {
@@ -2182,14 +2179,14 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: dz formation GPU");
 
     // TMP no copy should happen and data should already be on the GPU
-    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_xz_rhs =
       device_copy(data.complementarity_xz_rhs, stream_view_);
     rmm::device_uvector<f_t> d_dz(dz.size(), stream_view_);
 
     // dz = (complementarity_xz_rhs - z.* dx) ./ x;
     cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(d_complementarity_xz_rhs.data(), d_z_.data(), d_dx.data(), d_x_.data()),
+      cuda::std::make_tuple(
+        d_complementarity_xz_rhs.data(), d_z_.data(), d_dx_.data(), d_x_.data()),
       d_dz.data(),
       d_dz.size(),
       [] HD(f_t complementarity_xz_rhs, f_t z, f_t dx, f_t x) {
@@ -2238,7 +2235,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: dv formation GPU");
 
     // TMP no copy should happen and data should already be on the GPU
-    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_wv_rhs =
       device_copy(data.complementarity_wv_rhs, stream_view_);
     rmm::device_uvector<f_t> d_dv(dv.size(), stream_view_);
@@ -2246,7 +2242,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // dv <- (v .* E' * dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_v_.data(),
-                            thrust::make_permutation_iterator(d_dx.data(), d_upper_bounds_.data()),
+                            thrust::make_permutation_iterator(d_dx_.data(), d_upper_bounds_.data()),
                             d_bound_rhs_.data(),
                             d_complementarity_wv_rhs.data(),
                             d_w_.data()),
@@ -2302,7 +2298,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   if (use_gpu) {
     raft::common::nvtx::push_range("Barrier: dv_residual GPU");
-    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
     rmm::device_uvector<f_t> d_dv_residual(data.n_upper_bounds, stream_view_);
     rmm::device_uvector<f_t> d_dv = device_copy(dv, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_wv_rhs =
@@ -2310,7 +2305,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_v_.data(),
-                            thrust::make_permutation_iterator(d_dx.data(), d_upper_bounds_.data()),
+                            thrust::make_permutation_iterator(d_dx_.data(), d_upper_bounds_.data()),
                             d_dv.data(),
                             d_bound_rhs_.data(),
                             d_complementarity_wv_rhs.data(),
@@ -2431,11 +2426,10 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: dw formation GPU");
     // dw = bound_rhs - E'*dx
     rmm::device_uvector<f_t> d_dw = device_copy(data.bound_rhs, stream_view_);
-    rmm::device_uvector<f_t> d_dx = device_copy(dx, stream_view_);
 
     cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(d_dw.data(),
-                            thrust::make_permutation_iterator(d_dx.data(), d_upper_bounds_.data())),
+      cuda::std::make_tuple(
+        d_dw.data(), thrust::make_permutation_iterator(d_dx_.data(), d_upper_bounds_.data())),
       d_dw.data(),
       d_dw.size(),
       [] HD(f_t dw, f_t gathered_dx) { return dw - gathered_dx; },
@@ -2448,7 +2442,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_dw.data(),
-                            thrust::make_permutation_iterator(d_dx.data(), d_upper_bounds_.data()),
+                            thrust::make_permutation_iterator(d_dx_.data(), d_upper_bounds_.data()),
                             d_bound_rhs_.data()),
       d_dw_residual.data(),
       d_dw_residual.size(),
