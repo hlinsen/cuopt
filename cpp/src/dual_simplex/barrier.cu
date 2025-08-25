@@ -1389,12 +1389,14 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_dual_rhs_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_dz_(0, lp.handle_ptr->get_stream()),
     d_dv_(0, lp.handle_ptr->get_stream()),
-    d_y_residual_(lp.num_rows, lp.handle_ptr->get_stream())
+    d_y_residual_(lp.num_rows, lp.handle_ptr->get_stream()),
+    d_dx_residual_(lp.num_cols, lp.handle_ptr->get_stream())
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
   cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
   cusparse_tmp4_          = cusparse_view_.create_vector(d_tmp4_);
   cusparse_h_             = cusparse_view_.create_vector(d_h_);
+  cusparse_dx_residual_   = cusparse_view_.create_vector(d_dx_residual_);
 }
 
 template <typename i_t, typename f_t>
@@ -1932,17 +1934,16 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   dense_vector_t<i_t, f_t> dx_residual(lp.num_cols);
   if (use_gpu) {
     raft::common::nvtx::push_range("Barrier: dx formation GPU");
+
     // TMP should only be init once
     cusparse_dy_ = cusparse_view_.create_vector(d_dy_);
 
     // r1 <- A'*dy - r1
     cusparse_view_.transpose_spmv(1.0, cusparse_dy_, -1.0, cusparse_r1_);
 
-    // TMP this data should already be on the GPU
-    rmm::device_uvector<f_t> d_dx_residual(dx_residual.size(), stream_view_);
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_inv_diag_.data(), d_r1_.data(), d_diag_.data()),
-      thrust::make_zip_iterator(d_dx_.data(), d_dx_residual.data()),
+      thrust::make_zip_iterator(d_dx_.data(), d_dx_residual_.data()),
       d_inv_diag_.size(),
       [] HD(f_t inv_diag, f_t r1, f_t diag) -> thrust::tuple<f_t, f_t> {
         const f_t dx = inv_diag * r1;
@@ -1954,19 +1955,16 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // Can't we also GPUify what's usinng this dx?
     dx = host_copy(d_dx_);
 
-    // TMP should be created only once and already be on the GPU
-    cusparse_dx_residual_ = cusparse_view_.create_vector(d_dx_residual);
-
     cusparse_view_.transpose_spmv(-1.0, cusparse_dy_, 1.0, cusparse_dx_residual_);
     cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(d_dx_residual.data(), d_r1_prime_.data()),
-      d_dx_residual.data(),
-      d_dx_residual.size(),
+      cuda::std::make_tuple(d_dx_residual_.data(), d_r1_prime_.data()),
+      d_dx_residual_.data(),
+      d_dx_residual_.size(),
       [] HD(f_t dx_residual, f_t r1_prime) { return dx_residual + r1_prime; },
       stream_view_);
 
-    // TMP no copy should happen, should just be on the GPU
-    dx_residual = host_copy(d_dx_residual);
+    if (debug) dx_residual = host_copy(d_dx_residual_);
+
     my_pop_range();
   } else {
     raft::common::nvtx::push_range("Barrier: dx formation CPU");
