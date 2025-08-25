@@ -1377,6 +1377,7 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_v_(0, lp.handle_ptr->get_stream()),
     d_upper_bounds_(0, lp.handle_ptr->get_stream()),
     d_tmp3_(lp.num_cols, lp.handle_ptr->get_stream()),
+    d_tmp4_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_r1_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_r1_prime_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_dy_(0, lp.handle_ptr->get_stream()),
@@ -1384,6 +1385,7 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
   cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
+  cusparse_tmp4_          = cusparse_view_.create_vector(d_tmp4_);
 }
 
 template <typename i_t, typename f_t>
@@ -1793,16 +1795,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     h = data.primal_rhs;
     // h <- 1.0 * A * tmp4 + primal_rhs
-    if (use_gpu) {
-      cusparse_view_.spmv(1.0, tmp4, 1.0, h);
-    } else {
-      matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
-    }
+    matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
   } else {
     raft::common::nvtx::push_range("Barrier: GPU compute H");
 
     // TMP all of this data should already be on the GPU and reuse correct stream
-    rmm::device_uvector<f_t> d_tmp4(tmp4.size(), stream_view_);
     rmm::device_uvector<f_t> d_complementarity_wv_rhs =
       device_copy(data.complementarity_wv_rhs, stream_view_);
     rmm::device_uvector<f_t> d_complementarity_xz_rhs =
@@ -1829,7 +1826,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
                             d_complementarity_xz_rhs.data(),
                             d_x_.data(),
                             d_dual_rhs.data()),
-      thrust::make_zip_iterator(d_tmp3_.data(), d_tmp4.data()),
+      thrust::make_zip_iterator(d_tmp3_.data(), d_tmp4_.data()),
       lp.num_cols,
       [] HD(f_t inv_diag, f_t tmp3, f_t complementarity_xz_rhs, f_t x, f_t dual_rhs)
         -> thrust::tuple<f_t, f_t> {
@@ -1843,18 +1840,15 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // TMP host no copy should happen
     h = data.primal_rhs;
 
-    // TMP we shouldn't have to call that everytime
-    cusparse_tmp_ = cusparse_view_.create_vector(d_tmp4);
-
     // TMP no copy should happen and shouldn't have to call that everytime
     rmm::device_uvector<f_t> d_h = device_copy(h, stream_view_);
     cusparse_h_                  = cusparse_view_.create_vector(d_h);
 
     // h <- A @ tmp4 .+ primal_rhs
 
-    cusparse_view_.spmv(1, cusparse_tmp_, 1, cusparse_h_);
+    cusparse_view_.spmv(1, cusparse_tmp4_, 1, cusparse_h_);
 
-    // TMP no copy should happen
+    // TMP until solve adat is on the CPU
     h = host_copy(d_h);
   }
 

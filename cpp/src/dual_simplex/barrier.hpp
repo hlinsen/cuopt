@@ -100,7 +100,7 @@ class barrier_solver_t {
   const simplex_solver_settings_t<i_t, f_t>& settings;
   const presolve_info_t<i_t, f_t>& presolve_info;
   cusparse_view_t<i_t, f_t> cusparse_view_;
-  cusparseDnVecDescr_t cusparse_tmp_;
+  cusparseDnVecDescr_t cusparse_tmp4_;
   cusparseDnVecDescr_t cusparse_h_;
   cusparseDnVecDescr_t cusparse_dx_residual_;
   cusparseDnVecDescr_t cusparse_dy_;
@@ -120,6 +120,7 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_v_;
   rmm::device_uvector<i_t> d_upper_bounds_;
   rmm::device_uvector<f_t> d_tmp3_;
+  rmm::device_uvector<f_t> d_tmp4_;
   rmm::device_uvector<f_t> d_r1_;
   rmm::device_uvector<f_t> d_r1_prime_;
   rmm::device_uvector<f_t> d_dy_;
