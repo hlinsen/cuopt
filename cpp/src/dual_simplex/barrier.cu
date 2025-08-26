@@ -1396,7 +1396,8 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_xz_residual_(0, lp.handle_ptr->get_stream()),
     d_dw_(0, lp.handle_ptr->get_stream()),
     d_dw_residual_(0, lp.handle_ptr->get_stream()),
-    d_wv_residual_(0, lp.handle_ptr->get_stream())
+    d_wv_residual_(0, lp.handle_ptr->get_stream()),
+    transform_reduce_helper_(lp.handle_ptr->get_stream())
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
   cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
@@ -1630,6 +1631,25 @@ f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f
     }
   }
   return max_step;
+}
+
+template <typename i_t, typename f_t>
+f_t barrier_solver_t<i_t, f_t>::gpu_max_step_to_boundary(const rmm::device_uvector<f_t>& x,
+                                                         const rmm::device_uvector<f_t>& dx)
+{
+  return transform_reduce_helper_.transform_reduce(
+    thrust::make_zip_iterator(dx.data(), x.data()),
+    thrust::minimum<f_t>(),
+    [] HD(const thrust::tuple<f_t, f_t> t) {
+      const f_t dx = thrust::get<0>(t);
+      const f_t x  = thrust::get<1>(t);
+
+      if (dx < f_t(0.0)) return -x / dx;
+      return f_t(1.0);
+    },
+    f_t(1.0),
+    x.size(),
+    stream_view_);
 }
 
 template <typename i_t, typename f_t>
@@ -2807,31 +2827,31 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     i_t status = compute_search_direction(
       data, data.dw_aff, data.dx_aff, data.dy_aff, data.dv_aff, data.dz_aff, max_affine_residual);
 
-    {
-      raft::common::nvtx::range fun_scope("Barrier: after first compute_search_direction");
+    if (status < 0) {
+      return check_for_suboptimal_solution(options,
+                                           data,
+                                           start_time,
+                                           iter,
+                                           norm_b,
+                                           norm_c,
+                                           primal_objective,
+                                           relative_primal_residual,
+                                           relative_dual_residual,
+                                           relative_complementarity_residual,
+                                           solution);
+    }
+    if (toc(start_time) > settings.time_limit) {
+      settings.log.printf("Barrier time limit exceeded\n");
+      return lp_status_t::TIME_LIMIT;
+    }
+    if (settings.concurrent_halt != nullptr &&
+        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      settings.log.printf("Barrier solver halted\n");
+      return lp_status_t::CONCURRENT_LIMIT;
+    }
 
-      if (status < 0) {
-        return check_for_suboptimal_solution(options,
-                                             data,
-                                             start_time,
-                                             iter,
-                                             norm_b,
-                                             norm_c,
-                                             primal_objective,
-                                             relative_primal_residual,
-                                             relative_dual_residual,
-                                             relative_complementarity_residual,
-                                             solution);
-      }
-      if (toc(start_time) > settings.time_limit) {
-        settings.log.printf("Barrier time limit exceeded\n");
-        return lp_status_t::TIME_LIMIT;
-      }
-      if (settings.concurrent_halt != nullptr &&
-          settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
-        settings.log.printf("Barrier solver halted\n");
-        return lp_status_t::CONCURRENT_LIMIT;
-      }
+    if (!use_gpu) {
+      raft::common::nvtx::range fun_scope("Barrier: CPU after first compute_search_direction");
 
       f_t step_primal_aff = std::min(max_step_to_boundary(data.w, data.dw_aff),
                                      max_step_to_boundary(data.x, data.dx_aff));
@@ -2862,10 +2882,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       f_t sigma  = std::max(0.0, std::min(1.0, std::pow(mu_aff / mu, 3.0)));
       f_t new_mu = sigma * mu_aff;
 
-      // Compute the combined centering corrector step
-      data.primal_rhs.set_scalar(0.0);
-      data.bound_rhs.set_scalar(0.0);
-      data.dual_rhs.set_scalar(0.0);
       // complementarity_xz_rhs = -dx_aff .* dz_aff + sigma * mu
       data.dx_aff.pairwise_product(data.dz_aff, data.complementarity_xz_rhs);
       data.complementarity_xz_rhs.multiply_scalar(-1.0);
@@ -2875,8 +2891,98 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       data.dw_aff.pairwise_product(data.dv_aff, data.complementarity_wv_rhs);
       data.complementarity_wv_rhs.multiply_scalar(-1.0);
       data.complementarity_wv_rhs.add_scalar(new_mu);
+    } else {
+      raft::common::nvtx::range fun_scope("Barrier: GPU after first compute_search_direction");
 
-    }  // Close nvtx range
+      // TMP no copy and data should always be on the GPU
+      rmm::device_uvector<f_t> w        = device_copy(data.w, stream_view_);
+      rmm::device_uvector<f_t> x        = device_copy(data.x, stream_view_);
+      rmm::device_uvector<f_t> v        = device_copy(data.v, stream_view_);
+      rmm::device_uvector<f_t> z        = device_copy(data.z, stream_view_);
+      rmm::device_uvector<f_t> d_dw_aff = device_copy(data.dw_aff, stream_view_);
+      rmm::device_uvector<f_t> d_dx_aff = device_copy(data.dx_aff, stream_view_);
+      rmm::device_uvector<f_t> d_dv_aff = device_copy(data.dv_aff, stream_view_);
+      rmm::device_uvector<f_t> d_dz_aff = device_copy(data.dz_aff, stream_view_);
+      rmm::device_uvector<f_t> d_complementarity_xz_rhs(data.complementarity_xz_rhs.size(),
+                                                        stream_view_);
+      rmm::device_uvector<f_t> d_complementarity_wv_rhs(data.complementarity_wv_rhs.size(),
+                                                        stream_view_);
+
+      f_t step_primal_aff =
+        std::min(gpu_max_step_to_boundary(w, d_dw_aff), gpu_max_step_to_boundary(x, d_dx_aff));
+      f_t step_dual_aff =
+        std::min(gpu_max_step_to_boundary(v, d_dv_aff), gpu_max_step_to_boundary(z, d_dz_aff));
+
+      f_t complementarity_xz_aff_sum = transform_reduce_helper_.transform_reduce(
+        thrust::make_zip_iterator(x.data(), z.data(), d_dx_aff.data(), d_dz_aff.data()),
+        cuda::std::plus<f_t>{},
+        [step_primal_aff, step_dual_aff] HD(const thrust::tuple<f_t, f_t, f_t, f_t> t) {
+          const f_t x      = thrust::get<0>(t);
+          const f_t z      = thrust::get<1>(t);
+          const f_t dx_aff = thrust::get<2>(t);
+          const f_t dz_aff = thrust::get<3>(t);
+
+          const f_t x_aff = x + step_primal_aff * dx_aff;
+          const f_t z_aff = z + step_dual_aff * dz_aff;
+
+          const f_t complementarity_xz_aff = x_aff * z_aff;
+
+          return complementarity_xz_aff;
+        },
+        f_t(0),
+        x.size(),
+        stream_view_);
+
+      f_t complementarity_wv_aff_sum = transform_reduce_helper_.transform_reduce(
+        thrust::make_zip_iterator(w.data(), v.data(), d_dw_aff.data(), d_dv_aff.data()),
+        cuda::std::plus<f_t>{},
+        [step_primal_aff, step_dual_aff] HD(const thrust::tuple<f_t, f_t, f_t, f_t> t) {
+          const f_t w      = thrust::get<0>(t);
+          const f_t v      = thrust::get<1>(t);
+          const f_t dw_aff = thrust::get<2>(t);
+          const f_t dv_aff = thrust::get<3>(t);
+
+          const f_t w_aff = w + step_primal_aff * dw_aff;
+          const f_t v_aff = v + step_dual_aff * dv_aff;
+
+          const f_t complementarity_wv_aff = w_aff * v_aff;
+
+          return complementarity_wv_aff;
+        },
+        f_t(0),
+        w.size(),
+        stream_view_);
+
+      f_t complementarity_aff_sum = complementarity_xz_aff_sum + complementarity_wv_aff_sum;
+
+      f_t mu_aff =
+        (complementarity_aff_sum) / (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
+      f_t sigma  = std::max(0.0, std::min(1.0, std::pow(mu_aff / mu, 3.0)));
+      f_t new_mu = sigma * mu_aff;
+
+      cub::DeviceTransform::Transform(
+        cuda::std::make_tuple(d_dx_aff.data(), d_dz_aff.data()),
+        d_complementarity_xz_rhs.data(),
+        d_complementarity_xz_rhs.size(),
+        [new_mu] HD(f_t dx_aff, f_t dz_aff) { return -(dx_aff * dz_aff) + new_mu; },
+        stream_view_);
+
+      cub::DeviceTransform::Transform(
+        cuda::std::make_tuple(d_dw_aff.data(), d_dv_aff.data()),
+        d_complementarity_wv_rhs.data(),
+        d_complementarity_wv_rhs.size(),
+        [new_mu] HD(f_t dw_aff, f_t dv_aff) { return -(dw_aff * dv_aff) + new_mu; },
+        stream_view_);
+
+      // TMP should not copy and data should always be on the GPU
+      data.complementarity_xz_rhs = host_copy(d_complementarity_xz_rhs);
+      data.complementarity_wv_rhs = host_copy(d_complementarity_wv_rhs);
+    }
+
+    // TMP should be CPU to 0 if CPU and GPU to 0 if GPU
+    data.primal_rhs.set_scalar(0.0);
+    data.bound_rhs.set_scalar(0.0);
+    data.dual_rhs.set_scalar(0.0);
 
     f_t max_corrector_residual = 0.0;
     status                     = compute_search_direction(

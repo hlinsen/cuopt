@@ -27,6 +27,8 @@
 #include "dual_simplex/sparse_matrix.hpp"
 #include "dual_simplex/tic_toc.hpp"
 
+#include <cub/cub.cuh>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
@@ -40,6 +42,44 @@ struct barrier_solver_settings_t {
 
 template <typename i_t, typename f_t>
 class iteration_data_t;  // Forward declare
+
+template <typename f_t>
+struct transform_reduce_helper_t {
+  rmm::device_buffer buffer_data;
+  rmm::device_scalar<f_t> out;
+  size_t buffer_size;
+
+  transform_reduce_helper_t(rmm::cuda_stream_view stream_view)
+    : buffer_data(0, stream_view), out(stream_view)
+  {
+  }
+
+  template <typename InputIteratorT, typename ReductionOpT, typename TransformOpT, typename i_t>
+  f_t transform_reduce(InputIteratorT input,
+                       ReductionOpT reduce_op,
+                       TransformOpT transform_op,
+                       f_t init,
+                       i_t size,
+                       rmm::cuda_stream_view stream_view)
+  {
+    cub::DeviceReduce::TransformReduce(
+      nullptr, buffer_size, input, out.data(), size, reduce_op, transform_op, init, stream_view);
+
+    buffer_data.resize(buffer_size, stream_view);
+
+    cub::DeviceReduce::TransformReduce(buffer_data.data(),
+                                       buffer_size,
+                                       input,
+                                       out.data(),
+                                       size,
+                                       reduce_op,
+                                       transform_op,
+                                       init,
+                                       stream_view);
+
+    return out.value(stream_view);
+  }
+};
 
 template <typename i_t, typename f_t>
 class barrier_solver_t {
@@ -75,6 +115,8 @@ class barrier_solver_t {
                            const dense_vector_t<i_t, f_t>& dx) const;
   // To be able to directly pass lambdas to transform functions
  public:
+  f_t gpu_max_step_to_boundary(const rmm::device_uvector<f_t>& x,
+                               const rmm::device_uvector<f_t>& dx);
   i_t compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                dense_vector_t<i_t, f_t>& dw,
                                dense_vector_t<i_t, f_t>& dx,
@@ -138,6 +180,7 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_dw_;
   rmm::device_uvector<f_t> d_dw_residual_;
   rmm::device_uvector<f_t> d_wv_residual_;
+  transform_reduce_helper_t<f_t> transform_reduce_helper_;
 
   rmm::cuda_stream_view stream_view_;
 };
