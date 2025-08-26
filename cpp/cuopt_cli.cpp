@@ -24,6 +24,8 @@
 #include <raft/core/handle.hpp>
 
 #include <rmm/mr/device/cuda_async_memory_resource.hpp>
+#include <rmm/mr/device/managed_memory_resource.hpp>
+#include <rmm/mr/device/system_memory_resource.hpp>
 
 #include <unistd.h>
 #include <argparse/argparse.hpp>
@@ -72,6 +74,10 @@
  * @return std::shared_ptr<rmm::mr::cuda_async_memory_resource>
  */
 inline auto make_async() { return std::make_shared<rmm::mr::cuda_async_memory_resource>(); }
+
+inline auto make_system() { return std::make_shared<rmm::mr::system_memory_resource>(); }
+
+inline auto make_managed() { return std::make_shared<rmm::mr::managed_memory_resource>(); }
 
 /**
  * @brief Run a single file
@@ -267,7 +273,7 @@ int main(int argc, char* argv[])
   const auto initial_solution_file = program.get<std::string>("--initial-solution");
   const auto solve_relaxation      = program.get<bool>("--relaxation");
 
-  auto memory_resource = make_async();
+  auto memory_resource = make_managed();
   rmm::mr::set_current_device_resource(memory_resource.get());
   return run_single_file(file_name, initial_solution_file, solve_relaxation, settings_strings);
 }
