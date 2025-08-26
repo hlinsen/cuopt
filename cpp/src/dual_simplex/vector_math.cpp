@@ -56,6 +56,17 @@ f_t vector_norm2(const std::vector<f_t, Allocator>& x)
 }
 
 template <typename i_t, typename f_t>
+f_t vector_norm1(const std::vector<f_t>& x)
+{
+  i_t n = x.size();
+  f_t sum = 0.0;
+  for (i_t j = 0; j < n; ++j) {
+    sum += std::abs(x[j]);
+  }
+  return sum;
+}
+
+template <typename i_t, typename f_t>
 f_t dot(const std::vector<f_t>& x, const std::vector<f_t>& y)
 {
   assert(x.size() == y.size());
@@ -186,6 +197,8 @@ template double vector_norm2_squared<int, double, PinnedHostAllocator<double>>(
   const std::vector<double, PinnedHostAllocator<double>>&);
 template double vector_norm2<int, double, PinnedHostAllocator<double>>(
   const std::vector<double, PinnedHostAllocator<double>>&);
+
+template double vector_norm1<int, double>(const std::vector<double>& x);
 
 template double dot<int, double>(const std::vector<double>& x, const std::vector<double>& y);
 

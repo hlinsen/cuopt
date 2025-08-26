@@ -124,6 +124,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigCreate(&solverConfig), status, "cudssConfigCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
 
+#define USE_AMD
 #ifdef USE_AMD
     // Tell cuDSS to use AMD
     cudssAlgType_t reorder_alg = CUDSS_ALG_3;
@@ -298,7 +299,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   i_t analyze(const csc_matrix_t<i_t, f_t>& A_in) override
   {
     csr_matrix_t<i_t, f_t> Arow(A_in.n, A_in.m, A_in.col_start[A_in.n]);
-#define WRITE_MATRIX_MARKET
+
 #ifdef WRITE_MATRIX_MARKET
     FILE* fid = fopen("A.mtx", "w");
     A_in.write_matrix_market(fid);
