@@ -315,6 +315,8 @@ class iteration_data_t {
       handle_ptr(lp.handle_ptr),
       stream_view_(lp.handle_ptr->get_stream())
   {
+    raft::common::nvtx::range fun_scope("Barrier: LP Data Creation");
+
     // Create the upper bounds vector
     n_upper_bounds = 0;
     for (i_t j = 0; j < lp.num_cols; j++) {
@@ -1406,6 +1408,8 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
 template <typename i_t, typename f_t>
 void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 {
+  raft::common::nvtx::range fun_scope("Barrier: initial_point");
+
   // Perform a numerical factorization
   i_t status;
   if (use_gpu) {
@@ -2694,7 +2698,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   for (i_t j = 0; j < n; j++) {
     if (lp.upper[j] < inf) { num_upper_bounds++; }
   }
+
+  raft::common::nvtx::push_range("Barrier: LP Data Creation");
   iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
+  raft::common::nvtx::pop_range();
+
   if (toc(start_time) > settings.time_limit) {
     settings.log.printf("Barrier time limit exceeded\n");
     return lp_status_t::TIME_LIMIT;
