@@ -511,7 +511,7 @@ class iteration_data_t {
       //
       // We can use a dense cholesky factorization of H to solve for y
 
-      const bool debug = false;
+      const bool debug = true;
 
       dense_vector_t<i_t, f_t> w(AD.m);
       i_t solve_status = chol->solve(b, w);
@@ -1392,7 +1392,8 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_y_residual_(lp.num_rows, lp.handle_ptr->get_stream()),
     d_dx_residual_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_dw_(0, lp.handle_ptr->get_stream()),
-    d_dw_residual_(0, lp.handle_ptr->get_stream())
+    d_dw_residual_(0, lp.handle_ptr->get_stream()),
+    d_wv_residual_(0, lp.handle_ptr->get_stream())
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
   cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
@@ -1687,6 +1688,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (d_dw_.size() != data.bound_rhs.size()) d_dw_.resize(data.bound_rhs.size(), stream_view_);
   raft::copy(d_dw_.data(), data.bound_rhs.data(), data.bound_rhs.size(), stream_view_);
   d_dw_residual_.resize(data.n_upper_bounds, stream_view_);
+  d_wv_residual_.resize(d_complementarity_wv_rhs_.size(), stream_view_);
 
   const bool debug = true;
   // Solves the linear system
@@ -2431,8 +2433,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       stream_view_);
 
     if (debug) {
-      auto dw_residual           = host_copy(d_dw_residual_);
-      const f_t dw_residual_norm = vector_norm_inf<i_t, f_t>(dw_residual, stream_view_);
+      const f_t dw_residual_norm = device_vector_norm_inf<i_t, f_t>(d_dw_residual_, stream_view_);
       max_residual               = std::max(max_residual, dw_residual_norm);
       if (dw_residual_norm > 1e-2) {
         settings.log.printf("|| dw + E'*dx - bound_rhs || = %.2e\n", dw_residual_norm);
@@ -2462,22 +2463,20 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
   if (use_gpu) {
     raft::common::nvtx::push_range("Barrier: wv_residual GPU");
-    rmm::device_uvector<f_t> d_wv_residual = device_copy(data.complementarity_wv_rhs, stream_view_);
 
     // wv_residual <- v .* dw + w .* dv - complementarity_wv_rhs
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(
-        d_wv_residual.data(), d_w_.data(), d_v_.data(), d_dw_.data(), d_dv_.data()),
-      d_wv_residual.data(),
-      d_wv_residual.size(),
+        d_complementarity_wv_rhs_.data(), d_w_.data(), d_v_.data(), d_dw_.data(), d_dv_.data()),
+      d_wv_residual_.data(),
+      d_wv_residual_.size(),
       [] HD(f_t complementarity_wv_rhs, f_t w, f_t v, f_t dw, f_t dv) {
         return v * dw + w * dv - complementarity_wv_rhs;
       },
       stream_view_);
 
     if (debug) {
-      auto wv_residual           = host_copy(d_wv_residual);
-      const f_t wv_residual_norm = vector_norm_inf<i_t, f_t>(wv_residual, stream_view_);
+      const f_t wv_residual_norm = device_vector_norm_inf<i_t, f_t>(d_wv_residual_, stream_view_);
       max_residual               = std::max(max_residual, wv_residual_norm);
       if (wv_residual_norm > 1e-2) {
         settings.log.printf("|| V dw + W dv - rwv || = %.2e\n", wv_residual_norm);
