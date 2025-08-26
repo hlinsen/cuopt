@@ -1910,7 +1910,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
 
     dense_vector_t<i_t, f_t> y_residual = h;
     data.adat_multiply(1.0, dy, -1.0, y_residual);
-    print("y_residual", y_residual);
     const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual, stream_view_);
     max_residual              = std::max(max_residual, y_residual_norm);
     if (y_residual_norm > 1e-2) {
