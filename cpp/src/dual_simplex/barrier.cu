@@ -20,11 +20,11 @@
 #include <dual_simplex/cusparse_info.hpp>
 #include <dual_simplex/dense_matrix.hpp>
 #include <dual_simplex/dense_vector.hpp>
-#include <dual_simplex/presolve.hpp>
-#include <dual_simplex/sparse_matrix.hpp>
 #include <dual_simplex/device_sparse_matrix.cuh>
-#include <dual_simplex/sparse_matrix_kernels.cuh>
+#include <dual_simplex/presolve.hpp>
 #include <dual_simplex/sparse_cholesky.cuh>
+#include <dual_simplex/sparse_matrix.hpp>
+#include <dual_simplex/sparse_matrix_kernels.cuh>
 #include <dual_simplex/tic_toc.hpp>
 #include <dual_simplex/types.hpp>
 
@@ -62,8 +62,8 @@ class iteration_data_t {
       ADAT(lp.num_rows, lp.num_rows, 0),
       A_dense(lp.num_rows, 0),
       AD_dense(0, 0),
-      H(0,0),
-      Hchol(0,0),
+      H(0, 0),
+      Hchol(0, 0),
       A(lp.A),
       primal_residual(lp.num_rows),
       bound_residual(num_upper_bounds),
@@ -162,7 +162,7 @@ class iteration_data_t {
       device_A_x_values.resize(original_A_values.size(), handle_ptr->get_stream());
       raft::copy(
         device_A_x_values.data(), device_AD.x.data(), device_AD.x.size(), handle_ptr->get_stream());
-      csr_matrix_t<i_t, f_t> host_A_CSR(1, 1, 1); // Sizes will be set by to_compressed_row()
+      csr_matrix_t<i_t, f_t> host_A_CSR(1, 1, 1);  // Sizes will be set by to_compressed_row()
       AD.to_compressed_row(host_A_CSR);
       device_A.copy(host_A_CSR, lp.handle_ptr->get_stream());
       RAFT_CHECK_CUDA(handle_ptr->get_stream());
@@ -225,11 +225,6 @@ class iteration_data_t {
           handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
       }
 
-      thrust::fill(rmm::exec_policy(handle_ptr->get_stream()),
-                   device_ADAT.x.data(),
-                   device_ADAT.x.data() + device_ADAT.x.size(),
-                   0.0);
-
       // float64_t start_multiply = tic();
       // handle_ptr->sync_stream();
       multiply_kernels<i_t, f_t>(handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
@@ -239,20 +234,36 @@ class iteration_data_t {
       if (0) {
         auto host_ADAT = device_ADAT.to_host(handle_ptr->get_stream());
         host_ADAT.to_compressed_col(ADAT);
-        AD = device_AD.to_host(handle_ptr->get_stream());
+        auto tmp_ADAT = ADAT;
+        // AD = device_AD.to_host(handle_ptr->get_stream());
+        AD.scale_columns(inv_diag_prime);
+        multiply(AD, AT, ADAT);
+        ADAT.compare(tmp_ADAT);
+      }
+
+      auto adat_nnz       = device_ADAT.row_start.element(device_ADAT.m, handle_ptr->get_stream());
+      float64_t adat_time = toc(start_form_adat);
+
+      if (num_factorizations == 0) {
+        settings_.log.printf("ADAT time %.2fs\n", adat_time);
+        settings_.log.printf(
+          "ADAT nonzeros %e density %.2f\n",
+          static_cast<float64_t>(adat_nnz),
+          static_cast<float64_t>(adat_nnz) /
+            (static_cast<float64_t>(device_ADAT.m) * static_cast<float64_t>(device_ADAT.m)));
       }
     } else {
       AD.scale_columns(inv_diag_prime);
       multiply(AD, AT, ADAT);
-    }
 
-    float64_t adat_time = toc(start_form_adat);
-    if (num_factorizations == 0) {
-      settings_.log.printf("ADAT time %.2fs\n", adat_time);
-      settings_.log.printf("ADAT nonzeros %e density %.2f\n",
-                           static_cast<float64_t>(ADAT.col_start[m]),
-                           static_cast<float64_t>(ADAT.col_start[m]) /
-                             (static_cast<float64_t>(m) * static_cast<float64_t>(m)));
+      float64_t adat_time = toc(start_form_adat);
+      if (num_factorizations == 0) {
+        settings_.log.printf("ADAT time %.2fs\n", adat_time);
+        settings_.log.printf("ADAT nonzeros %e density %.2f\n",
+                             static_cast<float64_t>(ADAT.col_start[m]),
+                             static_cast<float64_t>(ADAT.col_start[m]) /
+                               (static_cast<float64_t>(m) * static_cast<float64_t>(m)));
+      }
     }
   }
 
@@ -358,7 +369,6 @@ class iteration_data_t {
           }
         }
       }
-
 
       dense_vector_t<i_t, f_t> y(n_dense_columns);
       // H *y = g
@@ -1927,7 +1937,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                            solution);
     }
     data.has_factorization = false;
-    data.has_solve_info = false;
+    data.has_solve_info    = false;
     if (toc(start_time) > settings.time_limit) {
       settings.log.printf("Barrier time limit exceeded\n");
       return lp_status_t::TIME_LIMIT;
