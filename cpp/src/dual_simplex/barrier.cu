@@ -2307,12 +2307,11 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (use_gpu) {
     raft::common::nvtx::push_range("Barrier: dv_residual GPU");
     rmm::device_uvector<f_t> d_dv_residual(data.n_upper_bounds, stream_view_);
-    rmm::device_uvector<f_t> d_dv = device_copy(dv, stream_view_);
 
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_v_.data(),
                             thrust::make_permutation_iterator(d_dx_.data(), d_upper_bounds_.data()),
-                            d_dv.data(),
+                            d_dv_.data(),
                             d_bound_rhs_.data(),
                             d_complementarity_wv_rhs_.data(),
                             d_w_.data()),
@@ -2324,8 +2323,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       stream_view_);
 
     if (debug) {
-      auto dv_residual           = host_copy(d_dv_residual);
-      const f_t dv_residual_norm = vector_norm_inf<i_t, f_t>(dv_residual, stream_view_);
+      const f_t dv_residual_norm = device_vector_norm_inf<i_t, f_t>(d_dv_residual, stream_view_);
       max_residual               = std::max(max_residual, dv_residual_norm);
       if (dv_residual_norm > 1e-2) {
         settings.log.printf(
@@ -2370,8 +2368,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     raft::common::nvtx::push_range("Barrier: dual_residual GPU");
     // TMP data should always be on the PGU without any copy
     // dual_residual <- A' * dy - E * dv  + dz -  dual_rhs
-    // rmm::device_uvector<f_t> d_dv = device_copy(dv, stream_view_);
-    // rmm::device_uvector<f_t> d_dz = device_copy(dz, stream_view_);
     thrust::fill(
       rmm::exec_policy(stream_view_), d_dual_residual_.begin(), d_dual_residual_.end(), f_t(0.0));
 
