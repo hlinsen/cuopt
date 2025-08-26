@@ -124,7 +124,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigCreate(&solverConfig), status, "cudssConfigCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
 
-#define USE_AMD
+
 #ifdef USE_AMD
     // Tell cuDSS to use AMD
     cudssAlgType_t reorder_alg = CUDSS_ALG_3;
