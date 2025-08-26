@@ -134,6 +134,7 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_dv_;
   rmm::device_uvector<f_t> d_y_residual_;
   rmm::device_uvector<f_t> d_dx_residual_;
+  rmm::device_uvector<f_t> d_xz_residual_;
   rmm::device_uvector<f_t> d_dw_;
   rmm::device_uvector<f_t> d_dw_residual_;
   rmm::device_uvector<f_t> d_wv_residual_;
