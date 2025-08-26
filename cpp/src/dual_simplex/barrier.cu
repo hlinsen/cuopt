@@ -1654,39 +1654,36 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   raft::common::nvtx::range fun_scope("Barrier: compute_search_direction");
 
   // TMP allocation and copy should happen only once where it's written in a first place
-  if (d_bound_rhs_.size() != data.bound_rhs.size())
-    d_bound_rhs_.resize(data.bound_rhs.size(), stream_view_);
+  d_bound_rhs_.resize(data.bound_rhs.size(), stream_view_);
   raft::copy(d_bound_rhs_.data(), data.bound_rhs.data(), data.bound_rhs.size(), stream_view_);
-  if (d_x_.size() != data.x.size()) d_x_.resize(data.x.size(), stream_view_);
+  d_x_.resize(data.x.size(), stream_view_);
   raft::copy(d_x_.data(), data.x.data(), data.x.size(), stream_view_);
-  if (d_z_.size() != data.z.size()) d_z_.resize(data.z.size(), stream_view_);
+  d_z_.resize(data.z.size(), stream_view_);
   raft::copy(d_z_.data(), data.z.data(), data.z.size(), stream_view_);
-  if (d_w_.size() != data.w.size()) d_w_.resize(data.w.size(), stream_view_);
+  d_w_.resize(data.w.size(), stream_view_);
   raft::copy(d_w_.data(), data.w.data(), data.w.size(), stream_view_);
-  if (d_v_.size() != data.v.size()) d_v_.resize(data.v.size(), stream_view_);
+  d_v_.resize(data.v.size(), stream_view_);
   raft::copy(d_v_.data(), data.v.data(), data.v.size(), stream_view_);
-  if (d_upper_bounds_.size() != data.upper_bounds.size())
-    d_upper_bounds_.resize(data.upper_bounds.size(), stream_view_);
+  d_upper_bounds_.resize(data.upper_bounds.size(), stream_view_);
   raft::copy(
     d_upper_bounds_.data(), data.upper_bounds.data(), data.upper_bounds.size(), stream_view_);
-  if (d_dy_.size() != dy.size()) d_dy_.resize(dy.size(), stream_view_);
+  d_dy_.resize(dy.size(), stream_view_);
   raft::copy(d_dy_.data(), dy.data(), dy.size(), stream_view_);
-  if (d_dx_.size() != dx.size()) d_dx_.resize(dx.size(), stream_view_);
+  d_dx_.resize(dx.size(), stream_view_);
   raft::copy(d_h_.data(), data.primal_rhs.data(), data.primal_rhs.size(), stream_view_);
   raft::copy(d_complementarity_xz_rhs_.data(),
              data.complementarity_xz_rhs.data(),
              data.complementarity_xz_rhs.size(),
              stream_view_);
-  if (d_complementarity_wv_rhs_.size() != data.complementarity_wv_rhs.size())
-    d_complementarity_wv_rhs_.resize(data.complementarity_wv_rhs.size(), stream_view_);
+  d_complementarity_wv_rhs_.resize(data.complementarity_wv_rhs.size(), stream_view_);
   raft::copy(d_complementarity_wv_rhs_.data(),
              data.complementarity_wv_rhs.data(),
              data.complementarity_wv_rhs.size(),
              stream_view_);
   raft::copy(d_dual_rhs_.data(), data.dual_rhs.data(), data.dual_rhs.size(), stream_view_);
-  if (d_dz_.size() != dz.size()) d_dz_.resize(dz.size(), stream_view_);
-  if (d_dv_.size() != dv.size()) d_dv_.resize(dv.size(), stream_view_);
-  if (d_dw_.size() != data.bound_rhs.size()) d_dw_.resize(data.bound_rhs.size(), stream_view_);
+  d_dz_.resize(dz.size(), stream_view_);
+  d_dv_.resize(dv.size(), stream_view_);
+  d_dw_.resize(data.bound_rhs.size(), stream_view_);
   raft::copy(d_dw_.data(), data.bound_rhs.data(), data.bound_rhs.size(), stream_view_);
   d_dw_residual_.resize(data.n_upper_bounds, stream_view_);
   d_wv_residual_.resize(d_complementarity_wv_rhs_.size(), stream_view_);
