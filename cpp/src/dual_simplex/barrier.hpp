@@ -44,6 +44,28 @@ template <typename i_t, typename f_t>
 class iteration_data_t;  // Forward declare
 
 template <typename f_t>
+struct sum_reduce_helper_t {
+  rmm::device_buffer buffer_data;
+  rmm::device_scalar<f_t> out;
+  size_t buffer_size;
+
+  sum_reduce_helper_t(rmm::cuda_stream_view stream_view)
+    : buffer_data(0, stream_view), out(stream_view)
+  {
+  }
+
+  template <typename InputIteratorT, typename i_t>
+  f_t sum(InputIteratorT input, i_t size, rmm::cuda_stream_view stream_view)
+  {
+    buffer_size = 0;
+    cub::DeviceReduce::Sum(nullptr, buffer_size, input, out.data(), size, stream_view);
+    buffer_data.resize(buffer_size, stream_view);
+    cub::DeviceReduce::Sum(buffer_data.data(), buffer_size, input, out.data(), size, stream_view);
+    return out.value(stream_view);
+  }
+};
+
+template <typename f_t>
 struct transform_reduce_helper_t {
   rmm::device_buffer buffer_data;
   rmm::device_scalar<f_t> out;
@@ -219,6 +241,7 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_complementarity_wv_residual_;
 
   transform_reduce_helper_t<f_t> transform_reduce_helper_;
+  sum_reduce_helper_t<f_t> sum_reduce_helper_;
 
   rmm::cuda_stream_view stream_view_;
 };

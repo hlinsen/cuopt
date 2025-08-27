@@ -1463,6 +1463,7 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_dz_aff_(0, lp.handle_ptr->get_stream()),
     d_dy_aff_(0, lp.handle_ptr->get_stream()),
     transform_reduce_helper_(lp.handle_ptr->get_stream()),
+    sum_reduce_helper_(lp.handle_ptr->get_stream()),
     d_u_(lp.A.n, lp.handle_ptr->get_stream()),
     d_primal_residual_(0, lp.handle_ptr->get_stream()),
     d_bound_residual_(0, lp.handle_ptr->get_stream()),
@@ -3423,8 +3424,18 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                complementarity_residual_norm);
       }
 
-      mu = (data.complementarity_xz_residual.sum() + data.complementarity_wv_residual.sum()) /
-           (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
+      if (use_gpu) {
+        mu = (sum_reduce_helper_.sum(d_complementarity_xz_residual_.begin(),
+                                     d_complementarity_xz_residual_.size(),
+                                     stream_view_) +
+              sum_reduce_helper_.sum(d_complementarity_wv_residual_.begin(),
+                                     d_complementarity_wv_residual_.size(),
+                                     stream_view_)) /
+             (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
+      } else {
+        mu = (data.complementarity_xz_residual.sum() + data.complementarity_wv_residual.sum()) /
+             (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
+      }
 
       primal_objective = data.c.inner_product(data.x);
       dual_objective   = data.b.inner_product(data.y) - restrict_u.inner_product(data.v);
