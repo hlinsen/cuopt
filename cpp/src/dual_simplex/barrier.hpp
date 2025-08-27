@@ -153,6 +153,10 @@ class barrier_solver_t {
   cusparseDnVecDescr_t cusparse_dx_residual_4_;
   cusparseDnVecDescr_t cusparse_r1_;
   cusparseDnVecDescr_t cusparse_dual_residual_;
+  cusparseDnVecDescr_t cusparse_y_residual_;
+  // GPU ADAT multiply
+  cusparseDnVecDescr_t cusparse_u_;
+
   rmm::device_uvector<f_t> d_diag_;
   rmm::device_uvector<f_t> d_inv_diag_;
   rmm::device_uvector<f_t> d_bound_rhs_;
@@ -187,6 +191,8 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_dv_aff_;
   rmm::device_uvector<f_t> d_dz_aff_;
   rmm::device_uvector<f_t> d_dy_aff_;
+  // GPU ADAT multiply
+  rmm::device_uvector<f_t> d_u_;
 
   transform_reduce_helper_t<f_t> transform_reduce_helper_;
 
