@@ -170,7 +170,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
   i_t analyze(typename csr_matrix_t<i_t, f_t>::device_t& Arow) override
   {
-    raft::common::nvtx::range fun_scope("Analyze: cuDSS");
+    raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze");
     // csr_matrix_t<i_t, f_t> Arow;
     // A_in.to_compressed_row(Arow);
     nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
@@ -196,33 +196,40 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     //                     "cudaMemcpy for csr_values");
 
     if (!first_factor) {
+      raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : Destroy");
       CUDSS_CALL_AND_CHECK(cudssMatrixDestroy(A), status, "cudssMatrixDestroy for A");
     }
 
-    CUDSS_CALL_AND_CHECK(
-      cudssMatrixCreateCsr(&A,
-                           n,
-                           n,
-                           nnz,
-                           Arow.row_start.data(),
-                           nullptr,
-                           Arow.j.data(),
-                           Arow.x.data(),
-                           CUDA_R_32I,
-                           CUDA_R_64F,
-                           positive_definite ? CUDSS_MTYPE_SPD : CUDSS_MTYPE_SYMMETRIC,
-                           CUDSS_MVIEW_FULL,
-                           CUDSS_BASE_ZERO),
-      status,
-      "cudssMatrixCreateCsr");
+    {
+      raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : cudssMatrixCreateCsr");
+      CUDSS_CALL_AND_CHECK(
+        cudssMatrixCreateCsr(&A,
+                             n,
+                             n,
+                             nnz,
+                             Arow.row_start.data(),
+                             nullptr,
+                             Arow.j.data(),
+                             Arow.x.data(),
+                             CUDA_R_32I,
+                             CUDA_R_64F,
+                             positive_definite ? CUDSS_MTYPE_SPD : CUDSS_MTYPE_SYMMETRIC,
+                             CUDSS_MVIEW_FULL,
+                             CUDSS_BASE_ZERO),
+        status,
+        "cudssMatrixCreateCsr");
+    }
 
     // Perform symbolic analysis
     f_t start_symbolic = tic();
 
-    CUDSS_CALL_AND_CHECK(
-      cudssExecute(handle, CUDSS_PHASE_ANALYSIS, solverConfig, solverData, A, cudss_x, cudss_b),
-      status,
-      "cudssExecute for analysis");
+    {
+      raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : CUDSS_PHASE_ANALYSIS");
+      CUDSS_CALL_AND_CHECK(
+        cudssExecute(handle, CUDSS_PHASE_ANALYSIS, solverConfig, solverData, A, cudss_x, cudss_b),
+        status,
+        "cudssExecute for analysis");
+    }
 
     f_t symbolic_time = toc(start_symbolic);
     printf("Symbolic time %.2fs\n", symbolic_time);
