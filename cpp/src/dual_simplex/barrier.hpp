@@ -161,6 +161,7 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_w_;
   rmm::device_uvector<f_t> d_v_;
   rmm::device_uvector<f_t> d_h_;
+  rmm::device_uvector<f_t> d_y_;
   rmm::device_uvector<i_t> d_upper_bounds_;
   rmm::device_uvector<f_t> d_tmp3_;
   rmm::device_uvector<f_t> d_tmp4_;
@@ -180,6 +181,13 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_dw_;
   rmm::device_uvector<f_t> d_dw_residual_;
   rmm::device_uvector<f_t> d_wv_residual_;
+  // After Compute search direction
+  rmm::device_uvector<f_t> d_dw_aff_;
+  rmm::device_uvector<f_t> d_dx_aff_;
+  rmm::device_uvector<f_t> d_dv_aff_;
+  rmm::device_uvector<f_t> d_dz_aff_;
+  rmm::device_uvector<f_t> d_dy_aff_;
+
   transform_reduce_helper_t<f_t> transform_reduce_helper_;
 
   rmm::cuda_stream_view stream_view_;

@@ -187,6 +187,8 @@ void multiply_kernels(raft::handle_t const* handle,
   // std::endl; std::cout << "ADAT_nnz1 " << ADAT_nnz1 << std::endl;
   ADAT.resize_to_nnz(ADAT_nnz1, handle->get_stream());
 
+  thrust::fill(rmm::exec_policy(handle->get_stream()), ADAT.x.begin(), ADAT.x.end(), 0.0);
+
   // update matC with the new pointers
   RAFT_CUSPARSE_TRY(cusparseCsrSetPointers(
     cusparse_data.matADAT_descr, ADAT.row_start.data(), ADAT.j.data(), ADAT.x.data()));

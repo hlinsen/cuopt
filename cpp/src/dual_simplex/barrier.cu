@@ -404,6 +404,7 @@ class iteration_data_t {
   void form_adat(bool first_call = false)
   {
     handle_ptr->sync_stream();
+    raft::common::nvtx::range fun_scope("Barrier: Form ADAT");
     float64_t start_form_adat = tic();
     const i_t m               = AD.m;
     // Restore the columns of AD to A
@@ -445,11 +446,6 @@ class iteration_data_t {
         initialize_cusparse_data<i_t, f_t>(
           handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
       }
-
-      thrust::fill(rmm::exec_policy(handle_ptr->get_stream()),
-                   device_ADAT.x.data(),
-                   device_ADAT.x.data() + device_ADAT.x.size(),
-                   0.0);
 
       // float64_t start_multiply = tic();
       // handle_ptr->sync_stream();
@@ -513,7 +509,7 @@ class iteration_data_t {
       //
       // We can use a dense cholesky factorization of H to solve for y
 
-      const bool debug = true;
+      const bool debug = false;
 
       dense_vector_t<i_t, f_t> w(AD.m);
       i_t solve_status = chol->solve(b, w);
@@ -1378,6 +1374,7 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_w_(0, lp.handle_ptr->get_stream()),
     d_v_(0, lp.handle_ptr->get_stream()),
     d_h_(lp.num_rows, lp.handle_ptr->get_stream()),
+    d_y_(0, lp.handle_ptr->get_stream()),
     d_upper_bounds_(0, lp.handle_ptr->get_stream()),
     d_tmp3_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_tmp4_(lp.num_cols, lp.handle_ptr->get_stream()),
@@ -1397,6 +1394,11 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_dw_(0, lp.handle_ptr->get_stream()),
     d_dw_residual_(0, lp.handle_ptr->get_stream()),
     d_wv_residual_(0, lp.handle_ptr->get_stream()),
+    d_dw_aff_(0, lp.handle_ptr->get_stream()),
+    d_dx_aff_(0, lp.handle_ptr->get_stream()),
+    d_dv_aff_(0, lp.handle_ptr->get_stream()),
+    d_dz_aff_(0, lp.handle_ptr->get_stream()),
+    d_dy_aff_(0, lp.handle_ptr->get_stream()),
     transform_reduce_helper_(lp.handle_ptr->get_stream())
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
@@ -2895,26 +2897,44 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       raft::common::nvtx::range fun_scope("Barrier: GPU after first compute_search_direction");
 
       // TMP no copy and data should always be on the GPU
-      rmm::device_uvector<f_t> w        = device_copy(data.w, stream_view_);
-      rmm::device_uvector<f_t> x        = device_copy(data.x, stream_view_);
-      rmm::device_uvector<f_t> v        = device_copy(data.v, stream_view_);
-      rmm::device_uvector<f_t> z        = device_copy(data.z, stream_view_);
-      rmm::device_uvector<f_t> d_dw_aff = device_copy(data.dw_aff, stream_view_);
-      rmm::device_uvector<f_t> d_dx_aff = device_copy(data.dx_aff, stream_view_);
-      rmm::device_uvector<f_t> d_dv_aff = device_copy(data.dv_aff, stream_view_);
-      rmm::device_uvector<f_t> d_dz_aff = device_copy(data.dz_aff, stream_view_);
+      d_w_.resize(data.w.size(), stream_view_);
+      d_x_.resize(data.x.size(), stream_view_);
+      d_v_.resize(data.v.size(), stream_view_);
+      d_z_.resize(data.z.size(), stream_view_);
+      d_dw_aff_.resize(data.dw_aff.size(), stream_view_);
+      d_dx_aff_.resize(data.dx_aff.size(), stream_view_);
+      d_dv_aff_.resize(data.dv_aff.size(), stream_view_);
+      d_dz_aff_.resize(data.dz_aff.size(), stream_view_);
+
+      raft::copy(d_w_.data(), data.w.data(), data.w.size(), stream_view_);
+      raft::copy(d_x_.data(), data.x.data(), data.x.size(), stream_view_);
+      raft::copy(d_v_.data(), data.v.data(), data.v.size(), stream_view_);
+      raft::copy(d_z_.data(), data.z.data(), data.z.size(), stream_view_);
+      raft::copy(d_dw_aff_.data(), data.dw_aff.data(), data.dw_aff.size(), stream_view_);
+      raft::copy(d_dx_aff_.data(), data.dx_aff.data(), data.dx_aff.size(), stream_view_);
+      raft::copy(d_dv_aff_.data(), data.dv_aff.data(), data.dv_aff.size(), stream_view_);
+      raft::copy(d_dz_aff_.data(), data.dz_aff.data(), data.dz_aff.size(), stream_view_);
+
+      // rmm::device_uvector<f_t> w        = device_copy(data.w, stream_view_);
+      // rmm::device_uvector<f_t> x        = device_copy(data.x, stream_view_);
+      // rmm::device_uvector<f_t> v        = device_copy(data.v, stream_view_);
+      // rmm::device_uvector<f_t> z        = device_copy(data.z, stream_view_);
+      // rmm::device_uvector<f_t> d_dw_aff = device_copy(data.dw_aff, stream_view_);
+      // rmm::device_uvector<f_t> d_dx_aff = device_copy(data.dx_aff, stream_view_);
+      // rmm::device_uvector<f_t> d_dv_aff = device_copy(data.dv_aff, stream_view_);
+      // rmm::device_uvector<f_t> d_dz_aff = device_copy(data.dz_aff, stream_view_);
       rmm::device_uvector<f_t> d_complementarity_xz_rhs(data.complementarity_xz_rhs.size(),
                                                         stream_view_);
       rmm::device_uvector<f_t> d_complementarity_wv_rhs(data.complementarity_wv_rhs.size(),
                                                         stream_view_);
 
-      f_t step_primal_aff =
-        std::min(gpu_max_step_to_boundary(w, d_dw_aff), gpu_max_step_to_boundary(x, d_dx_aff));
-      f_t step_dual_aff =
-        std::min(gpu_max_step_to_boundary(v, d_dv_aff), gpu_max_step_to_boundary(z, d_dz_aff));
+      f_t step_primal_aff = std::min(gpu_max_step_to_boundary(d_w_, d_dw_aff_),
+                                     gpu_max_step_to_boundary(d_x_, d_dx_aff_));
+      f_t step_dual_aff   = std::min(gpu_max_step_to_boundary(d_v_, d_dv_aff_),
+                                   gpu_max_step_to_boundary(d_z_, d_dz_aff_));
 
       f_t complementarity_xz_aff_sum = transform_reduce_helper_.transform_reduce(
-        thrust::make_zip_iterator(x.data(), z.data(), d_dx_aff.data(), d_dz_aff.data()),
+        thrust::make_zip_iterator(d_x_.data(), d_z_.data(), d_dx_aff_.data(), d_dz_aff_.data()),
         cuda::std::plus<f_t>{},
         [step_primal_aff, step_dual_aff] HD(const thrust::tuple<f_t, f_t, f_t, f_t> t) {
           const f_t x      = thrust::get<0>(t);
@@ -2930,11 +2950,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
           return complementarity_xz_aff;
         },
         f_t(0),
-        x.size(),
+        d_x_.size(),
         stream_view_);
 
       f_t complementarity_wv_aff_sum = transform_reduce_helper_.transform_reduce(
-        thrust::make_zip_iterator(w.data(), v.data(), d_dw_aff.data(), d_dv_aff.data()),
+        thrust::make_zip_iterator(d_w_.data(), d_v_.data(), d_dw_aff_.data(), d_dv_aff_.data()),
         cuda::std::plus<f_t>{},
         [step_primal_aff, step_dual_aff] HD(const thrust::tuple<f_t, f_t, f_t, f_t> t) {
           const f_t w      = thrust::get<0>(t);
@@ -2950,7 +2970,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
           return complementarity_wv_aff;
         },
         f_t(0),
-        w.size(),
+        d_w_.size(),
         stream_view_);
 
       f_t complementarity_aff_sum = complementarity_xz_aff_sum + complementarity_wv_aff_sum;
@@ -2961,14 +2981,14 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       f_t new_mu = sigma * mu_aff;
 
       cub::DeviceTransform::Transform(
-        cuda::std::make_tuple(d_dx_aff.data(), d_dz_aff.data()),
+        cuda::std::make_tuple(d_dx_aff_.data(), d_dz_aff_.data()),
         d_complementarity_xz_rhs.data(),
         d_complementarity_xz_rhs.size(),
         [new_mu] HD(f_t dx_aff, f_t dz_aff) { return -(dx_aff * dz_aff) + new_mu; },
         stream_view_);
 
       cub::DeviceTransform::Transform(
-        cuda::std::make_tuple(d_dw_aff.data(), d_dv_aff.data()),
+        cuda::std::make_tuple(d_dw_aff_.data(), d_dv_aff_.data()),
         d_complementarity_wv_rhs.data(),
         d_complementarity_wv_rhs.size(),
         [new_mu] HD(f_t dw_aff, f_t dv_aff) { return -(dw_aff * dv_aff) + new_mu; },
@@ -3015,43 +3035,164 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         return lp_status_t::CONCURRENT_LIMIT;
       }
 
-      // dw = dw_aff + dw_cc
-      // dx = dx_aff + dx_cc
-      // dy = dy_aff + dy_cc
-      // dv = dv_aff + dv_cc
-      // dz = dz_aff + dz_cc
-      // Note: dw_cc - dz_cc are stored in dw - dz
-      data.dw.axpy(1.0, data.dw_aff, 1.0);
-      data.dx.axpy(1.0, data.dx_aff, 1.0);
-      data.dy.axpy(1.0, data.dy_aff, 1.0);
-      data.dv.axpy(1.0, data.dv_aff, 1.0);
-      data.dz.axpy(1.0, data.dz_aff, 1.0);
+      f_t step_primal, step_dual;
 
-      f_t max_step_primal =
-        std::min(max_step_to_boundary(data.w, data.dw), max_step_to_boundary(data.x, data.dx));
-      f_t max_step_dual =
-        std::min(max_step_to_boundary(data.v, data.dv), max_step_to_boundary(data.z, data.dz));
+      if (use_gpu) {
+        raft::common::nvtx::range fun_scope("Barrier: GPU vector operations");
+        // TODO Nicolas: Redundant copies
+        d_y_.resize(data.y.size(), stream_view_);
+        d_dy_aff_.resize(data.dy_aff.size(), stream_view_);
+        raft::copy(d_y_.data(), data.y.data(), data.y.size(), stream_view_);
+        raft::copy(d_dy_aff_.data(), data.dy_aff.data(), data.dy_aff.size(), stream_view_);
 
-      f_t step_primal = options.step_scale * max_step_primal;
-      f_t step_dual   = options.step_scale * max_step_dual;
+        auto d_dw = device_copy(data.dw, stream_view_);
+        auto d_dx = device_copy(data.dx, stream_view_);
+        auto d_dy = device_copy(data.dy, stream_view_);
+        auto d_dv = device_copy(data.dv, stream_view_);
+        auto d_dz = device_copy(data.dz, stream_view_);
 
-      data.w.axpy(step_primal, data.dw, 1.0);
-      data.x.axpy(step_primal, data.dx, 1.0);
-      data.y.axpy(step_dual, data.dy, 1.0);
-      data.v.axpy(step_dual, data.dv, 1.0);
-      data.z.axpy(step_dual, data.dz, 1.0);
+        // dw = dw_aff + dw_cc
+        // dx = dx_aff + dx_cc
+        // dy = dy_aff + dy_cc
+        // dv = dv_aff + dv_cc
+        // dz = dz_aff + dz_cc
+        // Note: dw_cc - dz_cc are stored in dw - dz
 
-      // Handle free variables
-      if (num_free_variables > 0) {
-        for (i_t k = 0; k < 2 * num_free_variables; k += 2) {
-          i_t u       = presolve_info.free_variable_pairs[k];
-          i_t v       = presolve_info.free_variable_pairs[k + 1];
-          f_t u_val   = data.x[u];
-          f_t v_val   = data.x[v];
-          f_t min_val = std::min(u_val, v_val);
-          f_t eta     = options.step_scale * min_val;
-          data.x[u] -= eta;
-          data.x[v] -= eta;
+        // Transforms are grouped according to vector sizes.
+        assert(d_dw.size() == d_dv.size());
+        assert(d_dx.size() == d_dz.size());
+        assert(d_dw_aff_.size() == d_dv_aff_.size());
+        assert(d_dx_aff_.size() == d_dz_aff_.size());
+        assert(d_dy_aff_.size() == d_dy.size());
+
+        // TODO Nicolas: Can we merge the transforms of different sizes?
+        cub::DeviceTransform::Transform(
+          cuda::std::make_tuple(d_dw_aff_.data(), d_dv_aff_.data(), d_dw.data(), d_dv.data()),
+          thrust::make_zip_iterator(d_dw.data(), d_dv.data()),
+          d_dw.size(),
+          [] HD(f_t dw_aff, f_t dv_aff, f_t dw, f_t dv) -> thrust::tuple<f_t, f_t> {
+            return {dw + dw_aff, dv + dv_aff};
+          },
+          stream_view_);
+
+        cub::DeviceTransform::Transform(
+          cuda::std::make_tuple(d_dx_aff_.data(), d_dz_aff_.data(), d_dx.data(), d_dz.data()),
+          thrust::make_zip_iterator(d_dx.data(), d_dz.data()),
+          d_dx.size(),
+          [] HD(f_t dx_aff, f_t dz_aff, f_t dx, f_t dz) -> thrust::tuple<f_t, f_t> {
+            return {dx + dx_aff, dz + dz_aff};
+          },
+          stream_view_);
+
+        cub::DeviceTransform::Transform(
+          cuda::std::make_tuple(d_dy_aff_.data(), d_dy.data()),
+          d_dy.data(),
+          d_dy.size(),
+          [] HD(f_t dy_aff, f_t dy) { return dy + dy_aff; },
+          stream_view_);
+
+        f_t max_step_primal =
+          std::min(gpu_max_step_to_boundary(d_w_, d_dw), gpu_max_step_to_boundary(d_x_, d_dx));
+        f_t max_step_dual =
+          std::min(gpu_max_step_to_boundary(d_v_, d_dv), gpu_max_step_to_boundary(d_z_, d_dz));
+        step_primal = options.step_scale * max_step_primal;
+        step_dual   = options.step_scale * max_step_dual;
+
+        // TODO Nicolas: Can we merge the transforms of different sizes?
+        cub::DeviceTransform::Transform(
+          cuda::std::make_tuple(d_w_.data(), d_v_.data(), d_dw.data(), d_dv.data()),
+          thrust::make_zip_iterator(d_w_.data(), d_v_.data()),
+          d_dw.size(),
+          [step_primal, step_dual] HD(f_t w, f_t v, f_t dw, f_t dv) -> thrust::tuple<f_t, f_t> {
+            return {w + step_primal * dw, v + step_dual * dv};
+          },
+          stream_view_);
+
+        cub::DeviceTransform::Transform(
+          cuda::std::make_tuple(d_x_.data(), d_z_.data(), d_dx.data(), d_dz.data()),
+          thrust::make_zip_iterator(d_x_.data(), d_z_.data()),
+          d_dx.size(),
+          [step_primal, step_dual] HD(f_t x, f_t z, f_t dx, f_t dz) -> thrust::tuple<f_t, f_t> {
+            return {x + step_primal * dx, z + step_dual * dz};
+          },
+          stream_view_);
+
+        cub::DeviceTransform::Transform(
+          cuda::std::make_tuple(d_y_.data(), d_dy.data()),
+          d_y_.data(),
+          d_y_.size(),
+          [step_dual] HD(f_t y, f_t dy) { return y + step_dual * dy; },
+          stream_view_);
+
+        if (num_free_variables > 0) {
+          auto d_free_variable_pairs = device_copy(presolve_info.free_variable_pairs, stream_view_);
+          thrust::for_each(rmm::exec_policy(stream_view_),
+                           thrust::make_counting_iterator(0),
+                           thrust::make_counting_iterator(num_free_variables),
+                           [span_free_variable_pairs = cuopt::make_span(d_free_variable_pairs),
+                            span_x                   = cuopt::make_span(d_x_),
+                            span_y                   = cuopt::make_span(d_y_),
+                            step_primal              = step_primal,
+                            step_dual                = step_dual,
+                            step_scale               = options.step_scale] __device__(i_t i) {
+                             // Not coalesced
+                             i_t k       = 2 * i;
+                             i_t u       = span_free_variable_pairs[k];
+                             i_t v       = span_free_variable_pairs[k + 1];
+                             f_t u_val   = span_x[u];
+                             f_t v_val   = span_x[v];
+                             f_t min_val = cuda::std::min(u_val, v_val);
+                             f_t eta     = step_scale * min_val;
+                             span_x[u] -= eta;
+                             span_x[v] -= eta;
+                           });
+        }
+
+        data.w = host_copy(d_w_);
+        data.x = host_copy(d_x_);
+        data.y = host_copy(d_y_);
+        data.v = host_copy(d_v_);
+        data.z = host_copy(d_z_);
+      } else {
+        raft::common::nvtx::range fun_scope("Barrier: CPU vector operations");
+        // dw = dw_aff + dw_cc
+        // dx = dx_aff + dx_cc
+        // dy = dy_aff + dy_cc
+        // dv = dv_aff + dv_cc
+        // dz = dz_aff + dz_cc
+        // Note: dw_cc - dz_cc are stored in dw - dz
+        data.dw.axpy(1.0, data.dw_aff, 1.0);
+        data.dx.axpy(1.0, data.dx_aff, 1.0);
+        data.dy.axpy(1.0, data.dy_aff, 1.0);
+        data.dv.axpy(1.0, data.dv_aff, 1.0);
+        data.dz.axpy(1.0, data.dz_aff, 1.0);
+
+        f_t max_step_primal =
+          std::min(max_step_to_boundary(data.w, data.dw), max_step_to_boundary(data.x, data.dx));
+        f_t max_step_dual =
+          std::min(max_step_to_boundary(data.v, data.dv), max_step_to_boundary(data.z, data.dz));
+
+        step_primal = options.step_scale * max_step_primal;
+        step_dual   = options.step_scale * max_step_dual;
+
+        data.w.axpy(step_primal, data.dw, 1.0);
+        data.x.axpy(step_primal, data.dx, 1.0);
+        data.y.axpy(step_dual, data.dy, 1.0);
+        data.v.axpy(step_dual, data.dv, 1.0);
+        data.z.axpy(step_dual, data.dz, 1.0);
+
+        // Handle free variables
+        if (num_free_variables > 0) {
+          for (i_t k = 0; k < 2 * num_free_variables; k += 2) {
+            i_t u       = presolve_info.free_variable_pairs[k];
+            i_t v       = presolve_info.free_variable_pairs[k + 1];
+            f_t u_val   = data.x[u];
+            f_t v_val   = data.x[v];
+            f_t min_val = std::min(u_val, v_val);
+            f_t eta     = options.step_scale * min_val;
+            data.x[u] -= eta;
+            data.x[v] -= eta;
+          }
         }
       }
 

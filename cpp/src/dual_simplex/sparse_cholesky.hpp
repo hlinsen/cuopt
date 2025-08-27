@@ -170,6 +170,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
   i_t analyze(typename csr_matrix_t<i_t, f_t>::device_t& Arow) override
   {
+    raft::common::nvtx::range fun_scope("Analyze: cuDSS");
     // csr_matrix_t<i_t, f_t> Arow;
     // A_in.to_compressed_row(Arow);
     nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
@@ -239,6 +240,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   }
   i_t factorize(typename csr_matrix_t<i_t, f_t>::device_t& Arow) override
   {
+    raft::common::nvtx::range fun_scope("Factorize: cuDSS");
     // csr_matrix_t<i_t, f_t> Arow;
     // A_in.to_compressed_row(Arow);
 
