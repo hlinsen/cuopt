@@ -93,6 +93,7 @@ class barrier_solver_t {
  private:
   void my_pop_range(bool debug) const;
   void initial_point(iteration_data_t<i_t, f_t>& data);
+
   void compute_residual_norms(const dense_vector_t<i_t, f_t>& w,
                               const dense_vector_t<i_t, f_t>& x,
                               const dense_vector_t<i_t, f_t>& y,
@@ -102,6 +103,7 @@ class barrier_solver_t {
                               f_t& primal_residual_norm,
                               f_t& dual_residual_norm,
                               f_t& complementarity_residual_norm);
+
   void compute_residuals(const dense_vector_t<i_t, f_t>& w,
                          const dense_vector_t<i_t, f_t>& x,
                          const dense_vector_t<i_t, f_t>& y,
@@ -115,6 +117,22 @@ class barrier_solver_t {
                            const dense_vector_t<i_t, f_t>& dx) const;
   // To be able to directly pass lambdas to transform functions
  public:
+  void gpu_compute_residuals(rmm::device_uvector<f_t> const& d_w,
+                             rmm::device_uvector<f_t> const& d_x,
+                             rmm::device_uvector<f_t> const& d_y,
+                             rmm::device_uvector<f_t> const& d_v,
+                             rmm::device_uvector<f_t> const& d_z,
+                             iteration_data_t<i_t, f_t>& data);
+  void gpu_compute_residual_norms(const rmm::device_uvector<f_t>& d_w,
+                                  const rmm::device_uvector<f_t>& d_x,
+                                  const rmm::device_uvector<f_t>& d_y,
+                                  const rmm::device_uvector<f_t>& d_v,
+                                  const rmm::device_uvector<f_t>& d_z,
+                                  iteration_data_t<i_t, f_t>& data,
+                                  f_t& primal_residual_norm,
+                                  f_t& dual_residual_norm,
+                                  f_t& complementarity_residual_norm);
+
   f_t gpu_max_step_to_boundary(const rmm::device_uvector<f_t>& x,
                                const rmm::device_uvector<f_t>& dx);
   i_t compute_search_direction(iteration_data_t<i_t, f_t>& data,
@@ -172,6 +190,7 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_r1_prime_;
   rmm::device_uvector<f_t> d_dx_;
   rmm::device_uvector<f_t> d_dy_;
+
   rmm::device_uvector<f_t> d_dual_residual_;
   rmm::device_uvector<f_t> d_complementarity_xz_rhs_;
   rmm::device_uvector<f_t> d_complementarity_wv_rhs_;
@@ -192,6 +211,12 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_dy_aff_;
   // GPU ADAT multiply
   rmm::device_uvector<f_t> d_u_;
+  // Compute residuals
+  rmm::device_uvector<f_t> d_primal_residual_;
+  rmm::device_uvector<f_t> d_bound_residual_;
+  rmm::device_uvector<f_t> d_upper_;
+  rmm::device_uvector<f_t> d_complementarity_xz_residual_;
+  rmm::device_uvector<f_t> d_complementarity_wv_residual_;
 
   transform_reduce_helper_t<f_t> transform_reduce_helper_;
 
