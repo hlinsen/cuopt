@@ -118,7 +118,10 @@ class csc_matrix_t {
   };
 
   struct device_t {
-    device_t(rmm::cuda_stream_view stream) : col_start(0, stream), i(0, stream), x(0, stream) {}
+    device_t(rmm::cuda_stream_view stream)
+      : col_start(0, stream), i(0, stream), x(0, stream), col_index(0, stream)
+    {
+    }
 
     device_t(i_t rows, i_t cols, i_t nz, rmm::cuda_stream_view stream)
       : m(rows),
@@ -126,7 +129,8 @@ class csc_matrix_t {
         nz_max(nz),
         col_start(cols + 1, stream),
         i(nz_max, stream),
-        x(nz_max, stream)
+        x(nz_max, stream),
+        col_index(0, stream)
     {
     }
 
@@ -136,9 +140,12 @@ class csc_matrix_t {
         n(other.n),
         col_start(other.col_start, other.col_start.stream()),
         i(other.i, other.i.stream()),
-        x(other.x, other.x.stream())
+        x(other.x, other.x.stream()),
+        col_index(0, other.col_index.stream())
     {
     }
+
+    void form_col_index(rmm::cuda_stream_view stream);
 
     void resize_to_nnz(i_t nnz, rmm::cuda_stream_view stream)
     {
@@ -185,6 +192,7 @@ class csc_matrix_t {
     rmm::device_uvector<i_t> col_start;  // column pointers (size n + 1)
     rmm::device_uvector<i_t> i;          // row indices, size nz_max
     rmm::device_uvector<f_t> x;          // numerical values, size nz_max
+    rmm::device_uvector<i_t> col_index;  // index of each column, only used for scale column
   };
 
   device_t to_device(rmm::cuda_stream_view stream)

@@ -20,6 +20,13 @@
 
 #include <dual_simplex/types.hpp>
 
+#include <thrust/for_each.h>
+#include <thrust/iterator/counting_iterator.h>
+
+#include <cub/cub.cuh>
+
+#include <utilities/cuda_helpers.cuh>
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -356,6 +363,32 @@ i_t csc_matrix_t<i_t, f_t>::remove_row(i_t row)
   this->col_start  = new_col_start;
 
   return 0;
+}
+
+template <typename i_t, typename f_t>
+void csc_matrix_t<i_t, f_t>::device_t::form_col_index(rmm::cuda_stream_view stream)
+{
+  col_index.resize(x.size(), stream);
+  RAFT_CUDA_TRY(cudaMemsetAsync(col_index.data(), 0, sizeof(i_t) * col_index.size(), stream));
+  // Scatter 1 when there is a col start in col_index
+  thrust::for_each(
+    rmm::exec_policy(stream),
+    thrust::make_counting_iterator(i_t(1)),                                  // Skip the first 0
+    thrust::make_counting_iterator(static_cast<i_t>(col_start.size() - 1)),  // Skip the end index
+    [span_col_start = cuopt::make_span(col_start),
+     span_col_index = cuopt::make_span(col_index)] __device__(i_t i) {
+      span_col_index[span_col_start[i]] = 1;
+    });
+
+  // Inclusive cumulative sum to have the corresponding column for each entry
+  rmm::device_buffer d_temp_storage;
+  size_t temp_storage_bytes;
+  cub::DeviceScan::InclusiveSum(nullptr, temp_storage_bytes, col_index.data(), col_index.size());
+  d_temp_storage.resize(temp_storage_bytes, stream);
+  cub::DeviceScan::InclusiveSum(
+    d_temp_storage.data(), temp_storage_bytes, col_index.data(), col_index.size());
+  // Have to sync since InclusiveSum is being run on local data (d_temp_storage)
+  RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
 }
 
 template <typename i_t, typename f_t>

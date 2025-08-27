@@ -308,7 +308,13 @@ class iteration_data_t {
       device_AD(lp.num_cols, lp.num_rows, 0, lp.handle_ptr->get_stream()),
       device_A(lp.num_cols, lp.num_rows, 0, lp.handle_ptr->get_stream()),
       device_ADAT(lp.num_rows, lp.num_rows, 0, lp.handle_ptr->get_stream()),
+      d_original_A_values(0, lp.handle_ptr->get_stream()),
       device_A_x_values(0, lp.handle_ptr->get_stream()),
+      d_inv_diag_prime(0, lp.handle_ptr->get_stream()),
+      d_flag_buffer(0, lp.handle_ptr->get_stream()),
+      d_num_flag(lp.handle_ptr->get_stream()),
+      d_inv_diag(lp.num_cols, lp.handle_ptr->get_stream()),
+      d_cols_to_remove(0, lp.handle_ptr->get_stream()),
       has_factorization(false),
       num_factorizations(0),
       settings_(settings),
@@ -317,6 +323,21 @@ class iteration_data_t {
   {
     raft::common::nvtx::range fun_scope("Barrier: LP Data Creation");
 
+    // Allocating GPU flag data for Form ADAT
+    if (use_gpu) {
+      raft::common::nvtx::range fun_scope("Barrier: GPU Flag memory allocation");
+
+      cub::DeviceSelect::Flagged(
+        nullptr,
+        flag_buffer_size,
+        d_inv_diag_prime.data(),  // Not the actual input but just to allcoate the memory
+        thrust::make_transform_iterator(d_cols_to_remove.data(), cuda::std::logical_not<i_t>{}),
+        d_inv_diag_prime.data(),
+        d_num_flag.data(),
+        inv_diag.size());
+
+      d_flag_buffer.resize(flag_buffer_size, stream_view_);
+    }
     // Create the upper bounds vector
     n_upper_bounds = 0;
     for (i_t j = 0; j < lp.num_cols; j++) {
@@ -333,6 +354,10 @@ class iteration_data_t {
     }
     inv_diag.set_scalar(1.0);
     if (n_upper_bounds > 0) { diag.inverse(inv_diag); }
+    if (use_gpu) {
+      // TMP diag and inv_diag should directly created and filled on the GPU
+      raft::copy(d_inv_diag.data(), inv_diag.data(), inv_diag.size(), stream_view_);
+    }
     inv_sqrt_diag.set_scalar(1.0);
     if (n_upper_bounds > 0) { inv_diag.sqrt(inv_sqrt_diag); }
 
@@ -357,6 +382,9 @@ class iteration_data_t {
       for (i_t k : dense_columns_unordered) {
         cols_to_remove[k] = 1;
       }
+      d_cols_to_remove.resize(cols_to_remove.size(), stream_view_);
+      raft::copy(
+        d_cols_to_remove.data(), cols_to_remove.data(), cols_to_remove.size(), stream_view_);
       dense_columns.clear();
       dense_columns.reserve(n_dense_columns);
       for (i_t j = 0; j < lp.num_cols; j++) {
@@ -376,10 +404,16 @@ class iteration_data_t {
       }
     }
     original_A_values = AD.x;
+    if (use_gpu) {
+      d_original_A_values.resize(original_A_values.size(), handle_ptr->get_stream());
+      raft::copy(d_original_A_values.data(), AD.x.data(), AD.x.size(), handle_ptr->get_stream());
+    }
     AD.transpose(AT);
 
     if (use_gpu) {
       device_AD.copy(AD, handle_ptr->get_stream());
+      // For efficient scaling of AD col we form the col index array
+      device_AD.form_col_index(handle_ptr->get_stream());
       device_A_x_values.resize(original_A_values.size(), handle_ptr->get_stream());
       raft::copy(
         device_A_x_values.data(), device_AD.x.data(), device_AD.x.size(), handle_ptr->get_stream());
@@ -407,40 +441,44 @@ class iteration_data_t {
     raft::common::nvtx::range fun_scope("Barrier: Form ADAT");
     float64_t start_form_adat = tic();
     const i_t m               = AD.m;
-    // Restore the columns of AD to A
-    AD.x = original_A_values;
-
-    std::vector<f_t> inv_diag_prime;
-    if (n_dense_columns > 0) {
-      // Adjust inv_diag
-      inv_diag_prime.resize(AD.n);
-      const i_t n = A.n;
-      i_t new_j   = 0;
-      for (i_t j = 0; j < n; j++) {
-        if (cols_to_remove[j]) { continue; }
-        inv_diag_prime[new_j++] = inv_diag[j];
-      }
-    } else {
-      inv_diag_prime = inv_diag;
-    }
-
-    if (inv_diag_prime.size() != AD.n) {
-      settings_.log.printf("inv_diag_prime.size() = %ld, AD.n = %d\n", inv_diag_prime.size(), AD.n);
-      exit(1);
-    }
 
     if (use_gpu) {
+      // TODO do we really need this copy? (it's ok since gpu to gpu)
       raft::copy(device_AD.x.data(),
-                 original_A_values.data(),
-                 original_A_values.size(),
+                 d_original_A_values.data(),
+                 d_original_A_values.size(),
                  handle_ptr->get_stream());
+      if (n_dense_columns > 0) {
+        // Adjust inv_diag
+        d_inv_diag_prime.resize(AD.n, stream_view_);
+        // Copy If
+        cub::DeviceSelect::Flagged(
+          d_flag_buffer.data(),
+          flag_buffer_size,
+          d_inv_diag.data(),
+          thrust::make_transform_iterator(d_cols_to_remove.data(), cuda::std::logical_not<i_t>{}),
+          d_inv_diag_prime.data(),
+          d_num_flag.data(),
+          d_inv_diag.size());
+      } else {
+        d_inv_diag_prime.resize(inv_diag.size(), stream_view_);
+        raft::copy(d_inv_diag_prime.data(), d_inv_diag.data(), inv_diag.size(), stream_view_);
+      }
 
-      auto d_inv_diag_prime = cuopt::device_copy(inv_diag_prime, handle_ptr->get_stream());
+      if (d_inv_diag_prime.size() != AD.n) {
+        settings_.log.printf(
+          "inv_diag_prime.size() = %ld, AD.n = %d\n", d_inv_diag_prime.size(), AD.n);
+        exit(1);
+      }
 
-      auto n_blocks = AD.n;  // one block per col
-      scale_columns_kernel<i_t, f_t><<<n_blocks, TPB, 0, handle_ptr->get_stream()>>>(
-        device_AD.view(), cuopt::make_span(d_inv_diag_prime));
-      RAFT_CHECK_CUDA(handle_ptr->get_stream());
+      thrust::for_each_n(rmm::exec_policy(stream_view_),
+                         thrust::make_counting_iterator<i_t>(0),
+                         i_t(device_AD.x.size()),
+                         [span_x       = cuopt::make_span(device_AD.x),
+                          span_scale   = cuopt::make_span(d_inv_diag_prime),
+                          span_col_ind = cuopt::make_span(device_AD.col_index)] __device__(i_t i) {
+                           span_x[i] *= span_scale[span_col_ind[i]];
+                         });
 
       if (first_call) {
         initialize_cusparse_data<i_t, f_t>(
@@ -459,6 +497,28 @@ class iteration_data_t {
         AD = device_AD.to_host(handle_ptr->get_stream());
       }
     } else {
+      // Restore the columns of AD to A
+      AD.x = original_A_values;
+      std::vector<f_t> inv_diag_prime;
+      if (n_dense_columns > 0) {
+        // Adjust inv_diag
+        inv_diag_prime.resize(AD.n);
+        const i_t n = A.n;
+
+        i_t new_j = 0;
+        for (i_t j = 0; j < n; j++) {
+          if (cols_to_remove[j]) { continue; }
+          inv_diag_prime[new_j++] = inv_diag[j];
+        }
+      } else {
+        inv_diag_prime = inv_diag;
+      }
+
+      if (inv_diag_prime.size() != AD.n) {
+        settings_.log.printf(
+          "inv_diag_prime.size() = %ld, AD.n = %d\n", inv_diag_prime.size(), AD.n);
+        exit(1);
+      }
       AD.scale_columns(inv_diag_prime);
       multiply(AD, AT, ADAT);
     }
@@ -1296,6 +1356,7 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> inv_sqrt_diag;
 
   std::vector<f_t> original_A_values;
+  rmm::device_uvector<f_t> d_original_A_values;
 
   csc_matrix_t<i_t, f_t> AD;
   csc_matrix_t<i_t, f_t> AT;
@@ -1304,11 +1365,18 @@ class iteration_data_t {
   typename csr_matrix_t<i_t, f_t>::device_t device_A;
   typename csc_matrix_t<i_t, f_t>::device_t device_AD;
   rmm::device_uvector<f_t> device_A_x_values;
+  // For GPU Form ADAT
+  rmm::device_uvector<f_t> d_inv_diag_prime;
+  rmm::device_buffer d_flag_buffer;
+  size_t flag_buffer_size;
+  rmm::device_scalar<i_t> d_num_flag;
+  rmm::device_uvector<f_t> d_inv_diag;
 
   i_t n_dense_columns;
   std::vector<i_t> dense_columns;
   std::vector<i_t> sparse_mark;
   std::vector<i_t> cols_to_remove;
+  rmm::device_uvector<i_t> d_cols_to_remove;
   dense_matrix_t<i_t, f_t> A_dense;
   const csc_matrix_t<i_t, f_t>& A;
 
@@ -1363,7 +1431,6 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
                    ),
     stream_view_(lp.handle_ptr->get_stream()),
     d_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
-    d_inv_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_bound_rhs_(0, lp.handle_ptr->get_stream()),
     d_x_(0, lp.handle_ptr->get_stream()),
     d_z_(0, lp.handle_ptr->get_stream()),
@@ -1769,14 +1836,14 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // inv_diag = 1.0 ./ diag
     cub::DeviceTransform::Transform(
       d_diag_.data(),
-      d_inv_diag_.data(),
+      data.d_inv_diag.data(),
       d_diag_.size(),
       [] HD(f_t diag) { return f_t(1) / diag; },
       stream_view_);
 
     // TMP data should always be on the GPU
     data.diag     = host_copy(d_diag_);
-    data.inv_diag = host_copy(d_inv_diag_);
+    data.inv_diag = host_copy(data.d_inv_diag);
 
     my_pop_range(debug);
   } else {
@@ -1887,7 +1954,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     // tmp3 <- tmp3 .+ -(complementarity_xz_rhs ./ x) .+ dual_rhs
     // tmp4 <- inv_diag .* tmp3
     cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(d_inv_diag_.data(),
+      cuda::std::make_tuple(data.d_inv_diag.data(),
                             d_tmp3_.data(),
                             d_complementarity_xz_rhs_.data(),
                             d_x_.data(),
@@ -1977,7 +2044,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
                            d_u_,
                            cusparse_u_,
                            cusparse_view_,
-                           d_inv_diag_);
+                           data.d_inv_diag);
 
     f_t const y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
     max_residual              = std::max(max_residual, y_residual_norm);
@@ -2009,9 +2076,9 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     cusparse_view_.transpose_spmv(1.0, cusparse_dy_, -1.0, cusparse_r1_);
 
     cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(d_inv_diag_.data(), d_r1_.data(), d_diag_.data()),
+      cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data(), d_diag_.data()),
       thrust::make_zip_iterator(d_dx_.data(), d_dx_residual_.data()),
-      d_inv_diag_.size(),
+      data.d_inv_diag.size(),
       [] HD(f_t inv_diag, f_t r1, f_t diag) -> thrust::tuple<f_t, f_t> {
         const f_t dx = inv_diag * r1;
         return {dx, dx * diag};
@@ -2064,7 +2131,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       // norm_inf(D^-1 * (A'*dy - r1) - dx)
       const f_t dx_residual_2_norm = device_custom_vector_norm_inf<i_t, f_t>(
         thrust::make_transform_iterator(
-          thrust::make_zip_iterator(d_inv_diag_.data(), d_r1_.data(), d_dx_.data()),
+          thrust::make_zip_iterator(data.d_inv_diag.data(), d_r1_.data(), d_dx_.data()),
           [] HD(thrust::tuple<f_t, f_t, f_t> t) -> f_t {
             f_t inv_diag = thrust::get<0>(t);
             f_t r1       = thrust::get<1>(t);
@@ -2107,7 +2174,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       rmm::device_uvector<f_t> d_dx_residual_6(dx_residual_6.size(), stream_view_);
 
       cub::DeviceTransform::Transform(
-        cuda::std::make_tuple(d_inv_diag_.data(), d_r1_.data()),
+        cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data()),
         d_dx_residual_5.data(),
         d_dx_residual_5.size(),
         [] HD(f_t ind_diag, f_t r1) { return ind_diag * r1; },
@@ -2158,7 +2225,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
       rmm::device_uvector<f_t> d_dx_residual_4(lp.num_rows, stream_view_);
 
       cub::DeviceTransform::Transform(
-        cuda::std::make_tuple(d_inv_diag_.data(), d_r1_prime_.data()),
+        cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_prime_.data()),
         d_dx_residual_3.data(),
         d_dx_residual_3.size(),
         [] HD(f_t ind_diag, f_t r1_prime) { return ind_diag * r1_prime; },
@@ -2232,7 +2299,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
                              d_u_,
                              cusparse_u_,
                              cusparse_view_,
-                             d_inv_diag_);
+                             data.d_inv_diag);
 
       const f_t dx_residual_7_norm =
         device_vector_norm_inf<i_t, f_t>(d_dx_residual_7, stream_view_);

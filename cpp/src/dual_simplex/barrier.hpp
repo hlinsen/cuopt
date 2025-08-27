@@ -158,7 +158,6 @@ class barrier_solver_t {
   cusparseDnVecDescr_t cusparse_u_;
 
   rmm::device_uvector<f_t> d_diag_;
-  rmm::device_uvector<f_t> d_inv_diag_;
   rmm::device_uvector<f_t> d_bound_rhs_;
   rmm::device_uvector<f_t> d_x_;
   rmm::device_uvector<f_t> d_z_;
