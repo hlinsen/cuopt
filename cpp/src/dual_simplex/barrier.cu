@@ -33,6 +33,7 @@
 
 #include <raft/sparse/detail/cusparse_wrappers.h>
 #include <raft/common/nvtx.hpp>
+#include <raft/linalg/dot.cuh>
 
 #include <thrust/iterator/permutation_iterator.h>
 #include <thrust/iterator/transform_output_iterator.h>
@@ -3437,8 +3438,33 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
              (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
       }
 
-      primal_objective = data.c.inner_product(data.x);
-      dual_objective   = data.b.inner_product(data.y) - restrict_u.inner_product(data.v);
+      if (use_gpu) {
+        auto d_c          = device_copy(data.c, stream_view_);
+        auto d_b          = device_copy(data.b, stream_view_);
+        auto d_restrict_u = device_copy(restrict_u, stream_view_);
+
+        auto d_c_view = raft::make_device_vector_view<const f_t>(d_c.data(), d_c.size());
+        auto d_x_view = raft::make_device_vector_view<const f_t>(d_x_.data(), d_x_.size());
+        auto d_b_view = raft::make_device_vector_view<const f_t>(d_b.data(), d_b.size());
+        auto d_y_view = raft::make_device_vector_view<const f_t>(d_y_.data(), d_y_.size());
+        auto d_v_view = raft::make_device_vector_view<const f_t>(d_v_.data(), d_v_.size());
+        auto d_restrict_u_view =
+          raft::make_device_vector_view<const f_t>(d_restrict_u.data(), d_restrict_u.size());
+
+        f_t dot_b_y;
+        f_t dot_restrict_u_v;
+        auto primal_objective_view = raft::make_host_scalar_view(&primal_objective);
+        auto dot_b_y_view          = raft::make_host_scalar_view(&dot_b_y);
+        auto dot_restrict_u_v_view = raft::make_host_scalar_view(&dot_restrict_u_v);
+        raft::resources handle_resources;
+        raft::linalg::dot(handle_resources, d_c_view, d_x_view, primal_objective_view);
+        raft::linalg::dot(handle_resources, d_b_view, d_y_view, dot_b_y_view);
+        raft::linalg::dot(handle_resources, d_restrict_u_view, d_v_view, dot_restrict_u_v_view);
+        dual_objective = dot_b_y - dot_restrict_u_v;
+      } else {
+        primal_objective = data.c.inner_product(data.x);
+        dual_objective   = data.b.inner_product(data.y) - restrict_u.inner_product(data.v);
+      }
 
       relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
       relative_dual_residual   = dual_residual_norm / (1.0 + norm_c);
