@@ -3163,6 +3163,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         raft::linalg::dot(handle_resources, d_c_view, d_x_view, primal_objective_view);
         raft::linalg::dot(handle_resources, d_b_view, d_y_view, dot_b_y_view);
         raft::linalg::dot(handle_resources, d_restrict_u_view, d_v_view, dot_restrict_u_v_view);
+        // Just to be extra sure
+        RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
         dual_objective = dot_b_y - dot_restrict_u_v;
       } else {
         primal_objective = data.c.inner_product(data.x);
