@@ -3044,9 +3044,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                            thrust::make_counting_iterator(num_free_variables),
                            [span_free_variable_pairs = cuopt::make_span(d_free_variable_pairs),
                             span_x                   = cuopt::make_span(d_x_),
-                            span_y                   = cuopt::make_span(d_y_),
-                            step_primal              = step_primal,
-                            step_dual                = step_dual,
                             step_scale               = options.step_scale] __device__(i_t i) {
                              // Not coalesced
                              i_t k       = 2 * i;
@@ -3056,8 +3053,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                              f_t v_val   = span_x[v];
                              f_t min_val = cuda::std::min(u_val, v_val);
                              f_t eta     = step_scale * min_val;
-                             atomicAdd(&span_x[u], -eta);
-                             atomicAdd(&span_x[v], -eta);
+                             span_x[u] -= eta;
+                             span_x[v] -= eta;
                            });
         }
 
