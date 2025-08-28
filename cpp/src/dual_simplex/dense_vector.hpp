@@ -18,6 +18,8 @@
 
 #include "dual_simplex/types.hpp"
 
+#include <utilities/cuda_helpers.cuh>
+
 #include <cmath>
 #include <cstdio>
 #include <vector>
