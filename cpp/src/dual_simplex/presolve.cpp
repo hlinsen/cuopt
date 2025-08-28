@@ -17,9 +17,14 @@
 
 #include <dual_simplex/presolve.hpp>
 
+#include <dual_simplex/solve.hpp>
+
 #include <dual_simplex/right_looking_lu.hpp>
 #include <dual_simplex/tic_toc.hpp>
 
+#include <unordered_map>
+#include <numeric>
+#include <queue>
 #include <cmath>
 
 namespace cuopt::linear_programming::dual_simplex {
@@ -627,6 +632,806 @@ i_t add_artifical_variables(lp_problem_t<i_t, f_t>& problem,
   return 0;
 }
 
+template <typename i_t>
+struct color_t {
+  color_t(int8_t row_or_column, int8_t active, i_t color, std::vector<i_t> vertices)
+    : row_or_column(row_or_column), active(active), color(color), vertices(vertices)
+  {
+  }
+  int8_t row_or_column;
+  int8_t active;
+  i_t color;
+  std::vector<i_t> vertices;
+};
+
+constexpr int8_t kRow = 0;
+constexpr int8_t kCol = 1;
+constexpr int8_t kActive = 1;
+constexpr int8_t kInactive = 0;
+
+template <typename i_t, typename f_t>
+void compute_sums(const csc_matrix_t<i_t, f_t>& A,
+                  const csr_matrix_t<i_t, f_t>& Arow,
+                  i_t num_row_colors,
+                  i_t num_col_colors,
+                  i_t total_colors_seen,
+                  const std::vector<i_t>& row_color_map,
+                  const std::vector<i_t>& col_color_map,
+                  const color_t<i_t>& refining_color,
+                  std::vector<i_t>& colors_to_update,
+                  std::vector<i_t>& vertices_to_refine,
+                  std::vector<f_t>& vertex_to_sum)
+{
+  i_t num_colors = num_row_colors + num_col_colors;
+  std::vector<i_t> marked_colors(total_colors_seen, 0);
+  if (refining_color.row_or_column == kRow) {
+    // The refining color is a row color
+    // Find all vertices (columns) that have a neighbor in the refining color
+    vertices_to_refine.clear();
+    std::vector<i_t> marked_vertices(A.n, 0);
+
+    colors_to_update.clear();
+    colors_to_update.reserve(num_col_colors);
+    for (i_t u : refining_color.vertices) {
+      const i_t row_start = Arow.row_start[u];
+      const i_t row_end = Arow.row_start[u + 1];
+      for (i_t p = row_start; p < row_end; p++) {
+        const i_t v = Arow.j[p];
+        if (marked_vertices[v] == 0) {
+          marked_vertices[v] = 1;
+          vertices_to_refine.push_back(v);
+        }
+        const i_t col_color = col_color_map[v];
+        if (marked_colors[col_color] == 0) {
+          marked_colors[col_color] = 1;
+          colors_to_update.push_back(col_color);
+        }
+      }
+    }
+
+    for (i_t v: vertices_to_refine) {
+      f_t col_sum = 0.0;
+      const i_t col_start = A.col_start[v];
+      const i_t col_end = A.col_start[v + 1];
+      for (i_t p = col_start; p < col_end; p++) {
+        col_sum += A.x[p];
+      }
+      vertex_to_sum[v] = col_sum;
+      //printf("Column %d has a sum of %f\n", v, col_sum);
+    }
+
+   }
+   else {
+    // The refining color is a column color
+    // Find all vertices (rows) that have a neighbor in the refining color
+    vertices_to_refine.clear();
+    std::vector<i_t> marked_vertices(A.m, 0);
+
+    colors_to_update.clear();
+    colors_to_update.reserve(num_row_colors);
+    for (i_t v : refining_color.vertices) {
+      const i_t col_start = A.col_start[v];
+      const i_t col_end = A.col_start[v + 1];
+      for (i_t p = col_start; p < col_end; p++) {
+        const i_t u = A.i[p];
+        if (marked_vertices[u] == 0) {
+          marked_vertices[u] = 1;
+          vertices_to_refine.push_back(u);
+        }
+
+        const i_t row_color = row_color_map[u];
+        if (marked_colors[row_color] == 0) {
+          marked_colors[row_color] = 1;
+          colors_to_update.push_back(row_color);
+        }
+      }
+    }
+
+    for (i_t u: vertices_to_refine) {
+      f_t row_sum = 0.0;
+      const i_t row_start = Arow.row_start[u];
+      const i_t row_end = Arow.row_start[u + 1];
+      for (i_t p = row_start; p < row_end; p++) {
+        const i_t v = Arow.j[p];
+        row_sum += Arow.x[p];
+      }
+      vertex_to_sum[u] = row_sum;
+      //printf("Row %d has a sum of %f\n", u, row_sum);
+    }
+  }
+}
+
+template <typename i_t, typename f_t>
+void folding(lp_problem_t<i_t, f_t>& problem)
+{
+
+  // Handle linear programs in the form
+  // minimize c^T x
+  // subject to A * x = b
+  //            0 <= x,
+  //              x_j <= u_j,   j in U
+
+  // These can be converted into the form
+  // minimize c^T x
+  // subject to A * x = b
+  //            x_j + w_j = u_j, j in U
+  //            0 <= x,
+  //            0 <= w
+  //
+  // We can then construct the augmented matrix
+  //
+  // [ A 0   b]
+  // [ c 0 inf]
+  // [ I I   u]
+
+  i_t m = problem.num_rows;
+  i_t n = problem.num_cols;
+
+  i_t nz_obj = 0;
+  for (i_t j = 0; j < n; j++)
+  {
+    if (problem.objective[j] != 0.0)
+    {
+      nz_obj++;
+    }
+  }
+  i_t nz_rhs = 0;
+  for (i_t i = 0; i < m; i++)
+  {
+    if (problem.rhs[i] != 0.0)
+    {
+      nz_rhs++;
+    }
+  }
+  i_t nz_lb = 0;
+  for (i_t j = 0; j < n; j++)
+  {
+    if (problem.lower[j] != 0.0)
+    {
+      nz_lb++;
+    }
+  }
+
+  i_t nz_ub = 0;
+  for (i_t j = 0; j < n; j++)
+  {
+    if (problem.upper[j] != inf)
+    {
+      nz_ub++;
+    }
+  }
+  printf("Nonzero lower bounds %d, finite upper bounds %d\n", nz_lb, nz_ub);
+
+  if (nz_lb > 0)
+  {
+    printf("Cant handle problems with nonzero lower bounds\n");
+    exit(1);
+  }
+
+  i_t m_prime = m + 1 + nz_ub;
+  i_t n_prime = n + nz_ub + 1;
+  i_t augmented_nz = problem.A.col_start[n] + nz_obj + nz_rhs + 3 * nz_ub + 1;
+  printf("Augmented matrix has %d rows, %d columns, %d nonzeros\n", m_prime, n_prime, augmented_nz);
+
+  csc_matrix_t<i_t, f_t> augmented(m_prime, n_prime, augmented_nz);
+  i_t nnz = 0;
+  i_t upper_count = 0;
+  for (i_t j = 0; j < n; j++)
+  {
+    augmented.col_start[j] = nnz;
+    // A
+    const i_t col_start = problem.A.col_start[j];
+    const i_t col_end = problem.A.col_start[j + 1];
+    for (i_t p = col_start; p < col_end; p++)
+    {
+      augmented.i[nnz] = problem.A.i[p];
+      augmented.x[nnz] = problem.A.x[p];
+      nnz++;
+    }
+    // c
+    if (problem.objective[j] != 0.0)
+    {
+      augmented.i[nnz] = m;
+      augmented.x[nnz] = problem.objective[j];
+      nnz++;
+    }
+    // I
+    if (problem.upper[j] != inf)
+    {
+      augmented.i[nnz] = m + 1 + upper_count;
+      augmented.x[nnz] = 1.0;
+      upper_count++;
+      nnz++;
+    }
+  }
+  for (i_t j = n; j < n + nz_ub; j++) {
+    augmented.col_start[j] = nnz;
+    i_t k = j - n;
+    augmented.i[nnz] = m + 1 + k;
+    augmented.x[nnz] = 1.0;
+    nnz++;
+  }
+  augmented.col_start[n+nz_ub] = nnz;
+  for (i_t i = 0; i < m; i++)
+  {
+    if (problem.rhs[i] != 0.0)
+    {
+      augmented.i[nnz] = i;
+      augmented.x[nnz] = problem.rhs[i];
+      nnz++;
+    }
+  }
+  augmented.i[nnz] = m;
+  augmented.x[nnz] = inf;
+  nnz++;
+  upper_count = 0;
+  for (i_t j = 0; j < n; j++)
+  {
+    if (problem.upper[j] != inf)
+    {
+      augmented.i[nnz] = m + 1 + upper_count;
+      augmented.x[nnz] = problem.upper[j];
+      upper_count++;
+      nnz++;
+    }
+  }
+  augmented.col_start[n+nz_ub+1] = nnz;
+  printf("Augmented matrix has %d nonzeros predicted %d\n", nnz, augmented_nz);
+
+  // Ensure only 1 inf in the augmented matrice
+  i_t num_inf = 0;
+  for (i_t p = 0; p < augmented_nz; p++) {
+    if (augmented.x[p] == inf) {
+      num_inf++;
+    }
+  }
+  printf("Augmented matrix has %d infs\n", num_inf);
+  if (num_inf != 1) {
+    printf("Augmented matrix has %d infs, expected 1\n", num_inf);
+    exit(1);
+  }
+
+  csr_matrix_t<i_t, f_t> augmented_row(m_prime, n_prime, 1);
+  augmented.to_compressed_row(augmented_row);
+
+  std::vector<i_t> all_rows_vertices(m_prime);
+  std::iota(all_rows_vertices.begin(), all_rows_vertices.end(), 0);
+  color_t<i_t> all_rows(kRow, kActive, 0, all_rows_vertices);
+
+  std::vector<i_t> all_cols_vertices(n_prime);
+  std::iota(all_cols_vertices.begin(), all_cols_vertices.end(), 0);
+  color_t<i_t> all_cols(kCol, kActive, 1, all_cols_vertices);
+
+  std::queue<color_t<i_t>> color_queue;
+  color_queue.push(all_rows);
+  color_queue.push(all_cols);
+
+  std::vector<i_t> row_color_map(m_prime);
+  std::vector<i_t> col_color_map(n_prime);
+
+  for (i_t i = 0; i < m_prime; i++) {
+    row_color_map[i] = 0;
+  }
+
+  for (i_t j = 0; j < n_prime; j++) {
+    col_color_map[j] = 1;
+  }
+
+  i_t num_row_colors = 1;
+  i_t num_col_colors = 1;
+  i_t num_colors = num_row_colors + num_col_colors;
+  i_t total_colors_seen = 2;   // The total colors seen includes inactive colors
+
+  std::vector<color_t<i_t>> colors;
+  colors.emplace_back(all_rows);
+  colors.emplace_back(all_cols);
+
+  std::vector<i_t> color_index(num_colors);
+  color_index[0] = 0;
+  color_index[1] = 1;
+
+  std::vector<f_t> vertex_to_sum(std::max(m_prime, n_prime), std::numeric_limits<f_t>::quiet_NaN());
+  std::vector<i_t> vertices_to_refine;
+  vertices_to_refine.reserve(std::max(m_prime, n_prime));
+
+  std::unordered_map<f_t, std::vector<i_t>> color_sums;
+  std::unordered_map<f_t, i_t> sum_to_color;
+
+  while (!color_queue.empty()) {
+    color_t<i_t> refining_color = color_queue.front();
+    std::vector<i_t> colors_to_update;
+    printf("Refining %s color %d of size %ld\n", refining_color.row_or_column == kRow ? "row" : "column", refining_color.color, refining_color.vertices.size());
+    compute_sums(augmented, augmented_row, num_row_colors, num_col_colors, total_colors_seen, row_color_map, col_color_map, refining_color, colors_to_update, vertices_to_refine, vertex_to_sum);
+    color_queue.pop(); // Can pop since refining color is no longer needed. New colors will be added to the queue.
+
+    // We now need to split the current colors into new colors
+    if (refining_color.row_or_column == kRow) {
+      // Refining color is a row color.
+      // See if we need to split the column colors
+      for (i_t color: colors_to_update) {
+        printf("Checking for updates to color %d\n", color);
+        printf("Color index %d\n", color_index[color]);
+        color_t<i_t> current_color = colors[color_index[color]];  // Expensive copy
+        printf("Current color size: %ld\n", current_color.vertices.size());
+        color_sums.clear();
+        for (i_t v: current_color.vertices) {
+          if (vertex_to_sum[v] != vertex_to_sum[v]) {
+            //printf("Vertex %d has not been computed\n", v);
+            // This vertex has not has been computed
+            // Compute the row sum over the refining color
+            f_t row_sum = 0.0;
+            const i_t col_start = augmented.col_start[v];
+            const i_t col_end = augmented.col_start[v + 1];
+            for (i_t p = col_start; p < col_end; p++) {
+              row_sum += augmented.x[p];
+            }
+            //printf("Vertex %d has a sum of %f\n", v, row_sum);
+            vertex_to_sum[v] = row_sum;
+          }
+          color_sums[vertex_to_sum[v]].push_back(v);
+        }
+        printf("Color sums size: %ld\n", color_sums.size());
+        if (color_sums.size() > 1) {
+          printf("Splitting column color %d\n", color);
+          // We need to split the color
+          sum_to_color.clear();
+          i_t max_size = 0;
+          f_t max_sum = std::numeric_limits<f_t>::quiet_NaN();
+          for (auto& [sum, vertices]: color_sums) {
+            printf("Found %d columns with a sum of %.16f\n", vertices.size(), sum);
+            colors.emplace_back(kCol, kActive, total_colors_seen, vertices);
+            color_index.push_back(total_colors_seen);
+
+            // Update the column color map
+            for (i_t v: vertices) {
+              col_color_map[v] = total_colors_seen;
+            }
+
+            if (vertices.size() > max_size) {
+              max_size = vertices.size();
+              max_sum = sum;
+            }
+            sum_to_color[sum] = total_colors_seen;
+
+            num_colors++;
+            num_col_colors++;
+            total_colors_seen++;
+          }
+          printf("Removing old column color %d\n", color);
+          num_col_colors--;   // Remove the old column color
+          num_colors--;       // Remove the old color
+          colors[color_index[color]].active = kInactive;
+
+          // Push all but the color with the largest size onto the queue
+          for (auto& [sum, vertices]: color_sums) {
+            if (sum != max_sum) {
+              printf("Adding column color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
+              color_queue.push(colors[sum_to_color[sum]]);
+            }
+            else {
+              printf("Not adding column color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
+            }
+          }
+        }
+      }
+    } else {
+      // Refining color is a column color.
+      // See if we need to split the row colors
+      for (i_t color: colors_to_update) {
+        color_t<i_t> current_color = colors[color_index[color]];  // Expensive copy
+        color_sums.clear();
+        for (i_t u: current_color.vertices) {
+          if (vertex_to_sum[u] != vertex_to_sum[u]) {
+            //printf("Vertex %d has not been computed\n", u);
+            // This vertex has not has been computed
+            // Compute the column sum over the refining color
+            f_t col_sum = 0.0;
+            const i_t row_start = augmented_row.row_start[u];
+            const i_t row_end = augmented_row.row_start[u + 1];
+            for (i_t p = row_start; p < row_end; p++) {
+              col_sum += augmented_row.x[p];
+            }
+            vertex_to_sum[u] = col_sum;
+            //printf("Vertex %d has a sum of %f\n", u, col_sum);
+          }
+          color_sums[vertex_to_sum[u]].push_back(u);
+        }
+
+        if (color_sums.size() > 1) {
+          // We need to split the color
+          printf("Splitting row color %d\n", color);
+          std::vector<i_t> vertex_mark(m_prime, 0);
+          sum_to_color.clear();
+          i_t max_size = 0;
+          f_t max_sum = std::numeric_limits<f_t>::quiet_NaN();
+          for (auto& [sum, vertices]: color_sums) {
+            colors.emplace_back(kRow, kActive, total_colors_seen, vertices);
+            color_index.push_back(total_colors_seen);
+
+            // Update the row color map
+            for (i_t u: vertices) {
+              row_color_map[u] = total_colors_seen;
+              vertex_mark[u] = 1;
+            }
+
+            if (vertices.size() > max_size) {
+              max_size = vertices.size();
+              max_sum = sum;
+            }
+
+
+            sum_to_color[sum] = total_colors_seen;
+
+            num_colors++;
+            num_row_colors++;
+            total_colors_seen++;
+          }
+
+          printf("Removing old row color %d\n", color);
+          num_row_colors--;  // Remove the old row color
+          num_colors--;      // Remove the old color
+          colors[color_index[color]].active = kInactive;
+
+          // Push all but the color with the largest size onto the queue
+          for (auto& [sum, vertices]: color_sums) {
+            if (sum != max_sum) {
+              printf("Adding row color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
+              color_queue.push(colors[sum_to_color[sum]]);
+            }
+            else {
+              printf("Not adding row color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
+            }
+          }
+        }
+      }
+    }
+
+    for (i_t v: vertices_to_refine) {
+      vertex_to_sum[v] = std::numeric_limits<f_t>::quiet_NaN();
+    }
+
+    for (i_t i = 0; i < m_prime; i++) {
+      if (row_color_map[i] >= total_colors_seen) {
+        printf("Row color %d is not in the colors vector\n", row_color_map[i]);
+        exit(1);
+      }
+    }
+    for (i_t j = 0; j < n_prime; j++) {
+      if (col_color_map[j] >= total_colors_seen) {
+        printf("Column color %d is not in the colors vector. %d\n", col_color_map[j], num_colors);
+        exit(1);
+      }
+    }
+
+
+    printf("Number of row colors: %d\n", num_row_colors);
+    printf("Number of column colors: %d\n", num_col_colors);
+    printf("Number of colors: %d\n", num_colors);
+
+    // Count the number of active colors
+    i_t num_active_colors = 0;
+    i_t num_active_row_colors = 0;
+    i_t num_active_col_colors = 0;
+    for (color_t<i_t>& color : colors)
+    {
+      if (color.active == kActive) {
+        num_active_colors++;
+        if (color.row_or_column == kRow) {
+          num_active_row_colors++;
+        }
+        else {
+          num_active_col_colors++;
+        }
+      }
+    }
+    printf("Number of active colors: %d\n", num_active_colors);
+    if (num_active_colors != num_colors) {
+      printf("Number of active colors does not match number of colors\n");
+      exit(1);
+    }
+    printf("Number of active row colors: %d\n", num_active_row_colors);
+     if (num_active_row_colors != num_row_colors) {
+      printf("Number of active row colors does not match number of row colors\n");
+      exit(1);
+    }
+    printf("Number of active column colors: %d\n", num_active_col_colors);
+    if (num_active_col_colors != num_col_colors) {
+      printf("Number of active column colors does not match number of column colors\n");
+      exit(1);
+    }
+  }
+
+
+  // Go through the active colors and ensure that the row corresponding to the objective is its own color
+  std::vector<f_t> full_rhs(m_prime, 0.0);
+  for (i_t i = 0; i < m; i++) {
+    full_rhs[i] = problem.rhs[i];
+  }
+  full_rhs[m] = inf;
+  upper_count = 0;
+  for (i_t j = 0; j < n; j++)
+  {
+    if (problem.upper[j] != inf)
+    {
+      upper_count++;
+      full_rhs[m + upper_count] = problem.upper[j];
+    }
+  }
+
+  std::vector<i_t> row_colors;
+  row_colors.reserve(num_row_colors);
+
+  bool found_objective_color = false;
+  i_t color_count = 0;
+  for (const color_t<i_t>& color : colors)
+  {
+    if (color.active == kActive) {
+      if (color.row_or_column == kRow) {
+        printf("Active row color %d has %ld vertices\n", color.color, color.vertices.size());
+        if (color.vertices.size() == 1) {
+          if (color.vertices[0] == problem.num_rows) {
+            printf("Row color %d is the objective color\n", color.color);
+            found_objective_color = true;
+          } else {
+            row_colors.push_back(color_count);
+          }
+        }
+        else {
+          row_colors.push_back(color_count);
+          // Check that all vertices in the same row color have the same rhs value
+          f_t rhs_value = full_rhs[color.vertices[0]];
+          for (i_t k = 1; k < color.vertices.size(); k++) {
+            if (full_rhs[color.vertices[k]] != rhs_value) {
+              printf("RHS value for vertex %d is %e, but should be %e. Difference is %e\n", color.vertices[k], full_rhs[color.vertices[k]], rhs_value, full_rhs[color.vertices[k]] - rhs_value);
+              exit(1);
+            }
+          }
+        }
+      }
+    }
+    color_count++;
+  }
+
+  if (!found_objective_color) {
+    printf("Objective color not found\n");
+    exit(1);
+  }
+
+  // Go through the active colors and ensure that the column corresponding to the rhs is its own color
+  bool found_rhs_color = false;
+  std::vector<f_t> full_objective(n_prime, 0.0);
+  for (i_t j = 0; j < n; j++) {
+    full_objective[j] = problem.objective[j];
+  }
+  full_objective[n_prime - 1] = inf;
+
+  std::vector<i_t> col_colors(num_col_colors - 1, -1);
+  color_count = 0;
+  i_t col_color_count = 0;
+  for (const color_t<i_t>& color : colors)
+  {
+    if (color.active == kActive) {
+      if (color.row_or_column == kCol) {
+        printf("Active column color %d has %ld vertices\n", color.color, color.vertices.size());
+        if (color.vertices.size() == 1) {
+          if (color.vertices[0] == n_prime - 1) {
+            printf("Column color %d is the rhs color\n", color.color);
+            found_rhs_color = true;
+          }
+        }
+        else {
+          col_colors[col_color_count++] = color_count;
+          // Check that all vertices in the same column color have the same objective value
+          f_t objective_value = full_objective[color.vertices[0]];
+          for (i_t k = 1; k < color.vertices.size(); k++) {
+            if (full_objective[color.vertices[k]] != objective_value) {
+              printf("Objective value for vertex %d is %e, but should be %e. Difference is %e\n", color.vertices[k], full_objective[color.vertices[k]], objective_value, full_objective[color.vertices[k]] - objective_value);
+              exit(1);
+            }
+          }
+        }
+      }
+    }
+    color_count++;
+  }
+
+  if (!found_rhs_color) {
+    printf("RHS color not found\n");
+    exit(1);
+  }
+
+  // The original problem is in the form
+  // minimize c^T x
+  // subject to A x = b
+  // x >= 0
+  //
+  // Let A_prime = C^s A D
+  // b_prime = C^s b
+  // c_prime = D^T c
+  //
+  // where C = Pi_P
+  // and D = Pi_Q
+  //
+  // We will construct the new problem
+  //
+  // minimize c_prime^T x_prime
+  // subject to A_prime x_prime = b_prime
+  // x_prime >= 0
+  //
+
+
+  // Start by constructing the matrix C^s
+  // C^s = Pi^s_P
+  // C^s_tv = Pi_vt / | T | if t corresponds to color T
+  // C^s_tv = { 1/|T| if v in color T
+  //         { 0
+  printf("Constructing C^s row\n");
+  i_t previous_rows = m + nz_ub;
+  i_t reduced_rows = num_row_colors - 1;
+  printf("previous_rows %d reduced_rows %d\n", previous_rows, reduced_rows);
+  csr_matrix_t<i_t, f_t> C_s_row(reduced_rows, previous_rows, previous_rows);
+  nnz = 0;
+  printf("row_colors size %ld reduced_rows %d\n", row_colors.size(), reduced_rows);
+  if (row_colors.size() != reduced_rows)
+  {
+    printf("Bad row colors\n");
+    exit(1);
+  }
+  for (i_t k = 0; k < reduced_rows; k++) {
+    C_s_row.row_start[k] = nnz;
+    const i_t color_index = row_colors[k];
+    if (color_index < 0)
+    {
+      printf("Bad row colors\n");
+      exit(1);
+    }
+    const color_t<i_t>& color = colors[color_index];
+    const i_t color_size = color.vertices.size();
+    printf("Color %d row %d active %d has %ld vertices\n", color.color, color.row_or_column, color.active, color_size);
+    for (i_t v : color.vertices) {
+      const i_t j = v < m ? v :  v - 1;
+      C_s_row.j[nnz] = j;
+      C_s_row.x[nnz] = 1.0 / color_size;
+      nnz++;
+    }
+  }
+  C_s_row.row_start[reduced_rows] = nnz;
+  printf("C_s nz %d predicted %d\n", nnz, previous_rows);
+  printf("Converting C^s row to compressed column\n");
+  csc_matrix_t<i_t, f_t> C_s(reduced_rows, previous_rows, 1);
+  C_s_row.to_compressed_col(C_s);
+
+
+  // Construct that matrix D
+  // D = Pi_Q
+  // D_vQ = { 1 if v in Q
+  //        { 0 otherwise
+  printf("Constructing D\n");
+  i_t previous_cols = n + nz_ub;
+  i_t reduced_cols = num_col_colors - 1;
+  printf("previous_cols %d reduced_cols %d\n", previous_cols, reduced_cols);
+  csc_matrix_t<i_t, f_t> D(previous_cols, reduced_cols, previous_cols);
+  nnz = 0;
+  for (i_t k = 0; k < reduced_cols; k++) {
+    D.col_start[k] = nnz;
+    const i_t color_index = col_colors[k];
+    const color_t<i_t>& color = colors[color_index];
+    for (const i_t v : color.vertices) {
+      D.i[nnz] = v;
+      D.x[nnz] = 1.0;
+      nnz++;
+    }
+  }
+  D.col_start[reduced_cols] = nnz;
+  // Construct the matrix A_tilde
+  printf("Constructing A_tilde\n");
+  i_t A_nnz = problem.A.col_start[n];
+  csc_matrix_t<i_t, f_t> A_tilde(previous_rows, previous_cols, A_nnz + 2 * nz_ub);
+  i_t k = m;
+  nnz = 0;
+  std::vector<f_t> uj(nz_ub, 0.0);
+  for (i_t j = 0; j < n; j++) {
+    A_tilde.col_start[j] = nnz;
+    const i_t col_start = problem.A.col_start[j];
+    const i_t col_end = problem.A.col_start[j + 1];
+    for (i_t p = col_start; p < col_end; p++) {
+      A_tilde.i[nnz] = problem.A.i[p];
+      A_tilde.x[nnz] = problem.A.x[p];
+      nnz++;
+    }
+    // Add in the identity matrix
+    if (problem.upper[j] != inf) {
+      uj[k-m] = problem.upper[j];
+      A_tilde.i[nnz] = k++;
+      A_tilde.x[nnz] = 1.0;
+      nnz++;
+    }
+  }
+  printf("partial A_tilde nz %d predicted %d\n", nnz, A_nnz + nz_ub);
+  // Add in columns corresponding to the upper bound slack variables
+  k = m;
+  for (i_t j = n; j < n + nz_ub; j++) {
+    A_tilde.col_start[j] = nnz;
+    A_tilde.i[nnz] = k++;
+    A_tilde.x[nnz] = 1.0;
+    nnz++;
+  }
+  A_tilde.col_start[previous_cols] = nnz;
+  printf("partial A_tilde nz %d predicted %d\n", nnz, A_nnz + 2 *nz_ub);
+
+  // Construct the matrix A_prime
+  printf("Constructing A_prime\n");
+  csc_matrix_t<i_t, f_t> A_prime(reduced_rows, reduced_cols, 1);
+  csc_matrix_t<i_t, f_t> AD(previous_rows, reduced_cols,  1);
+  printf("Multiplying A_tilde and D\n");
+  multiply(A_tilde, D, AD);
+  printf("Multiplying C_s and AD\n");
+  multiply(C_s, AD, A_prime);
+
+  // Construct the vector b_prime
+  printf("Constructing b_prime\n");
+  std::vector<f_t> b_tilde(previous_rows);
+  for (i_t i = 0; i < m; i++) {
+    b_tilde[i] = problem.rhs[i];
+  }
+  for (i_t i = m; i < m + nz_ub; i++) {
+    b_tilde[i] = uj[i - m];
+  }
+  std::vector<f_t> b_prime(reduced_rows);
+  matrix_vector_multiply(C_s, 1.0, b_tilde, 0.0, b_prime);
+  printf("b_prime\n");
+  for (i_t i = 0; i < reduced_rows; i++) {
+    printf("b_prime[%d] = %f\n", i, b_prime[i]);
+  }
+
+  // Construct the vector c_prime
+  printf("Constructing c_prime\n");
+  std::vector<f_t> c_tilde(previous_cols);
+  for (i_t j = 0; j < n; j++) {
+    c_tilde[j] = problem.objective[j];
+  }
+  for (i_t j = n; j < n + nz_ub; j++) {
+    c_tilde[j] = 0.0;
+  }
+  std::vector<f_t> c_prime(reduced_cols);
+  matrix_transpose_vector_multiply(D, 1.0, c_tilde, 0.0, c_prime);
+  printf("c_prime\n");
+  for (i_t j = 0; j < reduced_cols; j++) {
+    printf("c_prime[%d] = %f\n", j, c_prime[j]);
+  }
+  A_prime.print_matrix();
+
+
+  // Construct a new problem
+  printf("Constructing reduced problem: rows %d cols %d nnz %d\n", reduced_rows, reduced_cols, A_prime.col_start[reduced_cols]);
+  raft::handle_t handle{};
+  lp_problem_t<i_t, f_t> reduced_problem(&handle, reduced_rows, reduced_cols, A_prime.col_start[reduced_cols]);
+  reduced_problem.A = A_prime;
+  reduced_problem.objective = c_prime;
+  reduced_problem.rhs = b_prime;
+  reduced_problem.lower = std::vector<f_t>(reduced_cols, 0.0);
+  reduced_problem.upper = std::vector<f_t>(reduced_cols, inf);
+  reduced_problem.obj_constant = 0.0;
+  reduced_problem.obj_scale = 1.0;
+  // Solve the reduced problem
+  lp_solution_t<i_t, f_t> reduced_solution(reduced_rows, reduced_cols);
+  simplex_solver_settings_t<i_t, f_t> reduced_settings;
+  reduced_settings.folding = false;
+  reduced_settings.barrier = false;
+  reduced_settings.log.log = true;
+  std::vector<variable_status_t> vstatus;
+  std::vector<f_t> edge_norms;
+  solve_linear_program_advanced(reduced_problem, tic(), reduced_settings, reduced_solution, vstatus, edge_norms);
+
+  printf("Reduced solution\n");
+  for (i_t j = 0; j < reduced_cols; j++) {
+    printf("x[%d] = %f\n", j, reduced_solution.x[j]);
+  }
+  printf("objective = %f\n", reduced_solution.objective);
+
+  exit(0);
+}
+
 template <typename i_t, typename f_t>
 void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
                           const simplex_solver_settings_t<i_t, f_t>& settings,
@@ -823,6 +1628,8 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     problem.A.n      = num_cols;
     problem.num_cols = num_cols;
   }
+
+  if (settings.folding) { folding(problem); }
 
   // Check for empty rows
   i_t num_empty_rows = 0;
