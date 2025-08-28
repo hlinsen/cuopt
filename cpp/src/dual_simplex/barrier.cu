@@ -2881,19 +2881,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       raft::common::nvtx::range fun_scope("Barrier: GPU after first compute_search_direction");
 
       // TMP no copy and data should always be on the GPU
-      d_w_.resize(data.w.size(), stream_view_);
-      d_x_.resize(data.x.size(), stream_view_);
-      d_v_.resize(data.v.size(), stream_view_);
-      d_z_.resize(data.z.size(), stream_view_);
       d_dw_aff_.resize(data.dw_aff.size(), stream_view_);
       d_dx_aff_.resize(data.dx_aff.size(), stream_view_);
       d_dv_aff_.resize(data.dv_aff.size(), stream_view_);
       d_dz_aff_.resize(data.dz_aff.size(), stream_view_);
 
-      raft::copy(d_w_.data(), data.w.data(), data.w.size(), stream_view_);
-      raft::copy(d_x_.data(), data.x.data(), data.x.size(), stream_view_);
-      raft::copy(d_v_.data(), data.v.data(), data.v.size(), stream_view_);
-      raft::copy(d_z_.data(), data.z.data(), data.z.size(), stream_view_);
       raft::copy(d_dw_aff_.data(), data.dw_aff.data(), data.dw_aff.size(), stream_view_);
       raft::copy(d_dx_aff_.data(), data.dx_aff.data(), data.dx_aff.size(), stream_view_);
       raft::copy(d_dv_aff_.data(), data.dv_aff.data(), data.dv_aff.size(), stream_view_);
