@@ -3006,12 +3006,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         raft::copy(d_y_.data(), data.y.data(), data.y.size(), stream_view_);
         raft::copy(d_dy_aff_.data(), data.dy_aff.data(), data.dy_aff.size(), stream_view_);
 
-        auto d_dw = device_copy(data.dw, stream_view_);
-        auto d_dx = device_copy(data.dx, stream_view_);
-        auto d_dy = device_copy(data.dy, stream_view_);
-        auto d_dv = device_copy(data.dv, stream_view_);
-        auto d_dz = device_copy(data.dz, stream_view_);
-
         // dw = dw_aff + dw_cc
         // dx = dx_aff + dx_cc
         // dy = dy_aff + dy_cc
@@ -3020,64 +3014,64 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         // Note: dw_cc - dz_cc are stored in dw - dz
 
         // Transforms are grouped according to vector sizes.
-        assert(d_dw.size() == d_dv.size());
-        assert(d_dx.size() == d_dz.size());
+        assert(d_dw_.size() == d_dv_.size());
+        assert(d_dx_.size() == d_dz_.size());
         assert(d_dw_aff_.size() == d_dv_aff_.size());
         assert(d_dx_aff_.size() == d_dz_aff_.size());
-        assert(d_dy_aff_.size() == d_dy.size());
+        assert(d_dy_aff_.size() == d_dy_.size());
 
         cub::DeviceTransform::Transform(
-          cuda::std::make_tuple(d_dw_aff_.data(), d_dv_aff_.data(), d_dw.data(), d_dv.data()),
-          thrust::make_zip_iterator(d_dw.data(), d_dv.data()),
-          d_dw.size(),
+          cuda::std::make_tuple(d_dw_aff_.data(), d_dv_aff_.data(), d_dw_.data(), d_dv_.data()),
+          thrust::make_zip_iterator(d_dw_.data(), d_dv_.data()),
+          d_dw_.size(),
           [] HD(f_t dw_aff, f_t dv_aff, f_t dw, f_t dv) -> thrust::tuple<f_t, f_t> {
             return {dw + dw_aff, dv + dv_aff};
           },
           stream_view_);
 
         cub::DeviceTransform::Transform(
-          cuda::std::make_tuple(d_dx_aff_.data(), d_dz_aff_.data(), d_dx.data(), d_dz.data()),
-          thrust::make_zip_iterator(d_dx.data(), d_dz.data()),
-          d_dx.size(),
+          cuda::std::make_tuple(d_dx_aff_.data(), d_dz_aff_.data(), d_dx_.data(), d_dz_.data()),
+          thrust::make_zip_iterator(d_dx_.data(), d_dz_.data()),
+          d_dx_.size(),
           [] HD(f_t dx_aff, f_t dz_aff, f_t dx, f_t dz) -> thrust::tuple<f_t, f_t> {
             return {dx + dx_aff, dz + dz_aff};
           },
           stream_view_);
 
         cub::DeviceTransform::Transform(
-          cuda::std::make_tuple(d_dy_aff_.data(), d_dy.data()),
-          d_dy.data(),
-          d_dy.size(),
+          cuda::std::make_tuple(d_dy_aff_.data(), d_dy_.data()),
+          d_dy_.data(),
+          d_dy_.size(),
           [] HD(f_t dy_aff, f_t dy) { return dy + dy_aff; },
           stream_view_);
 
         f_t max_step_primal =
-          std::min(gpu_max_step_to_boundary(d_w_, d_dw), gpu_max_step_to_boundary(d_x_, d_dx));
+          std::min(gpu_max_step_to_boundary(d_w_, d_dw_), gpu_max_step_to_boundary(d_x_, d_dx_));
         f_t max_step_dual =
-          std::min(gpu_max_step_to_boundary(d_v_, d_dv), gpu_max_step_to_boundary(d_z_, d_dz));
+          std::min(gpu_max_step_to_boundary(d_v_, d_dv_), gpu_max_step_to_boundary(d_z_, d_dz_));
         step_primal = options.step_scale * max_step_primal;
         step_dual   = options.step_scale * max_step_dual;
 
         cub::DeviceTransform::Transform(
-          cuda::std::make_tuple(d_w_.data(), d_v_.data(), d_dw.data(), d_dv.data()),
+          cuda::std::make_tuple(d_w_.data(), d_v_.data(), d_dw_.data(), d_dv_.data()),
           thrust::make_zip_iterator(d_w_.data(), d_v_.data()),
-          d_dw.size(),
+          d_dw_.size(),
           [step_primal, step_dual] HD(f_t w, f_t v, f_t dw, f_t dv) -> thrust::tuple<f_t, f_t> {
             return {w + step_primal * dw, v + step_dual * dv};
           },
           stream_view_);
 
         cub::DeviceTransform::Transform(
-          cuda::std::make_tuple(d_x_.data(), d_z_.data(), d_dx.data(), d_dz.data()),
+          cuda::std::make_tuple(d_x_.data(), d_z_.data(), d_dx_.data(), d_dz_.data()),
           thrust::make_zip_iterator(d_x_.data(), d_z_.data()),
-          d_dx.size(),
+          d_dx_.size(),
           [step_primal, step_dual] HD(f_t x, f_t z, f_t dx, f_t dz) -> thrust::tuple<f_t, f_t> {
             return {x + step_primal * dx, z + step_dual * dz};
           },
           stream_view_);
 
         cub::DeviceTransform::Transform(
-          cuda::std::make_tuple(d_y_.data(), d_dy.data()),
+          cuda::std::make_tuple(d_y_.data(), d_dy_.data()),
           d_y_.data(),
           d_y_.size(),
           [step_dual] HD(f_t y, f_t dy) { return y + step_dual * dy; },
