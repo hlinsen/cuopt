@@ -1655,7 +1655,7 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
         d_w.data(),
         thrust::make_permutation_iterator(d_x.data(), d_upper_bounds_.data())),
       d_bound_residual_.data(),
-      d_bound_residual_.size(),
+      d_upper_bounds_.size(),
       [] HD(f_t upper_j, f_t w_k, f_t x_j) { return upper_j - w_k - x_j; },
       stream_view_);
   }
@@ -1674,14 +1674,14 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
   cusparse_view_.transpose_spmv(-1.0, cusparse_d_y, 1.0, descr_dual_residual);
 
   if (data.n_upper_bounds > 0) {
-    thrust::for_each(thrust::make_counting_iterator(0),
-                     thrust::make_counting_iterator(data.n_upper_bounds),
-                     [span_upper_bounds  = cuopt::make_span(d_upper_bounds_),
-                      span_dual_residual = cuopt::make_span(d_dual_residual_),
-                      span_v             = cuopt::make_span(d_v)] __device__(int k) {
-                       int j = span_upper_bounds[k];
-                       atomicAdd(&span_dual_residual[j], span_v[k]);
-                     });
+    cub::DeviceTransform::Transform(
+      cuda::std::make_tuple(
+        thrust::make_permutation_iterator(d_dual_residual_.data(), d_upper_bounds_.data()),
+        d_v.data()),
+      thrust::make_permutation_iterator(d_dual_residual_.data(), d_upper_bounds_.data()),
+      d_upper_bounds_.size(),
+      [] HD(f_t dual_residual_j, f_t v_k) { return dual_residual_j + v_k; },
+      stream_view_);
   }
 
   // Compute complementarity_xz_residual = x.*z
