@@ -36,7 +36,7 @@ enum class variable_type_t : int8_t {
 template <typename i_t, typename f_t>
 struct user_problem_t {
   user_problem_t(raft::handle_t const* handle_ptr_)
-    : A(1, 1, 1), obj_constant(0.0), obj_scale(1.0), handle_ptr(handle_ptr_)
+    : handle_ptr(handle_ptr_), A(1, 1, 1), obj_constant(0.0), obj_scale(1.0)
   {
   }
   raft::handle_t const* handle_ptr;

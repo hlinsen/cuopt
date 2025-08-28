@@ -36,7 +36,7 @@ message(STATUS "CUDSS_INCLUDE = ${CUDSS_INCLUDE}")
 message(STATUS "CUDSS_LIBRARIES = ${CUDSS_LIBRARIES}")
 
 include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(CHOLMOD DEFAULT_MSG
+find_package_handle_standard_args(CUDSS DEFAULT_MSG
                                   CUDSS_INCLUDE CUDSS_LIBRARIES)
 
 mark_as_advanced(CUDSS_INCLUDE CUDSS_LIBRARIES)

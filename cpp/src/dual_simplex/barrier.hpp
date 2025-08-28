@@ -16,18 +16,14 @@
  */
 #pragma once
 
-#include "dual_simplex/cusparse_info.hpp"
-#include "dual_simplex/cusparse_view.hpp"
+#include <rmm/device_uvector.hpp>
 #include "dual_simplex/dense_vector.hpp"
 #include "dual_simplex/presolve.hpp"
 #include "dual_simplex/simplex_solver_settings.hpp"
 #include "dual_simplex/solution.hpp"
 #include "dual_simplex/solve.hpp"
-#include "dual_simplex/sparse_cholesky.hpp"
 #include "dual_simplex/sparse_matrix.hpp"
 #include "dual_simplex/tic_toc.hpp"
-
-#include <cub/cub.cuh>
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -40,68 +36,14 @@ struct barrier_solver_settings_t {
   f_t step_scale          = 0.9;
 };
 
+template <typename T>
+struct CudaHostAllocator;
+
+template <typename i_t, typename f_t>
+using pinned_dense_vector_t = dense_vector_t<i_t, f_t, CudaHostAllocator<f_t>>;
+
 template <typename i_t, typename f_t>
 class iteration_data_t;  // Forward declare
-
-template <typename f_t>
-struct sum_reduce_helper_t {
-  rmm::device_buffer buffer_data;
-  rmm::device_scalar<f_t> out;
-  size_t buffer_size;
-
-  sum_reduce_helper_t(rmm::cuda_stream_view stream_view)
-    : buffer_data(0, stream_view), out(stream_view)
-  {
-  }
-
-  template <typename InputIteratorT, typename i_t>
-  f_t sum(InputIteratorT input, i_t size, rmm::cuda_stream_view stream_view)
-  {
-    buffer_size = 0;
-    cub::DeviceReduce::Sum(nullptr, buffer_size, input, out.data(), size, stream_view);
-    buffer_data.resize(buffer_size, stream_view);
-    cub::DeviceReduce::Sum(buffer_data.data(), buffer_size, input, out.data(), size, stream_view);
-    return out.value(stream_view);
-  }
-};
-
-template <typename f_t>
-struct transform_reduce_helper_t {
-  rmm::device_buffer buffer_data;
-  rmm::device_scalar<f_t> out;
-  size_t buffer_size;
-
-  transform_reduce_helper_t(rmm::cuda_stream_view stream_view)
-    : buffer_data(0, stream_view), out(stream_view)
-  {
-  }
-
-  template <typename InputIteratorT, typename ReductionOpT, typename TransformOpT, typename i_t>
-  f_t transform_reduce(InputIteratorT input,
-                       ReductionOpT reduce_op,
-                       TransformOpT transform_op,
-                       f_t init,
-                       i_t size,
-                       rmm::cuda_stream_view stream_view)
-  {
-    cub::DeviceReduce::TransformReduce(
-      nullptr, buffer_size, input, out.data(), size, reduce_op, transform_op, init, stream_view);
-
-    buffer_data.resize(buffer_size, stream_view);
-
-    cub::DeviceReduce::TransformReduce(buffer_data.data(),
-                                       buffer_size,
-                                       input,
-                                       out.data(),
-                                       size,
-                                       reduce_op,
-                                       transform_op,
-                                       init,
-                                       stream_view);
-
-    return out.value(stream_view);
-  }
-};
 
 template <typename i_t, typename f_t>
 class barrier_solver_t {
@@ -158,7 +100,8 @@ class barrier_solver_t {
                                   f_t& dual_residual_norm,
                                   f_t& complementarity_residual_norm);
 
-  f_t gpu_max_step_to_boundary(const rmm::device_uvector<f_t>& x,
+  f_t gpu_max_step_to_boundary(iteration_data_t<i_t, f_t>& data,
+                               const rmm::device_uvector<f_t>& x,
                                const rmm::device_uvector<f_t>& dx);
   i_t gpu_compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                    pinned_dense_vector_t<i_t, f_t>& dw,
@@ -191,21 +134,6 @@ class barrier_solver_t {
   const lp_problem_t<i_t, f_t>& lp;
   const simplex_solver_settings_t<i_t, f_t>& settings;
   const presolve_info_t<i_t, f_t>& presolve_info;
-  cusparse_view_t<i_t, f_t> cusparse_view_;
-  cusparseDnVecDescr_t cusparse_tmp4_;
-  cusparseDnVecDescr_t cusparse_h_;
-  cusparseDnVecDescr_t cusparse_dx_residual_;
-  cusparseDnVecDescr_t cusparse_dy_;
-  cusparseDnVecDescr_t cusparse_dx_residual_5_;
-  cusparseDnVecDescr_t cusparse_dx_residual_6_;
-  cusparseDnVecDescr_t cusparse_dx_;
-  cusparseDnVecDescr_t cusparse_dx_residual_3_;
-  cusparseDnVecDescr_t cusparse_dx_residual_4_;
-  cusparseDnVecDescr_t cusparse_r1_;
-  cusparseDnVecDescr_t cusparse_dual_residual_;
-  cusparseDnVecDescr_t cusparse_y_residual_;
-  // GPU ADAT multiply
-  cusparseDnVecDescr_t cusparse_u_;
 
   rmm::device_uvector<f_t> d_diag_;
   rmm::device_uvector<f_t> d_bound_rhs_;
@@ -249,9 +177,6 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_upper_;
   rmm::device_uvector<f_t> d_complementarity_xz_residual_;
   rmm::device_uvector<f_t> d_complementarity_wv_residual_;
-
-  transform_reduce_helper_t<f_t> transform_reduce_helper_;
-  sum_reduce_helper_t<f_t> sum_reduce_helper_;
 
   rmm::cuda_stream_view stream_view_;
 };

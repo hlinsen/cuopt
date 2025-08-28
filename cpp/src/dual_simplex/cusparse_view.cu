@@ -16,6 +16,7 @@
  */
 
 #include <dual_simplex/dense_vector.hpp>
+#include <dual_simplex/device_sparse_matrix.cuh>
 #include "dual_simplex/cusparse_view.hpp"
 
 #include <utilities/copy_helpers.hpp>

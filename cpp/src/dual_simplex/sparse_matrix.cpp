@@ -15,23 +15,24 @@
  * limitations under the License.
  */
 
-#include <dual_simplex/dense_vector.hpp>
+// #include <dual_simplex/dense_vector.hpp>
 #include <dual_simplex/sparse_matrix.hpp>
 #include <dual_simplex/sparse_vector.hpp>
 
 #include <dual_simplex/types.hpp>
 
-#include <thrust/for_each.h>
-#include <thrust/iterator/counting_iterator.h>
+// #include <thrust/for_each.h>
+// #include <thrust/iterator/counting_iterator.h>
 
-#include <cub/cub.cuh>
+// #include <cub/cub.cuh>
 
-#include <utilities/cuda_helpers.cuh>
+#include <iostream>
+// #include <utilities/cuda_helpers.cuh>
+#include <vector>
 
 #include <cassert>
 #include <cmath>
 #include <cstdio>
-#include <vector>
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -364,32 +365,6 @@ i_t csc_matrix_t<i_t, f_t>::remove_row(i_t row)
   this->col_start  = new_col_start;
 
   return 0;
-}
-
-template <typename i_t, typename f_t>
-void csc_matrix_t<i_t, f_t>::device_t::form_col_index(rmm::cuda_stream_view stream)
-{
-  col_index.resize(x.size(), stream);
-  RAFT_CUDA_TRY(cudaMemsetAsync(col_index.data(), 0, sizeof(i_t) * col_index.size(), stream));
-  // Scatter 1 when there is a col start in col_index
-  thrust::for_each(
-    rmm::exec_policy(stream),
-    thrust::make_counting_iterator(i_t(1)),                                  // Skip the first 0
-    thrust::make_counting_iterator(static_cast<i_t>(col_start.size() - 1)),  // Skip the end index
-    [span_col_start = cuopt::make_span(col_start),
-     span_col_index = cuopt::make_span(col_index)] __device__(i_t i) {
-      span_col_index[span_col_start[i]] = 1;
-    });
-
-  // Inclusive cumulative sum to have the corresponding column for each entry
-  rmm::device_buffer d_temp_storage;
-  size_t temp_storage_bytes;
-  cub::DeviceScan::InclusiveSum(nullptr, temp_storage_bytes, col_index.data(), col_index.size());
-  d_temp_storage.resize(temp_storage_bytes, stream);
-  cub::DeviceScan::InclusiveSum(
-    d_temp_storage.data(), temp_storage_bytes, col_index.data(), col_index.size());
-  // Have to sync since InclusiveSum is being run on local data (d_temp_storage)
-  RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
 }
 
 template <typename i_t, typename f_t>
@@ -848,75 +823,6 @@ f_t sparse_dot(const std::vector<i_t>& xind,
   return dot;
 }
 
-template <typename i_t, typename f_t, typename AllocatorA, typename AllocatorB>
-i_t matrix_vector_multiply(const csc_matrix_t<i_t, f_t>& A,
-                           f_t alpha,
-                           const std::vector<f_t, AllocatorA>& x,
-                           f_t beta,
-                           std::vector<f_t, AllocatorB>& y)
-{
-  // y <- alpha*A*x + beta*y
-  i_t m = A.m;
-  i_t n = A.n;
-  assert(y.size() == m);
-  assert(x.size() == n);
-
-  // y <- alpha * sum_j A(:, j)*x_j + beta * y
-
-  // y <- beta * y
-  if (beta != 1.0) {
-    for (i_t i = 0; i < m; ++i) {
-      y[i] *= beta;
-    }
-  }
-
-  // y <- alpha * sum_j A(:, j)*x_j + y
-  for (i_t j = 0; j < n; ++j) {
-    i_t col_start = A.col_start[j];
-    i_t col_end   = A.col_start[j + 1];
-    for (i_t p = col_start; p < col_end; ++p) {
-      i_t i = A.i[p];
-      y[i] += alpha * A.x[p] * x[j];
-    }
-  }
-
-  return 0;
-}
-
-// y <- alpha*A'*x + beta*y
-template <typename i_t, typename f_t, typename AllocatorA, typename AllocatorB>
-i_t matrix_transpose_vector_multiply(const csc_matrix_t<i_t, f_t>& A,
-                                     f_t alpha,
-                                     const std::vector<f_t, AllocatorA>& x,
-                                     f_t beta,
-                                     std::vector<f_t, AllocatorB>& y)
-{
-  i_t m = A.m;
-  i_t n = A.n;
-  assert(y.size() == n);
-  assert(x.size() == m);
-
-  // y <- beta * y
-  if (beta != 1.0) {
-    for (i_t j = 0; j < n; ++j) {
-      y[j] *= beta;
-    }
-  }
-
-  // y <- alpha * AT*x + y
-  for (i_t j = 0; j < n; ++j) {
-    f_t dot       = 0.0;
-    i_t col_start = A.col_start[j];
-    i_t col_end   = A.col_start[j + 1];
-    for (i_t p = col_start; p < col_end; ++p) {
-      dot += A.x[p] * x[A.i[p]];
-    }
-    y[j] += alpha * dot;
-  }
-
-  return 0;
-}
-
 #ifdef DUAL_SIMPLEX_INSTANTIATE_DOUBLE
 template class csc_matrix_t<int, double>;
 
@@ -965,59 +871,12 @@ template double sparse_dot<int, double>(const std::vector<int>& xind,
                                         const csc_matrix_t<int, double>& Y,
                                         int y_col);
 
-template int
-matrix_vector_multiply<int, double, CudaHostAllocator<double>, CudaHostAllocator<double>>(
-  const csc_matrix_t<int, double>& A,
-  double alpha,
-  const std::vector<double, CudaHostAllocator<double>>& x,
-  double beta,
-  std::vector<double, CudaHostAllocator<double>>& y);
-
-template int matrix_vector_multiply<int, double, CudaHostAllocator<double>, std::allocator<double>>(
-  const csc_matrix_t<int, double>& A,
-  double alpha,
-  const std::vector<double, CudaHostAllocator<double>>& x,
-  double beta,
-  std::vector<double, std::allocator<double>>& y);
-
-template int matrix_vector_multiply<int, double, std::allocator<double>, CudaHostAllocator<double>>(
-  const csc_matrix_t<int, double>& A,
-  double alpha,
-  const std::vector<double, std::allocator<double>>& x,
-  double beta,
-  std::vector<double, CudaHostAllocator<double>>& y);
-
 template int matrix_vector_multiply<int, double, std::allocator<double>, std::allocator<double>>(
   const csc_matrix_t<int, double>& A,
   double alpha,
   const std::vector<double, std::allocator<double>>& x,
   double beta,
   std::vector<double, std::allocator<double>>& y);
-
-template int
-matrix_transpose_vector_multiply<int, double, CudaHostAllocator<double>, CudaHostAllocator<double>>(
-  const csc_matrix_t<int, double>& A,
-  double alpha,
-  const std::vector<double, CudaHostAllocator<double>>& x,
-  double beta,
-  std::vector<double, CudaHostAllocator<double>>& y);
-
-template int
-matrix_transpose_vector_multiply<int, double, CudaHostAllocator<double>, std::allocator<double>>(
-  const csc_matrix_t<int, double>& A,
-  double alpha,
-  const std::vector<double, CudaHostAllocator<double>>& x,
-  double beta,
-  std::vector<double, std::allocator<double>>& y);
-
-template int
-matrix_transpose_vector_multiply<int, double, std::allocator<double>, CudaHostAllocator<double>>(
-  const csc_matrix_t<int, double>& A,
-  double alpha,
-  const std::vector<double, std::allocator<double>>& x,
-  double beta,
-  std::vector<double, CudaHostAllocator<double>>& y);
-
 template int
 matrix_transpose_vector_multiply<int, double, std::allocator<double>, std::allocator<double>>(
   const csc_matrix_t<int, double>& A,

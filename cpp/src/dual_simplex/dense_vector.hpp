@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,33 +18,11 @@
 
 #include "dual_simplex/types.hpp"
 
-#include <utilities/cuda_helpers.cuh>
-
 #include <cmath>
 #include <cstdio>
 #include <vector>
 
 namespace cuopt::linear_programming::dual_simplex {
-
-template <typename T>
-struct CudaHostAllocator {
-  using value_type = T;
-
-  CudaHostAllocator() noexcept {}
-  template <class U>
-  CudaHostAllocator(const CudaHostAllocator<U>&) noexcept
-  {
-  }
-
-  T* allocate(std::size_t n)
-  {
-    T* ptr = nullptr;
-    RAFT_CUDA_TRY(cudaMallocHost((void**)&ptr, n * sizeof(T)));
-    return ptr;
-  }
-
-  void deallocate(T* p, std::size_t) noexcept { RAFT_CUDA_TRY(cudaFreeHost(p)); }
-};
 
 template <typename i_t, typename f_t, typename Allocator = std::allocator<f_t>>
 class dense_vector_t : public std::vector<f_t, Allocator> {
@@ -53,7 +31,8 @@ class dense_vector_t : public std::vector<f_t, Allocator> {
   dense_vector_t(const std::vector<f_t>& in)
   {
     this->resize(in.size());
-    for (i_t i = 0; i < in.size(); i++) {
+    const i_t n = static_cast<i_t>(in.size());
+    for (i_t i = 0; i < n; i++) {
       (*this)[i] = in[i];
     }
   }
@@ -164,12 +143,12 @@ class dense_vector_t : public std::vector<f_t, Allocator> {
                         std::vector<f_t, AllocatorB>& c) const
   {
     const i_t n = this->size();
-    if (b.size() != n) {
-      printf("Error: b.size() %d != n %d\n", b.size(), n);
+    if (static_cast<i_t>(b.size()) != n) {
+      printf("Error: b.size() %d != n %d\n", static_cast<i_t>(b.size()), n);
       exit(1);
     }
-    if (c.size() != n) {
-      printf("Error: c.size() %d != n %d\n", c.size(), n);
+    if (static_cast<i_t>(c.size()) != n) {
+      printf("Error: c.size() %d != n %d\n", static_cast<i_t>(c.size()), n);
       exit(1);
     }
     for (i_t i = 0; i < n; i++) {
@@ -233,9 +212,6 @@ class dense_vector_t : public std::vector<f_t, Allocator> {
     }
   }
 };
-
-template <typename i_t, typename f_t>
-using pinned_dense_vector_t = dense_vector_t<i_t, f_t, CudaHostAllocator<f_t>>;
 
 template <typename T, typename Alloc>
 std::vector<T> copy(const std::vector<T, Alloc>& src)

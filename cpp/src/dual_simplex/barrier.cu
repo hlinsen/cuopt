@@ -16,12 +16,19 @@
  */
 
 #include <dual_simplex/barrier.hpp>
+
+#include <dual_simplex/cusparse_info.hpp>
+#include <dual_simplex/dense_matrix.hpp>
+#include <dual_simplex/dense_vector.hpp>
+#include <dual_simplex/device_sparse_matrix.cuh>
 #include <dual_simplex/presolve.hpp>
+#include <dual_simplex/sparse_cholesky.cuh>
 #include <dual_simplex/sparse_matrix.hpp>
 #include <dual_simplex/sparse_matrix_kernels.cuh>
 #include <dual_simplex/tic_toc.hpp>
 #include <dual_simplex/types.hpp>
 #include <dual_simplex/vector_math.cuh>
+#include "dual_simplex/cusparse_view.hpp"
 
 #include <rmm/device_scalar.hpp>
 #include <rmm/device_uvector.hpp>
@@ -41,222 +48,6 @@
 namespace cuopt::linear_programming::dual_simplex {
 
 auto constexpr use_gpu = true;
-
-template <typename i_t, typename f_t>
-class dense_matrix_t {
- public:
-  dense_matrix_t(i_t rows, i_t cols) : m(rows), n(cols), values(rows * cols, 0.0) {}
-
-  void resize(i_t rows, i_t cols)
-  {
-    m = rows;
-    n = cols;
-    values.resize(rows * cols, 0.0);
-  }
-
-  f_t& operator()(i_t row, i_t col) { return values[col * m + row]; }
-
-  f_t operator()(i_t row, i_t col) const { return values[col * m + row]; }
-
-  void from_sparse(const csc_matrix_t<i_t, f_t>& A, i_t sparse_column, i_t dense_column)
-  {
-    for (i_t i = 0; i < m; i++) {
-      this->operator()(i, dense_column) = 0.0;
-    }
-
-    const i_t col_start = A.col_start[sparse_column];
-    const i_t col_end   = A.col_start[sparse_column + 1];
-    for (i_t p = col_start; p < col_end; p++) {
-      this->operator()(A.i[p], dense_column) = A.x[p];
-    }
-  }
-
-  void add_diagonal(const dense_vector_t<i_t, f_t>& diag)
-  {
-    for (i_t j = 0; j < n; j++) {
-      this->operator()(j, j) += diag[j];
-    }
-  }
-
-  void set_column(i_t col, const dense_vector_t<i_t, f_t>& x)
-  {
-    for (i_t i = 0; i < m; i++) {
-      this->operator()(i, col) = x[i];
-    }
-  }
-
-  // y = alpha * A * x + beta * y
-  template <typename AllocatorA, typename AllocatorB>
-  void matrix_vector_multiply(f_t alpha,
-                              const dense_vector_t<i_t, f_t, AllocatorA>& x,
-                              f_t beta,
-                              dense_vector_t<i_t, f_t, AllocatorB>& y) const
-  {
-    if (x.size() != n) {
-      printf("dense_matrix_t::matrix_vector_multiply: x.size() != n\n");
-      exit(1);
-    }
-    if (y.size() != m) {
-      printf("dense_matrix_t::matrix_vector_multiply: y.size() != m\n");
-      exit(1);
-    }
-
-    for (i_t i = 0; i < m; i++) {
-      y[i] *= beta;
-    }
-
-    const dense_matrix_t<i_t, f_t>& A = *this;
-
-    for (i_t j = 0; j < n; j++) {
-      for (i_t i = 0; i < m; i++) {
-        y[i] += alpha * A(i, j) * x[j];
-      }
-    }
-  }
-
-  // y = alpha * A' * x + beta * y
-  void transpose_multiply(f_t alpha,
-                          const dense_vector_t<i_t, f_t>& x,
-                          f_t beta,
-                          dense_vector_t<i_t, f_t>& y) const
-  {
-    if (x.size() != m) {
-      printf("dense_matrix_t::transpose_multiply: x.size() != n\n");
-      exit(1);
-    }
-    for (i_t j = 0; j < n; j++) {
-      f_t sum = 0.0;
-      for (i_t i = 0; i < m; i++) {
-        sum += x[i] * this->operator()(i, j);
-      }
-      y[j] = alpha * sum + beta * y[j];
-    }
-  }
-
-  // Y <- alpha * A' * X + beta * Y
-  void transpose_matrix_multiply(f_t alpha,
-                                 const dense_matrix_t<i_t, f_t>& X,
-                                 f_t beta,
-                                 dense_matrix_t<i_t, f_t>& Y) const
-  {
-    // X is m x p
-    // Y is q x p
-    // Y <- alpha * A' * X + beta * Y
-    if (X.n != Y.n) {
-      printf("dense_matrix_t::transpose_matrix_multiply: X.m != Y.m\n");
-      exit(1);
-    }
-    if (X.m != m) {
-      printf("dense_matrix_t::transpose_matrix_multiply: X.m != m\n");
-      exit(1);
-    }
-    for (i_t k = 0; k < X.n; k++) {
-      for (i_t j = 0; j < n; j++) {
-        f_t sum = 0.0;
-        for (i_t i = 0; i < m; i++) {
-          sum += this->operator()(i, j) * X(i, k);
-        }
-        Y(j, k) = alpha * sum + beta * Y(j, k);
-      }
-    }
-  }
-
-  void scale_columns(const dense_vector_t<i_t, f_t>& scale)
-  {
-    for (i_t j = 0; j < n; j++) {
-      for (i_t i = 0; i < m; i++) {
-        this->operator()(i, j) *= scale[j];
-      }
-    }
-  }
-
-  void chol(dense_matrix_t<i_t, f_t>& L)
-  {
-    if (m != n) {
-      printf("dense_matrix_t::chol: m != n\n");
-      exit(1);
-    }
-    if (L.m != n) {
-      printf("dense_matrix_t::chol: L.m != n\n");
-      exit(1);
-    }
-
-    // Clear the upper triangular part of L
-    for (i_t i = 0; i < n; i++) {
-      for (i_t j = i + 1; j < n; j++) {
-        L(i, j) = 0.0;
-      }
-    }
-
-    const dense_matrix_t<i_t, f_t>& A = *this;
-    // Compute the cholesky factor and store it in the lower triangular part of L
-    for (i_t i = 0; i < n; i++) {
-      for (i_t j = 0; j <= i; j++) {
-        f_t sum = 0.0;
-        for (i_t k = 0; k < j; k++) {
-          sum += L(i, k) * L(j, k);
-        }
-
-        if (i == j) {
-          L(i, j) = sqrt(A(i, i) - sum);
-        } else {
-          L(i, j) = (1.0 / L(j, j) * (A(i, j) - sum));
-        }
-      }
-    }
-  }
-
-  // Assume A = L
-  // Solve L * x = b
-  void triangular_solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x)
-  {
-    if (b.size() != n) {
-      printf(
-        "dense_matrix_t::triangular_solve: b.size() %d != n %d\n", static_cast<i_t>(b.size()), n);
-      exit(1);
-    }
-    x.resize(n, 0.0);
-
-    // sum_k=0^i-1 L(i, k) * x[k] + L(i, i) * x[i] = b[i]
-    // x[i] = (b[i] - sum_k=0^i-1 L(i, k) * x[k]) / L(i, i)
-    const dense_matrix_t<i_t, f_t>& L = *this;
-    for (i_t i = 0; i < n; i++) {
-      f_t sum = 0.0;
-      for (i_t k = 0; k < i; k++) {
-        sum += L(i, k) * x[k];
-      }
-      x[i] = (b[i] - sum) / L(i, i);
-    }
-  }
-
-  // Assume A = L
-  // Solve  L^T * x = b
-  void triangular_solve_transpose(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x)
-  {
-    if (b.size() != n) {
-      printf("dense_matrix_t::triangular_solve_transpose: b.size() != n\n");
-      exit(1);
-    }
-    x.resize(n, 0.0);
-
-    // L^T = U
-    // U * x = b
-    // sum_k=i+1^n U(i, k) * x[k] + U(i, i) * x[i] = b[i], i=n-1, n-2, ..., 0
-    // sum_k=i+1^n L(k, i) * x[k] + L(i, i) * x[i] = b[i], i=n-1, n-2, ..., 0
-    const dense_matrix_t<i_t, f_t>& L = *this;
-    for (i_t i = n - 1; i >= 0; i--) {
-      f_t sum = 0.0;
-      for (i_t k = i + 1; k < n; k++) {
-        sum += L(k, i) * x[k];
-      }
-      x[i] = (b[i] - sum) / L(i, i);
-    }
-  }
-
-  i_t m;
-  i_t n;
-  std::vector<f_t> values;
-};
 
 template <typename i_t, typename f_t>
 class iteration_data_t {
@@ -284,12 +75,23 @@ class iteration_data_t {
       AT(lp.num_rows, lp.num_cols, 0),
       ADAT(lp.num_rows, lp.num_rows, 0),
       A_dense(lp.num_rows, 0),
+      AD_dense(0, 0),
+      H(0, 0),
+      Hchol(0, 0),
       A(lp.A),
       primal_residual(lp.num_rows),
       bound_residual(num_upper_bounds),
       dual_residual(lp.num_cols),
       complementarity_xz_residual(lp.num_cols),
       complementarity_wv_residual(num_upper_bounds),
+      cusparse_view_(lp.handle_ptr,
+                     lp.A.m,
+                     lp.A.n,
+                     lp.A.x.size(),
+                     lp.A.col_start,
+                     lp.A.i,
+                     lp.A.x  // TMP we should pass a GPU CSR view directly
+                     ),
       primal_rhs(lp.num_rows),
       bound_rhs(num_upper_bounds),
       dual_rhs(lp.num_cols),
@@ -318,9 +120,12 @@ class iteration_data_t {
       d_cols_to_remove(0, lp.handle_ptr->get_stream()),
       has_factorization(false),
       num_factorizations(0),
+      has_solve_info(false),
       settings_(settings),
       handle_ptr(lp.handle_ptr),
-      stream_view_(lp.handle_ptr->get_stream())
+      stream_view_(lp.handle_ptr->get_stream()),
+      transform_reduce_helper_(lp.handle_ptr->get_stream()),
+      sum_reduce_helper_(lp.handle_ptr->get_stream())
   {
     raft::common::nvtx::range fun_scope("Barrier: LP Data Creation");
 
@@ -418,7 +223,7 @@ class iteration_data_t {
       device_A_x_values.resize(original_A_values.size(), handle_ptr->get_stream());
       raft::copy(
         device_A_x_values.data(), device_AD.x.data(), device_AD.x.size(), handle_ptr->get_stream());
-      csr_matrix_t<i_t, f_t> host_A_CSR(0, 0, 0);
+      csr_matrix_t<i_t, f_t> host_A_CSR(1, 1, 1);  // Sizes will be set by to_compressed_row()
       AD.to_compressed_row(host_A_CSR);
       device_A.copy(host_A_CSR, lp.handle_ptr->get_stream());
       RAFT_CHECK_CUDA(handle_ptr->get_stream());
@@ -493,10 +298,26 @@ class iteration_data_t {
       handle_ptr->sync_stream();
       // float64_t multiply_time = toc(start_multiply);
       // settings_.log.printf("multiply_time %.2fs\n", multiply_time);
-      if (0) {
-        auto host_ADAT = device_ADAT.to_host(handle_ptr->get_stream());
-        host_ADAT.to_compressed_col(ADAT);
-        AD = device_AD.to_host(handle_ptr->get_stream());
+      // if (0) {
+      //   auto host_ADAT = device_ADAT.to_host(handle_ptr->get_stream());
+      //   host_ADAT.to_compressed_col(ADAT);
+      //   auto tmp_ADAT = ADAT;
+      //   // AD = device_AD.to_host(handle_ptr->get_stream());
+      //   AD.scale_columns(inv_diag_prime);
+      //   multiply(AD, AT, ADAT);
+      //   ADAT.compare(tmp_ADAT);
+      // }
+
+      auto adat_nnz       = device_ADAT.row_start.element(device_ADAT.m, handle_ptr->get_stream());
+      float64_t adat_time = toc(start_form_adat);
+
+      if (num_factorizations == 0) {
+        settings_.log.printf("ADAT time %.2fs\n", adat_time);
+        settings_.log.printf(
+          "ADAT nonzeros %e density %.2f\n",
+          static_cast<float64_t>(adat_nnz),
+          static_cast<float64_t>(adat_nnz) /
+            (static_cast<float64_t>(device_ADAT.m) * static_cast<float64_t>(device_ADAT.m)));
       }
     } else {
       // Restore the columns of AD to A
@@ -523,19 +344,19 @@ class iteration_data_t {
       }
       AD.scale_columns(inv_diag_prime);
       multiply(AD, AT, ADAT);
-    }
 
-    float64_t adat_time = toc(start_form_adat);
-    if (num_factorizations == 0) {
-      settings_.log.printf("ADAT time %.2fs\n", adat_time);
-      settings_.log.printf("ADAT nonzeros %e density %.2f\n",
-                           static_cast<float64_t>(ADAT.col_start[m]),
-                           static_cast<float64_t>(ADAT.col_start[m]) /
-                             (static_cast<float64_t>(m) * static_cast<float64_t>(m)));
+      float64_t adat_time = toc(start_form_adat);
+      if (num_factorizations == 0) {
+        settings_.log.printf("ADAT time %.2fs\n", adat_time);
+        settings_.log.printf("ADAT nonzeros %e density %.2f\n",
+                             static_cast<float64_t>(ADAT.col_start[m]),
+                             static_cast<float64_t>(ADAT.col_start[m]) /
+                               (static_cast<float64_t>(m) * static_cast<float64_t>(m)));
+      }
     }
   }
 
-  i_t solve_adat(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) const
+  i_t solve_adat(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x)
   {
     if (n_dense_columns == 0) {
       // Solve ADAT * x = b
@@ -577,44 +398,51 @@ class iteration_data_t {
       i_t solve_status = chol->solve(b, w);
       if (solve_status != 0) { return solve_status; }
 
-      dense_matrix_t<i_t, f_t> AD_dense = A_dense;
+      if (!has_solve_info) {
+        AD_dense = A_dense;
 
-      // AD_dense = A_dense * D_dense
-      dense_vector_t<i_t, f_t> dense_diag(n_dense_columns);
-      i_t k = 0;
-      for (i_t j : dense_columns) {
-        dense_diag[k++] = std::sqrt(inv_diag[j]);
-      }
-      AD_dense.scale_columns(dense_diag);
-
-      dense_matrix_t<i_t, f_t> M(AD.m, n_dense_columns);
-      dense_matrix_t<i_t, f_t> H(n_dense_columns, n_dense_columns);
-      for (i_t k = 0; k < n_dense_columns; k++) {
-        dense_vector_t<i_t, f_t> U_col(AD.m);
-        // U_col = AD_dense(:, k)
-        for (i_t i = 0; i < AD.m; i++) {
-          U_col[i] = AD_dense(i, k);
+        // AD_dense = A_dense * D_dense
+        dense_vector_t<i_t, f_t> dense_diag(n_dense_columns);
+        i_t k = 0;
+        for (i_t j : dense_columns) {
+          dense_diag[k++] = std::sqrt(inv_diag[j]);
         }
-        dense_vector_t<i_t, f_t> M_col(AD.m);
-        solve_status = chol->solve(U_col, M_col);
-        if (solve_status != 0) { return solve_status; }
-        M.set_column(k, M_col);
+        AD_dense.scale_columns(dense_diag);
 
-        if (debug) {
-          dense_vector_t<i_t, f_t> M_residual = U_col;
-          matrix_vector_multiply(ADAT, 1.0, M_col, -1.0, M_residual);
-          settings_.log.printf(
-            "|| A_sparse * D_sparse * A_sparse^T * M(:, k) - AD_dense(:, k) ||_2 = %e\n",
-            vector_norm2<i_t, f_t>(M_residual));
+        dense_matrix_t<i_t, f_t> M(AD.m, n_dense_columns);
+        H.resize(n_dense_columns, n_dense_columns);
+        for (i_t k = 0; k < n_dense_columns; k++) {
+          dense_vector_t<i_t, f_t> U_col(AD.m);
+          // U_col = AD_dense(:, k)
+          for (i_t i = 0; i < AD.m; i++) {
+            U_col[i] = AD_dense(i, k);
+          }
+          dense_vector_t<i_t, f_t> M_col(AD.m);
+          solve_status = chol->solve(U_col, M_col);
+          if (solve_status != 0) { return solve_status; }
+          M.set_column(k, M_col);
+
+          if (debug) {
+            dense_vector_t<i_t, f_t> M_residual = U_col;
+            matrix_vector_multiply(ADAT, 1.0, M_col, -1.0, M_residual);
+            settings_.log.printf(
+              "|| A_sparse * D_sparse * A_sparse^T * M(:, k) - AD_dense(:, k) ||_2 = %e\n",
+              vector_norm2<i_t, f_t>(M_residual));
+          }
         }
+        // A_sparse * D_sparse * A_sparse^T * M = U = AD_dense
+        // H = AD_dense^T * M
+        AD_dense.transpose_matrix_multiply(1.0, M, 0.0, H);
+        dense_vector_t<i_t, f_t> e(n_dense_columns);
+        e.set_scalar(1.0);
+        // H = AD_dense^T * M + I
+        H.add_diagonal(e);
+
+        // H = L*L^T
+        Hchol.resize(n_dense_columns, n_dense_columns);  // Hcol = L
+        H.chol(Hchol);
+        has_solve_info = true;
       }
-      // A_sparse * D_sparse * A_sparse^T * M = U = AD_dense
-      // H = AD_dense^T * M
-      AD_dense.transpose_matrix_multiply(1.0, M, 0.0, H);
-      dense_vector_t<i_t, f_t> e(n_dense_columns);
-      e.set_scalar(1.0);
-      // H = AD_dense^T * M + I
-      H.add_diagonal(e);
 
       dense_vector_t<i_t, f_t> g(n_dense_columns);
       // g = D_dense * A_dense^T * w
@@ -631,18 +459,14 @@ class iteration_data_t {
         }
       }
 
-      // H = L*L^T
-      dense_matrix_t<i_t, f_t> L(n_dense_columns, n_dense_columns);
-      H.chol(L);
-
       dense_vector_t<i_t, f_t> y(n_dense_columns);
       // H *y = g
       // L*L^T * y = g
       // L*u = g
       dense_vector_t<i_t, f_t> u(n_dense_columns);
-      L.triangular_solve(g, u);
+      Hchol.triangular_solve(g, u);
       // L^T y = u
-      L.triangular_solve_transpose(u, y);
+      Hchol.triangular_solve_transpose(u, y);
 
       if (debug) {
         dense_vector_t<i_t, f_t> H_residual = g;
@@ -869,7 +693,7 @@ class iteration_data_t {
     }
   }
 
-  i_t gpu_solve_adat(rmm::device_uvector<f_t>& d_b, rmm::device_uvector<f_t>& d_x) const
+  i_t gpu_solve_adat(rmm::device_uvector<f_t>& d_b, rmm::device_uvector<f_t>& d_x)
   {
     if (n_dense_columns == 0) {
       // Solve ADAT * x = b
@@ -1233,12 +1057,12 @@ class iteration_data_t {
     const i_t m = A.m;
     const i_t n = A.n;
 
-    if (y.size() != m) {
+    if (static_cast<i_t>(y.size()) != m) {
       printf("adat_multiply: y.size() %d != m %d\n", static_cast<i_t>(y.size()), m);
       exit(1);
     }
 
-    if (v.size() != m) {
+    if (static_cast<i_t>(v.size()) != m) {
       printf("adat_multiply: v.size() %d != m %d\n", static_cast<i_t>(v.size()), m);
       exit(1);
     }
@@ -1385,9 +1209,9 @@ class iteration_data_t {
   csc_matrix_t<i_t, f_t> AD;
   csc_matrix_t<i_t, f_t> AT;
   csc_matrix_t<i_t, f_t> ADAT;
-  typename csr_matrix_t<i_t, f_t>::device_t device_ADAT;
-  typename csr_matrix_t<i_t, f_t>::device_t device_A;
-  typename csc_matrix_t<i_t, f_t>::device_t device_AD;
+  device_csr_matrix_t<i_t, f_t> device_ADAT;
+  device_csr_matrix_t<i_t, f_t> device_A;
+  device_csc_matrix_t<i_t, f_t> device_AD;
   rmm::device_uvector<f_t> device_A_x_values;
   // For GPU Form ADAT
   rmm::device_uvector<f_t> d_inv_diag_prime;
@@ -1402,11 +1226,15 @@ class iteration_data_t {
   std::vector<i_t> cols_to_remove;
   rmm::device_uvector<i_t> d_cols_to_remove;
   dense_matrix_t<i_t, f_t> A_dense;
+  dense_matrix_t<i_t, f_t> AD_dense;
+  dense_matrix_t<i_t, f_t> H;
+  dense_matrix_t<i_t, f_t> Hchol;
   const csc_matrix_t<i_t, f_t>& A;
 
   std::unique_ptr<sparse_cholesky_base_t<i_t, f_t>> chol;
 
   bool has_factorization;
+  bool has_solve_info;
   i_t num_factorizations;
 
   dense_vector_t<i_t, f_t> primal_residual;
@@ -1433,6 +1261,25 @@ class iteration_data_t {
   pinned_dense_vector_t<i_t, f_t> dv;
   pinned_dense_vector_t<i_t, f_t> dz;
   cusparse_info_t<i_t, f_t> cusparse_info;
+  cusparse_view_t<i_t, f_t> cusparse_view_;
+  cusparseDnVecDescr_t cusparse_tmp4_;
+  cusparseDnVecDescr_t cusparse_h_;
+  cusparseDnVecDescr_t cusparse_dx_residual_;
+  cusparseDnVecDescr_t cusparse_dy_;
+  cusparseDnVecDescr_t cusparse_dx_residual_5_;
+  cusparseDnVecDescr_t cusparse_dx_residual_6_;
+  cusparseDnVecDescr_t cusparse_dx_;
+  cusparseDnVecDescr_t cusparse_dx_residual_3_;
+  cusparseDnVecDescr_t cusparse_dx_residual_4_;
+  cusparseDnVecDescr_t cusparse_r1_;
+  cusparseDnVecDescr_t cusparse_dual_residual_;
+  cusparseDnVecDescr_t cusparse_y_residual_;
+  // GPU ADAT multiply
+  cusparseDnVecDescr_t cusparse_u_;
+
+  transform_reduce_helper_t<f_t> transform_reduce_helper_;
+  sum_reduce_helper_t<f_t> sum_reduce_helper_;
+
   rmm::cuda_stream_view stream_view_;
 
   const simplex_solver_settings_t<i_t, f_t>& settings_;
@@ -1445,14 +1292,6 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
   : lp(lp),
     settings(settings),
     presolve_info(presolve),
-    cusparse_view_(lp.handle_ptr,
-                   lp.A.m,
-                   lp.A.n,
-                   lp.A.x.size(),
-                   lp.A.col_start,
-                   lp.A.i,
-                   lp.A.x  // TMP we should pass a GPU CSR view directly
-                   ),
     stream_view_(lp.handle_ptr->get_stream()),
     d_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_bound_rhs_(0, lp.handle_ptr->get_stream()),
@@ -1486,8 +1325,6 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_dv_aff_(0, lp.handle_ptr->get_stream()),
     d_dz_aff_(0, lp.handle_ptr->get_stream()),
     d_dy_aff_(0, lp.handle_ptr->get_stream()),
-    transform_reduce_helper_(lp.handle_ptr->get_stream()),
-    sum_reduce_helper_(lp.handle_ptr->get_stream()),
     d_u_(lp.A.n, lp.handle_ptr->get_stream()),
     d_primal_residual_(0, lp.handle_ptr->get_stream()),
     d_bound_residual_(0, lp.handle_ptr->get_stream()),
@@ -1495,13 +1332,6 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_complementarity_xz_residual_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_complementarity_wv_residual_(0, lp.handle_ptr->get_stream())
 {
-  cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
-  cusparse_r1_            = cusparse_view_.create_vector(d_r1_);
-  cusparse_tmp4_          = cusparse_view_.create_vector(d_tmp4_);
-  cusparse_h_             = cusparse_view_.create_vector(d_h_);
-  cusparse_dx_residual_   = cusparse_view_.create_vector(d_dx_residual_);
-  cusparse_u_             = cusparse_view_.create_vector(d_u_);
-  cusparse_y_residual_    = cusparse_view_.create_vector(d_y_residual_);
 }
 
 template <typename i_t, typename f_t>
@@ -1521,6 +1351,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     return;
   }
   data.num_factorizations++;
+  data.has_solve_info = false;
 
   // rhs_x <- b
   dense_vector_t<i_t, f_t> rhs_x(lp.rhs);
@@ -1533,7 +1364,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 
   // rhs_x <-  A * Dinv * F * u  - b
   if (use_gpu) {
-    cusparse_view_.spmv(1.0, DinvFu, -1.0, rhs_x);
+    data.cusparse_view_.spmv(1.0, DinvFu, -1.0, rhs_x);
   } else {
     matrix_vector_multiply(lp.A, 1.0, DinvFu, -1.0, rhs_x);
   }
@@ -1555,7 +1386,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   data.inv_diag.pairwise_product(Fu, data.x);
   // Fu <- -1.0 * A' * q + 1.0 * Fu
   if (use_gpu) {
-    cusparse_view_.transpose_spmv(-1.0, q, 1.0, Fu);
+    data.cusparse_view_.transpose_spmv(-1.0, q, 1.0, Fu);
   } else {
     matrix_transpose_vector_multiply(lp.A, -1.0, q, 1.0, Fu);
   }
@@ -1574,7 +1405,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   // Verify A*x = b
   data.primal_residual = lp.rhs;
   if (use_gpu) {
-    cusparse_view_.spmv(1.0, data.x, -1.0, data.primal_residual);
+    data.cusparse_view_.spmv(1.0, data.x, -1.0, data.primal_residual);
   } else {
     matrix_vector_multiply(lp.A, 1.0, data.x, -1.0, data.primal_residual);
   }
@@ -1594,7 +1425,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   data.inv_diag.pairwise_product(lp.objective, Dinvc);
   // rhs = 1.0 * A * Dinv * c
   if (use_gpu) {
-    cusparse_view_.spmv(1.0, Dinvc, 0.0, rhs);
+    data.cusparse_view_.spmv(1.0, Dinvc, 0.0, rhs);
   } else {
     matrix_vector_multiply(lp.A, 1.0, Dinvc, 0.0, rhs);
   }
@@ -1606,7 +1437,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   // z = Dinv*(c - A'*y)
   dense_vector_t<i_t, f_t> cmATy = data.c;
   if (use_gpu) {
-    cusparse_view_.transpose_spmv(-1.0, data.y, 1.0, cmATy);
+    data.cusparse_view_.transpose_spmv(-1.0, data.y, 1.0, cmATy);
   } else {
     matrix_transpose_vector_multiply(lp.A, -1.0, data.y, 1.0, cmATy);
   }
@@ -1620,7 +1451,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   // Verify A'*y + z - E*v = c
   data.z.pairwise_subtract(data.c, data.dual_residual);
   if (use_gpu) {
-    cusparse_view_.transpose_spmv(1.0, data.y, 1.0, data.dual_residual);
+    data.cusparse_view_.transpose_spmv(1.0, data.y, 1.0, data.dual_residual);
   } else {
     matrix_transpose_vector_multiply(lp.A, 1.0, data.y, 1.0, data.dual_residual);
   }
@@ -1666,9 +1497,9 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
 
   // Compute primal_residual = b - A*x
 
-  auto cusparse_d_x          = cusparse_view_.create_vector(d_x);
-  auto descr_primal_residual = cusparse_view_.create_vector(d_primal_residual_);
-  cusparse_view_.spmv(-1.0, cusparse_d_x, 1.0, descr_primal_residual);
+  auto cusparse_d_x          = data.cusparse_view_.create_vector(d_x);
+  auto descr_primal_residual = data.cusparse_view_.create_vector(d_primal_residual_);
+  data.cusparse_view_.spmv(-1.0, cusparse_d_x, 1.0, descr_primal_residual);
 
   // Compute bound_residual = E'*u - w - E'*x
   if (data.n_upper_bounds > 0) {
@@ -1692,9 +1523,9 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
                                   stream_view_);
 
   // Compute dual_residual = c - A'*y - z + E*v
-  auto cusparse_d_y        = cusparse_view_.create_vector(d_y);
-  auto descr_dual_residual = cusparse_view_.create_vector(d_dual_residual_);
-  cusparse_view_.transpose_spmv(-1.0, cusparse_d_y, 1.0, descr_dual_residual);
+  auto cusparse_d_y        = data.cusparse_view_.create_vector(d_y);
+  auto descr_dual_residual = data.cusparse_view_.create_vector(d_dual_residual_);
+  data.cusparse_view_.transpose_spmv(-1.0, cusparse_d_y, 1.0, descr_dual_residual);
 
   if (data.n_upper_bounds > 0) {
     cub::DeviceTransform::Transform(
@@ -1743,7 +1574,7 @@ void barrier_solver_t<i_t, f_t>::compute_residuals(const dense_vector_t<i_t, f_t
   // Compute primal_residual = b - A*x
   data.primal_residual = lp.rhs;
   if (use_gpu) {
-    cusparse_view_.spmv(-1.0, x, 1.0, data.primal_residual);
+    data.cusparse_view_.spmv(-1.0, x, 1.0, data.primal_residual);
   } else {
     matrix_vector_multiply(lp.A, -1.0, x, 1.0, data.primal_residual);
   }
@@ -1759,7 +1590,7 @@ void barrier_solver_t<i_t, f_t>::compute_residuals(const dense_vector_t<i_t, f_t
   // Compute dual_residual = c - A'*y - z + E*v
   data.c.pairwise_subtract(z, data.dual_residual);
   if (use_gpu) {
-    cusparse_view_.transpose_spmv(-1.0, y, 1.0, data.dual_residual);
+    data.cusparse_view_.transpose_spmv(-1.0, y, 1.0, data.dual_residual);
   } else {
     matrix_transpose_vector_multiply(lp.A, -1.0, y, 1.0, data.dual_residual);
   }
@@ -1830,7 +1661,7 @@ f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f
 {
   float64_t max_step = 1.0;
   index              = -1;
-  for (i_t i = 0; i < x.size(); i++) {
+  for (i_t i = 0; i < static_cast<i_t>(x.size()); i++) {
     // x_i + alpha * dx_i >= 0, x_i >= 0, alpha >= 0
     // We only need to worry about the case where dx_i < 0
     // alpha * dx_i >= -x_i => alpha <= -x_i / dx_i
@@ -1846,10 +1677,11 @@ f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f
 }
 
 template <typename i_t, typename f_t>
-f_t barrier_solver_t<i_t, f_t>::gpu_max_step_to_boundary(const rmm::device_uvector<f_t>& x,
+f_t barrier_solver_t<i_t, f_t>::gpu_max_step_to_boundary(iteration_data_t<i_t, f_t>& data,
+                                                         const rmm::device_uvector<f_t>& x,
                                                          const rmm::device_uvector<f_t>& dx)
 {
-  return transform_reduce_helper_.transform_reduce(
+  return data.transform_reduce_helper_.transform_reduce(
     thrust::make_zip_iterator(dx.data(), x.data()),
     thrust::minimum<f_t>(),
     [] HD(const thrust::tuple<f_t, f_t> t) {
@@ -1994,10 +1826,8 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::common::nvtx::range fun_scope("Barrier: ADAT");
 
     i_t status;
-    float64_t start_time = tic();
     // compute ADAT = A Dinv * A^T
     data.form_adat();
-    settings.log.printf("in loop form_adat: %.2fs\n", toc(start_time));
     // factorize
     if (use_gpu) {
       status = data.chol->factorize(data.device_ADAT);
@@ -2012,6 +1842,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     data.num_factorizations++;
 
     my_pop_range(debug);
+    data.has_solve_info = false;
   }
 
   // Compute h = primal_rhs + A*inv_diag*(dual_rhs - complementarity_xz_rhs ./ x +
@@ -2054,7 +1885,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 
     // h <- A @ tmp4 .+ primal_rhs
 
-    cusparse_view_.spmv(1, cusparse_tmp4_, 1, cusparse_h_);
+    data.cusparse_view_.spmv(1, data.cusparse_tmp4_, 1, data.cusparse_h_);
 
     // TMP until solve adat is on the CPU
 
@@ -2083,17 +1914,17 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::copy(d_y_residual_.data(), d_h_.data(), d_h_.size(), stream_view_);
 
     // TMP should be done only once
-    cusparseDnVecDescr_t cusparse_dy_ = cusparse_view_.create_vector(d_dy_);
+    cusparseDnVecDescr_t cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
 
     data.gpu_adat_multiply(1.0,
                            d_dy_,
                            cusparse_dy_,
                            -1.0,
                            d_y_residual_,
-                           cusparse_y_residual_,
+                           data.cusparse_y_residual_,
                            d_u_,
-                           cusparse_u_,
-                           cusparse_view_,
+                           data.cusparse_u_,
+                           data.cusparse_view_,
                            data.d_inv_diag);
 
     f_t const y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
@@ -2119,10 +1950,10 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::common::nvtx::range fun_scope("Barrier: dx formation GPU");
 
     // TMP should only be init once
-    cusparse_dy_ = cusparse_view_.create_vector(d_dy_);
+    data.cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
 
     // r1 <- A'*dy - r1
-    cusparse_view_.transpose_spmv(1.0, cusparse_dy_, -1.0, cusparse_r1_);
+    data.cusparse_view_.transpose_spmv(1.0, data.cusparse_dy_, -1.0, data.cusparse_r1_);
 
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data(), d_diag_.data()),
@@ -2138,7 +1969,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     // Can't we also GPUify what's usinng this dx?
     dx = host_copy(d_dx_);
 
-    cusparse_view_.transpose_spmv(-1.0, cusparse_dy_, 1.0, cusparse_dx_residual_);
+    data.cusparse_view_.transpose_spmv(-1.0, data.cusparse_dy_, 1.0, data.cusparse_dx_residual_);
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(d_dx_residual_.data(), d_r1_prime_.data()),
       d_dx_residual_.data(),
@@ -2195,12 +2026,12 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       stream_view_);
 
     // TMP should be done just one in the constructor
-    cusparse_dx_residual_5_ = cusparse_view_.create_vector(d_dx_residual_5);
-    cusparse_dx_residual_6_ = cusparse_view_.create_vector(d_dx_residual_6);
-    cusparse_dx_            = cusparse_view_.create_vector(d_dx_);
+    data.cusparse_dx_residual_5_ = data.cusparse_view_.create_vector(d_dx_residual_5);
+    data.cusparse_dx_residual_6_ = data.cusparse_view_.create_vector(d_dx_residual_6);
+    data.cusparse_dx_            = data.cusparse_view_.create_vector(d_dx_);
 
-    cusparse_view_.spmv(1.0, cusparse_dx_residual_5_, 0.0, cusparse_dx_residual_6_);
-    cusparse_view_.spmv(-1.0, cusparse_dx_, 1.0, cusparse_dx_residual_6_);
+    data.cusparse_view_.spmv(1.0, data.cusparse_dx_residual_5_, 0.0, data.cusparse_dx_residual_6_);
+    data.cusparse_view_.spmv(-1.0, data.cusparse_dx_, 1.0, data.cusparse_dx_residual_6_);
 
     const f_t dx_residual_6_norm = device_vector_norm_inf<i_t, f_t>(d_dx_residual_6, stream_view_);
     max_residual                 = std::max(max_residual, dx_residual_6_norm);
@@ -2226,12 +2057,12 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       stream_view_);
 
     // TMP vector creation should only be done once
-    cusparse_dx_residual_3_ = cusparse_view_.create_vector(d_dx_residual_3);
-    cusparse_dx_residual_4_ = cusparse_view_.create_vector(d_dx_residual_4);
-    cusparse_dx_            = cusparse_view_.create_vector(d_dx_);
+    data.cusparse_dx_residual_3_ = data.cusparse_view_.create_vector(d_dx_residual_3);
+    data.cusparse_dx_residual_4_ = data.cusparse_view_.create_vector(d_dx_residual_4);
+    data.cusparse_dx_            = data.cusparse_view_.create_vector(d_dx_);
 
-    cusparse_view_.spmv(1.0, cusparse_dx_residual_3_, 0.0, cusparse_dx_residual_4_);
-    cusparse_view_.spmv(1.0, cusparse_dx_, 1.0, cusparse_dx_residual_4_);
+    data.cusparse_view_.spmv(1.0, data.cusparse_dx_residual_3_, 0.0, data.cusparse_dx_residual_4_);
+    data.cusparse_view_.spmv(1.0, data.cusparse_dx_, 1.0, data.cusparse_dx_residual_4_);
 
     my_pop_range(debug);
   }
@@ -2264,8 +2095,9 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 
     // TMP data should already be on the GPU
     rmm::device_uvector<f_t> d_dx_residual_7(d_h_, stream_view_);
-    cusparseDnVecDescr_t cusparse_dy_           = cusparse_view_.create_vector(d_dy_);
-    cusparseDnVecDescr_t cusparse_dx_residual_7 = cusparse_view_.create_vector(d_dx_residual_7);
+    cusparseDnVecDescr_t cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
+    cusparseDnVecDescr_t cusparse_dx_residual_7 =
+      data.cusparse_view_.create_vector(d_dx_residual_7);
 
     // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
     data.gpu_adat_multiply(1.0,
@@ -2275,8 +2107,8 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
                            d_dx_residual_7,
                            cusparse_dx_residual_7,
                            d_u_,
-                           cusparse_u_,
-                           cusparse_view_,
+                           data.cusparse_u_,
+                           data.cusparse_view_,
                            data.d_inv_diag);
 
     const f_t dx_residual_7_norm = device_vector_norm_inf<i_t, f_t>(d_dx_residual_7, stream_view_);
@@ -2296,7 +2128,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     // TMP data should only be on the GPU
     pinned_dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
     if (use_gpu) {
-      cusparse_view_.spmv(1.0, dx, -1.0, x_residual);
+      data.cusparse_view_.spmv(1.0, dx, -1.0, x_residual);
     } else {
       matrix_vector_multiply(lp.A, 1.0, dx, -1.0, x_residual);
     }
@@ -2420,7 +2252,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
                     d_dual_residual_.begin());
 
     // dual_residual <- A' * dy - E * dv
-    cusparse_view_.transpose_spmv(1.0, cusparse_dy_, -1.0, cusparse_dual_residual_);
+    data.cusparse_view_.transpose_spmv(1.0, data.cusparse_dy_, -1.0, data.cusparse_dual_residual_);
 
     // dual_residual <- A' * dy - E * dv + dz - dual_rhs
     cub::DeviceTransform::Transform(
@@ -2557,7 +2389,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
                      primal_objective + lp.obj_constant,
                      vector_norm2<i_t, f_t>(data.primal_residual),
                      vector_norm2<i_t, f_t>(data.dual_residual),
-                     cusparse_view_,
+                     data.cusparse_view_,
                      solution);
     settings.log.printf(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
@@ -2593,7 +2425,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
                      primal_objective + lp.obj_constant,
                      vector_norm2<i_t, f_t>(data.primal_residual),
                      vector_norm2<i_t, f_t>(data.dual_residual),
-                     cusparse_view_,
+                     data.cusparse_view_,
                      solution);
     settings.log.printf(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
@@ -2625,7 +2457,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   raft::common::nvtx::range fun_scope("Barrier: solve");
 
   float64_t start_time = tic();
-  lp_status_t status   = lp_status_t::UNSET;
 
   i_t n = lp.num_cols;
   i_t m = lp.num_rows;
@@ -2646,6 +2477,13 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
 
   raft::common::nvtx::push_range("Barrier: LP Data Creation");
   iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
+  data.cusparse_dual_residual_ = data.cusparse_view_.create_vector(d_dual_residual_);
+  data.cusparse_r1_            = data.cusparse_view_.create_vector(d_r1_);
+  data.cusparse_tmp4_          = data.cusparse_view_.create_vector(d_tmp4_);
+  data.cusparse_h_             = data.cusparse_view_.create_vector(d_h_);
+  data.cusparse_dx_residual_   = data.cusparse_view_.create_vector(d_dx_residual_);
+  data.cusparse_u_             = data.cusparse_view_.create_vector(d_u_);
+  data.cusparse_y_residual_    = data.cusparse_view_.create_vector(d_y_residual_);
   raft::common::nvtx::pop_range();
 
   if (toc(start_time) > settings.time_limit) {
@@ -2891,12 +2729,12 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       raft::copy(d_dv_aff_.data(), data.dv_aff.data(), data.dv_aff.size(), stream_view_);
       raft::copy(d_dz_aff_.data(), data.dz_aff.data(), data.dz_aff.size(), stream_view_);
 
-      f_t step_primal_aff = std::min(gpu_max_step_to_boundary(d_w_, d_dw_aff_),
-                                     gpu_max_step_to_boundary(d_x_, d_dx_aff_));
-      f_t step_dual_aff   = std::min(gpu_max_step_to_boundary(d_v_, d_dv_aff_),
-                                   gpu_max_step_to_boundary(d_z_, d_dz_aff_));
+      f_t step_primal_aff = std::min(gpu_max_step_to_boundary(data, d_w_, d_dw_aff_),
+                                     gpu_max_step_to_boundary(data, d_x_, d_dx_aff_));
+      f_t step_dual_aff   = std::min(gpu_max_step_to_boundary(data, d_v_, d_dv_aff_),
+                                   gpu_max_step_to_boundary(data, d_z_, d_dz_aff_));
 
-      f_t complementarity_xz_aff_sum = transform_reduce_helper_.transform_reduce(
+      f_t complementarity_xz_aff_sum = data.transform_reduce_helper_.transform_reduce(
         thrust::make_zip_iterator(d_x_.data(), d_z_.data(), d_dx_aff_.data(), d_dz_aff_.data()),
         cuda::std::plus<f_t>{},
         [step_primal_aff, step_dual_aff] HD(const thrust::tuple<f_t, f_t, f_t, f_t> t) {
@@ -2916,7 +2754,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         d_x_.size(),
         stream_view_);
 
-      f_t complementarity_wv_aff_sum = transform_reduce_helper_.transform_reduce(
+      f_t complementarity_wv_aff_sum = data.transform_reduce_helper_.transform_reduce(
         thrust::make_zip_iterator(d_w_.data(), d_v_.data(), d_dw_aff_.data(), d_dv_aff_.data()),
         cuda::std::plus<f_t>{},
         [step_primal_aff, step_dual_aff] HD(const thrust::tuple<f_t, f_t, f_t, f_t> t) {
@@ -2986,6 +2824,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                              solution);
       }
       data.has_factorization = false;
+      data.has_solve_info    = false;
       if (toc(start_time) > settings.time_limit) {
         settings.log.printf("Barrier time limit exceeded\n");
         return lp_status_t::TIME_LIMIT;
@@ -3045,12 +2884,12 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
           [] HD(f_t dy_aff, f_t dy) { return dy + dy_aff; },
           stream_view_);
 
-        f_t max_step_primal =
-          std::min(gpu_max_step_to_boundary(d_w_, d_dw_), gpu_max_step_to_boundary(d_x_, d_dx_));
-        f_t max_step_dual =
-          std::min(gpu_max_step_to_boundary(d_v_, d_dv_), gpu_max_step_to_boundary(d_z_, d_dz_));
-        step_primal = options.step_scale * max_step_primal;
-        step_dual   = options.step_scale * max_step_dual;
+        f_t max_step_primal = std::min(gpu_max_step_to_boundary(data, d_w_, d_dw_),
+                                       gpu_max_step_to_boundary(data, d_x_, d_dx_));
+        f_t max_step_dual   = std::min(gpu_max_step_to_boundary(data, d_v_, d_dv_),
+                                     gpu_max_step_to_boundary(data, d_z_, d_dz_));
+        step_primal         = options.step_scale * max_step_primal;
+        step_dual           = options.step_scale * max_step_dual;
 
         cub::DeviceTransform::Transform(
           cuda::std::make_tuple(d_w_.data(), d_v_.data(), d_dw_.data(), d_dv_.data()),
@@ -3169,12 +3008,12 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       }
 
       if (use_gpu) {
-        mu = (sum_reduce_helper_.sum(d_complementarity_xz_residual_.begin(),
-                                     d_complementarity_xz_residual_.size(),
-                                     stream_view_) +
-              sum_reduce_helper_.sum(d_complementarity_wv_residual_.begin(),
-                                     d_complementarity_wv_residual_.size(),
-                                     stream_view_)) /
+        mu = (data.sum_reduce_helper_.sum(d_complementarity_xz_residual_.begin(),
+                                          d_complementarity_xz_residual_.size(),
+                                          stream_view_) +
+              data.sum_reduce_helper_.sum(d_complementarity_wv_residual_.begin(),
+                                          d_complementarity_wv_residual_.size(),
+                                          stream_view_)) /
              (static_cast<f_t>(n) + static_cast<f_t>(num_upper_bounds));
       } else {
         mu = (data.complementarity_xz_residual.sum() + data.complementarity_wv_residual.sum()) /
@@ -3276,7 +3115,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                        primal_objective + lp.obj_constant,
                        primal_residual_norm,
                        dual_residual_norm,
-                       cusparse_view_,
+                       data.cusparse_view_,
                        solution);
       return lp_status_t::OPTIMAL;
     }
@@ -3287,7 +3126,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                    primal_objective + lp.obj_constant,
                    vector_norm2<i_t, f_t>(data.primal_residual),
                    vector_norm2<i_t, f_t>(data.dual_residual),
-                   cusparse_view_,
+                   data.cusparse_view_,
                    solution);
   return lp_status_t::ITERATION_LIMIT;
 }

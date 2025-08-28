@@ -17,6 +17,7 @@
 #pragma once
 
 #include "dual_simplex/dense_vector.hpp"
+#include "dual_simplex/device_sparse_matrix.cuh"
 #include "dual_simplex/simplex_solver_settings.hpp"
 #include "dual_simplex/sparse_matrix.hpp"
 #include "dual_simplex/tic_toc.hpp"
@@ -35,8 +36,8 @@ class sparse_cholesky_base_t {
   virtual ~sparse_cholesky_base_t()                                                 = default;
   virtual i_t analyze(const csc_matrix_t<i_t, f_t>& A_in)                           = 0;
   virtual i_t factorize(const csc_matrix_t<i_t, f_t>& A_in)                         = 0;
-  virtual i_t analyze(typename csr_matrix_t<i_t, f_t>::device_t& A_in)              = 0;
-  virtual i_t factorize(typename csr_matrix_t<i_t, f_t>::device_t& A_in)            = 0;
+  virtual i_t analyze(device_csr_matrix_t<i_t, f_t>& A_in)                          = 0;
+  virtual i_t factorize(device_csr_matrix_t<i_t, f_t>& A_in)                        = 0;
   virtual i_t solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) = 0;
   virtual i_t solve(rmm::device_uvector<f_t>& b, rmm::device_uvector<f_t>& x)       = 0;
   virtual void set_positive_definite(bool positive_definite)                        = 0;
@@ -175,7 +176,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDA_CALL_AND_CHECK_EXIT(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
   }
 
-  i_t analyze(typename csr_matrix_t<i_t, f_t>::device_t& Arow) override
+  i_t analyze(device_csr_matrix_t<i_t, f_t>& Arow) override
   {
     raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze");
     // csr_matrix_t<i_t, f_t> Arow;
@@ -252,7 +253,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     return 0;
   }
-  i_t factorize(typename csr_matrix_t<i_t, f_t>::device_t& Arow) override
+  i_t factorize(device_csr_matrix_t<i_t, f_t>& Arow) override
   {
     raft::common::nvtx::range fun_scope("Factorize: cuDSS");
     // csr_matrix_t<i_t, f_t> Arow;
@@ -461,11 +462,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
   i_t solve(rmm::device_uvector<f_t>& b, rmm::device_uvector<f_t>& x) override
   {
-    if (b.size() != n) {
+    if (static_cast<i_t>(b.size()) != n) {
       settings_.log.printf("Error: b.size() %d != n %d\n", b.size(), n);
       exit(1);
     }
-    if (x.size() != n) {
+    if (static_cast<i_t>(x.size()) != n) {
       settings_.log.printf("Error: x.size() %d != n %d\n", x.size(), n);
       exit(1);
     }
