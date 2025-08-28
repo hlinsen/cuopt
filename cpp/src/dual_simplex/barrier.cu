@@ -425,7 +425,8 @@ class iteration_data_t {
     }
     form_adat(true);
 
-    chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(settings, lp.num_rows);
+    chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(
+      settings, lp.num_rows, handle_ptr->get_stream());
     chol->set_positive_definite(false);
 
     // Perform symbolic analysis
@@ -865,6 +866,25 @@ class iteration_data_t {
       if (do_pcg) { preconditioned_conjugate_gradient(settings_, b, 1e-9, x); }
 
       return solve_status;
+    }
+  }
+
+  i_t gpu_solve_adat(rmm::device_uvector<f_t>& d_b, rmm::device_uvector<f_t>& d_x) const
+  {
+    if (n_dense_columns == 0) {
+      // Solve ADAT * x = b
+      return chol->solve(d_b, d_x);
+    } else {
+      // TMP until this is ported to the GPU
+      dense_vector_t<i_t, f_t> b = host_copy(d_b);
+      dense_vector_t<i_t, f_t> x = host_copy(d_x);
+
+      i_t out = solve_adat(b, x);
+
+      d_b = device_copy(b, stream_view_);
+      d_x = device_copy(w, stream_view_);
+
+      return out;
     }
   }
 
@@ -2002,7 +2022,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
   // E*((complementarity_wv_rhs - v .* bound_rhs) ./ w) )
   // TMP shouldn't be allocated when in GPU mode
 
-  dense_vector_t<i_t, f_t> h(data.primal_rhs.size());
   {
     raft::common::nvtx::range fun_scope("Barrier: GPU compute H");
     // tmp3 <- E * ((complementarity_wv_rhs .- v .* bound_rhs) ./ w)
@@ -2042,7 +2061,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     cusparse_view_.spmv(1, cusparse_tmp4_, 1, cusparse_h_);
 
     // TMP until solve adat is on the CPU
-    h = host_copy(d_h_);
 
     my_pop_range(debug);
   }
@@ -2051,10 +2069,10 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::common::nvtx::range fun_scope("Barrier: Solve A D^{-1} A^T dy = h");
 
     // Solve A D^{-1} A^T dy = h
-    // i_t solve_status = data.chol->solve(h, dy);
-    i_t solve_status = data.solve_adat(h, dy);
-    // TMP until solve_adat is on the GPU
-    raft::copy(d_dy_.data(), dy.data(), dy.size(), stream_view_);
+    i_t solve_status = data.gpu_solve_adat(d_h_, d_dy_);
+    // TODO Chris, we need to write to cpu because dx is used outside
+    // Can't we also GPUify what's usinng this dx?
+    raft::copy(dy.data(), d_dy_.data(), dy.size(), stream_view_);
     if (solve_status < 0) {
       settings.log.printf("Linear solve failed\n");
       return -1;
@@ -2085,7 +2103,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     f_t const y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
     max_residual              = std::max(max_residual, y_residual_norm);
     if (y_residual_norm > 1e-2) {
-      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h, stream_view_));
+      settings.log.printf("|| h || = %.2e\n", device_vector_norm_inf<i_t, f_t>(d_h_, stream_view_));
       settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
     }
     if (y_residual_norm > 10) {
@@ -2249,7 +2267,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_7");
 
     // TMP data should already be on the GPU
-    rmm::device_uvector<f_t> d_dx_residual_7    = device_copy(h, stream_view_);
+    rmm::device_uvector<f_t> d_dx_residual_7(d_h_, stream_view_);
     cusparseDnVecDescr_t cusparse_dy_           = cusparse_view_.create_vector(d_dy_);
     cusparseDnVecDescr_t cusparse_dx_residual_7 = cusparse_view_.create_vector(d_dx_residual_7);
 

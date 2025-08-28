@@ -38,6 +38,7 @@ class sparse_cholesky_base_t {
   virtual i_t analyze(typename csr_matrix_t<i_t, f_t>::device_t& A_in)              = 0;
   virtual i_t factorize(typename csr_matrix_t<i_t, f_t>::device_t& A_in)            = 0;
   virtual i_t solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) = 0;
+  virtual i_t solve(rmm::device_uvector<f_t>& b, rmm::device_uvector<f_t>& x)       = 0;
   virtual void set_positive_definite(bool positive_definite)                        = 0;
 };
 
@@ -94,8 +95,15 @@ class sparse_cholesky_base_t {
 template <typename i_t, typename f_t>
 class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
  public:
-  sparse_cholesky_cudss_t(const simplex_solver_settings_t<i_t, f_t>& settings, i_t size)
-    : n(size), nnz(-1), first_factor(true), positive_definite(true), settings_(settings)
+  sparse_cholesky_cudss_t(const simplex_solver_settings_t<i_t, f_t>& settings,
+                          i_t size,
+                          rmm::cuda_stream_view stream_view)
+    : n(size),
+      nnz(-1),
+      first_factor(true),
+      positive_definite(true),
+      settings_(settings),
+      stream(stream_view)
   {
     int major, minor, patch;
     cudssGetProperty(MAJOR_VERSION, &major);
@@ -105,8 +113,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     cuda_error = cudaSuccess;
     status     = CUDSS_STATUS_SUCCESS;
-    CUDA_CALL_AND_CHECK_EXIT(cudaStreamCreate(&stream), "cudaStreamCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssCreate(&handle), status, "cudssCreate");
+    CUDSS_CALL_AND_CHECK_EXIT(cudssSetStream(handle, stream), status, "cudaStreamCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigCreate(&solverConfig), status, "cudssConfigCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
 
@@ -165,7 +173,6 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigDestroy(solverConfig), status, "cudssConfigDestroy");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDestroy(handle), status, "cudssDestroy");
     CUDA_CALL_AND_CHECK_EXIT(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
-    CUDA_CALL_AND_CHECK_EXIT(cudaStreamDestroy(stream), "cudaStreamDestroy");
   }
 
   i_t analyze(typename csr_matrix_t<i_t, f_t>::device_t& Arow) override
@@ -440,6 +447,20 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
   i_t solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) override
   {
+    auto d_b = cuopt::device_copy(b, stream);
+    auto d_x = cuopt::device_copy(x, stream);
+
+    i_t out = solve(d_b, d_x);
+
+    raft::copy(x.data(), d_x.data(), d_x.size(), stream);
+    // Sync so that data is on the host
+    RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
+
+    return out;
+  }
+
+  i_t solve(rmm::device_uvector<f_t>& b, rmm::device_uvector<f_t>& x) override
+  {
     if (b.size() != n) {
       settings_.log.printf("Error: b.size() %d != n %d\n", b.size(), n);
       exit(1);
@@ -448,24 +469,20 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       settings_.log.printf("Error: x.size() %d != n %d\n", x.size(), n);
       exit(1);
     }
-    CUDA_CALL_AND_CHECK(cudaMemcpy(b_values_d, b.data(), n * sizeof(f_t), cudaMemcpyHostToDevice),
-                        "cudaMemcpy for b_values");
-    CUDA_CALL_AND_CHECK(cudaMemcpy(x_values_d, x.data(), n * sizeof(f_t), cudaMemcpyHostToDevice),
-                        "cudaMemcpy for x_values");
 
     CUDSS_CALL_AND_CHECK(
-      cudssMatrixSetValues(cudss_b, b_values_d), status, "cudssMatrixSetValues for b");
+      cudssMatrixSetValues(cudss_b, b.data()), status, "cudssMatrixSetValues for b");
     CUDSS_CALL_AND_CHECK(
-      cudssMatrixSetValues(cudss_x, x_values_d), status, "cudssMatrixSetValues for x");
+      cudssMatrixSetValues(cudss_x, x.data()), status, "cudssMatrixSetValues for x");
 
     i_t ldb = n;
     i_t ldx = n;
     CUDSS_CALL_AND_CHECK_EXIT(
-      cudssMatrixCreateDn(&cudss_b, n, 1, ldb, b_values_d, CUDA_R_64F, CUDSS_LAYOUT_COL_MAJOR),
+      cudssMatrixCreateDn(&cudss_b, n, 1, ldb, b.data(), CUDA_R_64F, CUDSS_LAYOUT_COL_MAJOR),
       status,
       "cudssMatrixCreateDn for b");
     CUDSS_CALL_AND_CHECK_EXIT(
-      cudssMatrixCreateDn(&cudss_x, n, 1, ldx, x_values_d, CUDA_R_64F, CUDSS_LAYOUT_COL_MAJOR),
+      cudssMatrixCreateDn(&cudss_x, n, 1, ldx, x.data(), CUDA_R_64F, CUDSS_LAYOUT_COL_MAJOR),
       status,
       "cudssMatrixCreateDn for x");
 
@@ -473,15 +490,6 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       cudssExecute(handle, CUDSS_PHASE_SOLVE, solverConfig, solverData, A, cudss_x, cudss_b),
       status,
       "cudssExecute for solve");
-
-    CUDA_CALL_AND_CHECK(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
-
-    CUDA_CALL_AND_CHECK(cudaMemcpy(x.data(), x_values_d, n * sizeof(f_t), cudaMemcpyDeviceToHost),
-                        "cudaMemcpy for x");
-
-    for (i_t i = 0; i < n; i++) {
-      if (x[i] != x[i]) { return -1; }
-    }
 
     return 0;
   }
@@ -498,7 +506,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   bool positive_definite;
   cudaError_t cuda_error;
   cudssStatus_t status;
-  cudaStream_t stream;
+  rmm::cuda_stream_view stream;
   cudssHandle_t handle;
   cudssConfig_t solverConfig;
   cudssData_t solverData;
