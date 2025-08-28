@@ -126,17 +126,20 @@ class barrier_solver_t {
                               f_t& dual_residual_norm,
                               f_t& complementarity_residual_norm);
 
-  void compute_residuals(const dense_vector_t<i_t, f_t>& w,
-                         const dense_vector_t<i_t, f_t>& x,
-                         const dense_vector_t<i_t, f_t>& y,
-                         const dense_vector_t<i_t, f_t>& v,
-                         const dense_vector_t<i_t, f_t>& z,
+  template <typename AllocatorA>
+  void compute_residuals(const dense_vector_t<i_t, f_t, AllocatorA>& w,
+                         const dense_vector_t<i_t, f_t, AllocatorA>& x,
+                         const dense_vector_t<i_t, f_t, AllocatorA>& y,
+                         const dense_vector_t<i_t, f_t, AllocatorA>& v,
+                         const dense_vector_t<i_t, f_t, AllocatorA>& z,
                          iteration_data_t<i_t, f_t>& data);
-  f_t max_step_to_boundary(const dense_vector_t<i_t, f_t>& x,
-                           const dense_vector_t<i_t, f_t>& dx,
+  template <typename AllocatorA, typename AllocatorB>
+  f_t max_step_to_boundary(const dense_vector_t<i_t, f_t, AllocatorA>& x,
+                           const dense_vector_t<i_t, f_t, AllocatorB>& dx,
                            i_t& index) const;
-  f_t max_step_to_boundary(const dense_vector_t<i_t, f_t>& x,
-                           const dense_vector_t<i_t, f_t>& dx) const;
+  template <typename AllocatorA, typename AllocatorB>
+  f_t max_step_to_boundary(const dense_vector_t<i_t, f_t, AllocatorA>& x,
+                           const dense_vector_t<i_t, f_t, AllocatorB>& dx) const;
   // To be able to directly pass lambdas to transform functions
  public:
   void gpu_compute_residuals(rmm::device_uvector<f_t> const& d_w,
@@ -158,18 +161,18 @@ class barrier_solver_t {
   f_t gpu_max_step_to_boundary(const rmm::device_uvector<f_t>& x,
                                const rmm::device_uvector<f_t>& dx);
   i_t gpu_compute_search_direction(iteration_data_t<i_t, f_t>& data,
-                                   dense_vector_t<i_t, f_t>& dw,
-                                   dense_vector_t<i_t, f_t>& dx,
-                                   dense_vector_t<i_t, f_t>& dy,
-                                   dense_vector_t<i_t, f_t>& dv,
-                                   dense_vector_t<i_t, f_t>& dz,
+                                   pinned_dense_vector_t<i_t, f_t>& dw,
+                                   pinned_dense_vector_t<i_t, f_t>& dx,
+                                   pinned_dense_vector_t<i_t, f_t>& dy,
+                                   pinned_dense_vector_t<i_t, f_t>& dv,
+                                   pinned_dense_vector_t<i_t, f_t>& dz,
                                    f_t& max_residual);
   i_t compute_search_direction(iteration_data_t<i_t, f_t>& data,
-                               dense_vector_t<i_t, f_t>& dw,
-                               dense_vector_t<i_t, f_t>& dx,
-                               dense_vector_t<i_t, f_t>& dy,
-                               dense_vector_t<i_t, f_t>& dv,
-                               dense_vector_t<i_t, f_t>& dz,
+                               pinned_dense_vector_t<i_t, f_t>& dw,
+                               pinned_dense_vector_t<i_t, f_t>& dx,
+                               pinned_dense_vector_t<i_t, f_t>& dy,
+                               pinned_dense_vector_t<i_t, f_t>& dv,
+                               pinned_dense_vector_t<i_t, f_t>& dz,
                                f_t& max_residual);
 
  private:

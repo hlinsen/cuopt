@@ -41,7 +41,6 @@
 namespace cuopt::linear_programming::dual_simplex {
 
 auto constexpr use_gpu = true;
-auto constexpr TPB     = 256;
 
 template <typename i_t, typename f_t>
 class dense_matrix_t {
@@ -87,10 +86,11 @@ class dense_matrix_t {
   }
 
   // y = alpha * A * x + beta * y
+  template <typename AllocatorA, typename AllocatorB>
   void matrix_vector_multiply(f_t alpha,
-                              const dense_vector_t<i_t, f_t>& x,
+                              const dense_vector_t<i_t, f_t, AllocatorA>& x,
                               f_t beta,
-                              dense_vector_t<i_t, f_t>& y) const
+                              dense_vector_t<i_t, f_t, AllocatorB>& y) const
   {
     if (x.size() != n) {
       printf("dense_matrix_t::matrix_vector_multiply: x.size() != n\n");
@@ -513,7 +513,7 @@ class iteration_data_t {
           inv_diag_prime[new_j++] = inv_diag[j];
         }
       } else {
-        inv_diag_prime = inv_diag;
+        inv_diag_prime = copy(inv_diag);
       }
 
       if (inv_diag_prime.size() != AD.n) {
@@ -897,7 +897,7 @@ class iteration_data_t {
                    cusparse_view_t<i_t, f_t>& cusparse_view,
                    lp_solution_t<i_t, f_t>& solution)
   {
-    solution.x = x;
+    solution.x = copy(x);
     solution.y = y;
     dense_vector_t<i_t, f_t> z_tilde(z.size());
     scatter_upper_bounds(v, z_tilde);
@@ -1157,7 +1157,9 @@ class iteration_data_t {
     }
   }
 
-  void scatter_upper_bounds(const dense_vector_t<i_t, f_t>& y, dense_vector_t<i_t, f_t>& z)
+  template <typename AllocatorA, typename AllocatorB>
+  void scatter_upper_bounds(const dense_vector_t<i_t, f_t, AllocatorA>& y,
+                            dense_vector_t<i_t, f_t, AllocatorB>& z)
   {
     if (n_upper_bounds > 0) {
       for (i_t k = 0; k < n_upper_bounds; k++) {
@@ -1167,7 +1169,8 @@ class iteration_data_t {
     }
   }
 
-  void gather_upper_bounds(const dense_vector_t<i_t, f_t>& z, dense_vector_t<i_t, f_t>& y)
+  template <typename AllocatorA, typename AllocatorB>
+  void gather_upper_bounds(const std::vector<f_t, AllocatorA>& z, std::vector<f_t, AllocatorB>& y)
   {
     if (n_upper_bounds > 0) {
       for (i_t k = 0; k < n_upper_bounds; k++) {
@@ -1356,15 +1359,15 @@ class iteration_data_t {
 
   raft::handle_t const* handle_ptr;
   i_t n_upper_bounds;
-  std::vector<i_t> upper_bounds;
+  pinned_dense_vector_t<i_t, i_t> upper_bounds;
   dense_vector_t<i_t, f_t> c;
   dense_vector_t<i_t, f_t> b;
 
-  dense_vector_t<i_t, f_t> w;
-  dense_vector_t<i_t, f_t> x;
+  pinned_dense_vector_t<i_t, f_t> w;
+  pinned_dense_vector_t<i_t, f_t> x;
   dense_vector_t<i_t, f_t> y;
-  dense_vector_t<i_t, f_t> v;
-  dense_vector_t<i_t, f_t> z;
+  pinned_dense_vector_t<i_t, f_t> v;
+  pinned_dense_vector_t<i_t, f_t> z;
 
   dense_vector_t<i_t, f_t> w_save;
   dense_vector_t<i_t, f_t> x_save;
@@ -1372,9 +1375,9 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> v_save;
   dense_vector_t<i_t, f_t> z_save;
 
-  dense_vector_t<i_t, f_t> diag;
-  dense_vector_t<i_t, f_t> inv_diag;
-  dense_vector_t<i_t, f_t> inv_sqrt_diag;
+  pinned_dense_vector_t<i_t, f_t> diag;
+  pinned_dense_vector_t<i_t, f_t> inv_diag;
+  pinned_dense_vector_t<i_t, f_t> inv_sqrt_diag;
 
   std::vector<f_t> original_A_values;
   rmm::device_uvector<f_t> d_original_A_values;
@@ -1412,23 +1415,23 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> complementarity_xz_residual;
   dense_vector_t<i_t, f_t> complementarity_wv_residual;
 
-  dense_vector_t<i_t, f_t> primal_rhs;
-  dense_vector_t<i_t, f_t> bound_rhs;
-  dense_vector_t<i_t, f_t> dual_rhs;
-  dense_vector_t<i_t, f_t> complementarity_xz_rhs;
-  dense_vector_t<i_t, f_t> complementarity_wv_rhs;
+  pinned_dense_vector_t<i_t, f_t> primal_rhs;
+  pinned_dense_vector_t<i_t, f_t> bound_rhs;
+  pinned_dense_vector_t<i_t, f_t> dual_rhs;
+  pinned_dense_vector_t<i_t, f_t> complementarity_xz_rhs;
+  pinned_dense_vector_t<i_t, f_t> complementarity_wv_rhs;
 
-  dense_vector_t<i_t, f_t> dw_aff;
-  dense_vector_t<i_t, f_t> dx_aff;
-  dense_vector_t<i_t, f_t> dy_aff;
-  dense_vector_t<i_t, f_t> dv_aff;
-  dense_vector_t<i_t, f_t> dz_aff;
+  pinned_dense_vector_t<i_t, f_t> dw_aff;
+  pinned_dense_vector_t<i_t, f_t> dx_aff;
+  pinned_dense_vector_t<i_t, f_t> dy_aff;
+  pinned_dense_vector_t<i_t, f_t> dv_aff;
+  pinned_dense_vector_t<i_t, f_t> dz_aff;
 
-  dense_vector_t<i_t, f_t> dw;
-  dense_vector_t<i_t, f_t> dx;
-  dense_vector_t<i_t, f_t> dy;
-  dense_vector_t<i_t, f_t> dv;
-  dense_vector_t<i_t, f_t> dz;
+  pinned_dense_vector_t<i_t, f_t> dw;
+  pinned_dense_vector_t<i_t, f_t> dx;
+  pinned_dense_vector_t<i_t, f_t> dy;
+  pinned_dense_vector_t<i_t, f_t> dv;
+  pinned_dense_vector_t<i_t, f_t> dz;
   cusparse_info_t<i_t, f_t> cusparse_info;
   rmm::cuda_stream_view stream_view_;
 
@@ -1727,11 +1730,12 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
 }
 
 template <typename i_t, typename f_t>
-void barrier_solver_t<i_t, f_t>::compute_residuals(const dense_vector_t<i_t, f_t>& w,
-                                                   const dense_vector_t<i_t, f_t>& x,
-                                                   const dense_vector_t<i_t, f_t>& y,
-                                                   const dense_vector_t<i_t, f_t>& v,
-                                                   const dense_vector_t<i_t, f_t>& z,
+template <typename AllocatorA>
+void barrier_solver_t<i_t, f_t>::compute_residuals(const dense_vector_t<i_t, f_t, AllocatorA>& w,
+                                                   const dense_vector_t<i_t, f_t, AllocatorA>& x,
+                                                   const dense_vector_t<i_t, f_t, AllocatorA>& y,
+                                                   const dense_vector_t<i_t, f_t, AllocatorA>& v,
+                                                   const dense_vector_t<i_t, f_t, AllocatorA>& z,
                                                    iteration_data_t<i_t, f_t>& data)
 {
   raft::common::nvtx::range fun_scope("Barrier: CPU compute_residuals");
@@ -1819,8 +1823,9 @@ void barrier_solver_t<i_t, f_t>::compute_residual_norms(const dense_vector_t<i_t
 }
 
 template <typename i_t, typename f_t>
-f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f_t>& x,
-                                                     const dense_vector_t<i_t, f_t>& dx,
+template <typename AllocatorA, typename AllocatorB>
+f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f_t, AllocatorA>& x,
+                                                     const dense_vector_t<i_t, f_t, AllocatorB>& dx,
                                                      i_t& index) const
 {
   float64_t max_step = 1.0;
@@ -1860,8 +1865,10 @@ f_t barrier_solver_t<i_t, f_t>::gpu_max_step_to_boundary(const rmm::device_uvect
 }
 
 template <typename i_t, typename f_t>
-f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(const dense_vector_t<i_t, f_t>& x,
-                                                     const dense_vector_t<i_t, f_t>& dx) const
+template <typename AllocatorA, typename AllocatorB>
+f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(
+  const dense_vector_t<i_t, f_t, AllocatorA>& x,
+  const dense_vector_t<i_t, f_t, AllocatorB>& dx) const
 {
   i_t index;
   return max_step_to_boundary(x, dx, index);
@@ -1879,11 +1886,11 @@ void barrier_solver_t<i_t, f_t>::my_pop_range(bool debug) const
 
 template <typename i_t, typename f_t>
 i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_t, f_t>& data,
-                                                             dense_vector_t<i_t, f_t>& dw,
-                                                             dense_vector_t<i_t, f_t>& dx,
-                                                             dense_vector_t<i_t, f_t>& dy,
-                                                             dense_vector_t<i_t, f_t>& dv,
-                                                             dense_vector_t<i_t, f_t>& dz,
+                                                             pinned_dense_vector_t<i_t, f_t>& dw,
+                                                             pinned_dense_vector_t<i_t, f_t>& dx,
+                                                             pinned_dense_vector_t<i_t, f_t>& dy,
+                                                             pinned_dense_vector_t<i_t, f_t>& dv,
+                                                             pinned_dense_vector_t<i_t, f_t>& dz,
                                                              f_t& max_residual)
 {
   raft::common::nvtx::range fun_scope("Barrier: compute_search_direction");
@@ -2298,7 +2305,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 
     // x_residual <- A * dx - primal_rhs
     // TMP data should only be on the GPU
-    dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
+    pinned_dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
     if (use_gpu) {
       cusparse_view_.spmv(1.0, dx, -1.0, x_residual);
     } else {
@@ -2650,7 +2657,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     settings.log.printf("Barrier solver halted\n");
     return lp_status_t::CONCURRENT_LIMIT;
   }
-  compute_residuals(data.w, data.x, data.y, data.v, data.z, data);
+  compute_residuals<CudaHostAllocator<f_t>>(data.w, data.x, data.y, data.v, data.z, data);
 
   f_t primal_residual_norm = std::max(vector_norm_inf<i_t, f_t>(data.primal_residual, stream_view_),
                                       vector_norm_inf<i_t, f_t>(data.bound_residual, stream_view_));

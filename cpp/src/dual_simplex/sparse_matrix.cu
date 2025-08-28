@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include <dual_simplex/dense_vector.hpp>
 #include <dual_simplex/sparse_matrix.hpp>
 #include <dual_simplex/sparse_vector.hpp>
 
@@ -426,7 +427,8 @@ void csc_matrix_t<i_t, f_t>::print_matrix() const
 }
 
 template <typename i_t, typename f_t>
-void csc_matrix_t<i_t, f_t>::scale_columns(const std::vector<f_t>& scale)
+template <typename Allocator>
+void csc_matrix_t<i_t, f_t>::scale_columns(const std::vector<f_t, Allocator>& scale)
 {
   const i_t n = this->n;
   assert(scale.size() == n);
@@ -846,12 +848,12 @@ f_t sparse_dot(const std::vector<i_t>& xind,
   return dot;
 }
 
-template <typename i_t, typename f_t>
+template <typename i_t, typename f_t, typename AllocatorA, typename AllocatorB>
 i_t matrix_vector_multiply(const csc_matrix_t<i_t, f_t>& A,
                            f_t alpha,
-                           const std::vector<f_t>& x,
+                           const std::vector<f_t, AllocatorA>& x,
                            f_t beta,
-                           std::vector<f_t>& y)
+                           std::vector<f_t, AllocatorB>& y)
 {
   // y <- alpha*A*x + beta*y
   i_t m = A.m;
@@ -882,12 +884,12 @@ i_t matrix_vector_multiply(const csc_matrix_t<i_t, f_t>& A,
 }
 
 // y <- alpha*A'*x + beta*y
-template <typename i_t, typename f_t>
+template <typename i_t, typename f_t, typename AllocatorA, typename AllocatorB>
 i_t matrix_transpose_vector_multiply(const csc_matrix_t<i_t, f_t>& A,
                                      f_t alpha,
-                                     const std::vector<f_t>& x,
+                                     const std::vector<f_t, AllocatorA>& x,
                                      f_t beta,
-                                     std::vector<f_t>& y)
+                                     std::vector<f_t, AllocatorB>& y)
 {
   i_t m = A.m;
   i_t n = A.n;
@@ -963,17 +965,67 @@ template double sparse_dot<int, double>(const std::vector<int>& xind,
                                         const csc_matrix_t<int, double>& Y,
                                         int y_col);
 
-template int matrix_vector_multiply<int, double>(const csc_matrix_t<int, double>& A,
-                                                 double alpha,
-                                                 const std::vector<double>& x,
-                                                 double beta,
-                                                 std::vector<double>& y);
+template int
+matrix_vector_multiply<int, double, CudaHostAllocator<double>, CudaHostAllocator<double>>(
+  const csc_matrix_t<int, double>& A,
+  double alpha,
+  const std::vector<double, CudaHostAllocator<double>>& x,
+  double beta,
+  std::vector<double, CudaHostAllocator<double>>& y);
 
-template int matrix_transpose_vector_multiply<int, double>(const csc_matrix_t<int, double>& A,
-                                                           double alpha,
-                                                           const std::vector<double>& x,
-                                                           double beta,
-                                                           std::vector<double>& y);
+template int matrix_vector_multiply<int, double, CudaHostAllocator<double>, std::allocator<double>>(
+  const csc_matrix_t<int, double>& A,
+  double alpha,
+  const std::vector<double, CudaHostAllocator<double>>& x,
+  double beta,
+  std::vector<double, std::allocator<double>>& y);
+
+template int matrix_vector_multiply<int, double, std::allocator<double>, CudaHostAllocator<double>>(
+  const csc_matrix_t<int, double>& A,
+  double alpha,
+  const std::vector<double, std::allocator<double>>& x,
+  double beta,
+  std::vector<double, CudaHostAllocator<double>>& y);
+
+template int matrix_vector_multiply<int, double, std::allocator<double>, std::allocator<double>>(
+  const csc_matrix_t<int, double>& A,
+  double alpha,
+  const std::vector<double, std::allocator<double>>& x,
+  double beta,
+  std::vector<double, std::allocator<double>>& y);
+
+template int
+matrix_transpose_vector_multiply<int, double, CudaHostAllocator<double>, CudaHostAllocator<double>>(
+  const csc_matrix_t<int, double>& A,
+  double alpha,
+  const std::vector<double, CudaHostAllocator<double>>& x,
+  double beta,
+  std::vector<double, CudaHostAllocator<double>>& y);
+
+template int
+matrix_transpose_vector_multiply<int, double, CudaHostAllocator<double>, std::allocator<double>>(
+  const csc_matrix_t<int, double>& A,
+  double alpha,
+  const std::vector<double, CudaHostAllocator<double>>& x,
+  double beta,
+  std::vector<double, std::allocator<double>>& y);
+
+template int
+matrix_transpose_vector_multiply<int, double, std::allocator<double>, CudaHostAllocator<double>>(
+  const csc_matrix_t<int, double>& A,
+  double alpha,
+  const std::vector<double, std::allocator<double>>& x,
+  double beta,
+  std::vector<double, CudaHostAllocator<double>>& y);
+
+template int
+matrix_transpose_vector_multiply<int, double, std::allocator<double>, std::allocator<double>>(
+  const csc_matrix_t<int, double>& A,
+  double alpha,
+  const std::vector<double, std::allocator<double>>& x,
+  double beta,
+  std::vector<double, std::allocator<double>>& y);
+
 #endif
 
 }  // namespace cuopt::linear_programming::dual_simplex

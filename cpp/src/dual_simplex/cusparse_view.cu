@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include <dual_simplex/dense_vector.hpp>
 #include "dual_simplex/cusparse_view.hpp"
 
 #include <utilities/copy_helpers.hpp>
@@ -250,17 +251,18 @@ cusparseDnVecDescr_t cusparse_view_t<i_t, f_t>::create_vector(const rmm::device_
 }
 
 template <typename i_t, typename f_t>
+template <typename AllocatorA, typename AllocatorB>
 void cusparse_view_t<i_t, f_t>::spmv(f_t alpha,
-                                     const std::vector<f_t>& x,
+                                     const std::vector<f_t, AllocatorA>& x,
                                      f_t beta,
-                                     std::vector<f_t>& y)
+                                     std::vector<f_t, AllocatorB>& y)
 {
   auto d_x                        = device_copy(x, handle_ptr_->get_stream());
   auto d_y                        = device_copy(y, handle_ptr_->get_stream());
   cusparseDnVecDescr_t x_cusparse = create_vector(d_x);
   cusparseDnVecDescr_t y_cusparse = create_vector(d_y);
   spmv(alpha, x_cusparse, beta, y_cusparse);
-  y = cuopt::host_copy(d_y);
+  y = cuopt::host_copy<f_t, AllocatorB>(d_y);
 }
 
 template <typename i_t, typename f_t>
@@ -292,17 +294,18 @@ void cusparse_view_t<i_t, f_t>::spmv(f_t alpha,
 }
 
 template <typename i_t, typename f_t>
+template <typename AllocatorA, typename AllocatorB>
 void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
-                                               const std::vector<f_t>& x,
+                                               const std::vector<f_t, AllocatorA>& x,
                                                f_t beta,
-                                               std::vector<f_t>& y)
+                                               std::vector<f_t, AllocatorB>& y)
 {
   auto d_x                        = device_copy(x, handle_ptr_->get_stream());
   auto d_y                        = device_copy(y, handle_ptr_->get_stream());
   cusparseDnVecDescr_t x_cusparse = create_vector(d_x);
   cusparseDnVecDescr_t y_cusparse = create_vector(d_y);
   transpose_spmv(alpha, x_cusparse, beta, y_cusparse);
-  y = cuopt::host_copy(d_y);
+  y = cuopt::host_copy<f_t, AllocatorB>(d_y);
 }
 
 template <typename i_t, typename f_t>
@@ -336,5 +339,57 @@ void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
 }
 
 template class cusparse_view_t<int, double>;
+template void
+cusparse_view_t<int, double>::spmv<CudaHostAllocator<double>, CudaHostAllocator<double>>(
+  double alpha,
+  const std::vector<double, CudaHostAllocator<double>>& x,
+  double beta,
+  std::vector<double, CudaHostAllocator<double>>& y);
+
+template void cusparse_view_t<int, double>::spmv<CudaHostAllocator<double>, std::allocator<double>>(
+  double alpha,
+  const std::vector<double, CudaHostAllocator<double>>& x,
+  double beta,
+  std::vector<double, std::allocator<double>>& y);
+
+template void cusparse_view_t<int, double>::spmv<std::allocator<double>, CudaHostAllocator<double>>(
+  double alpha,
+  const std::vector<double, std::allocator<double>>& x,
+  double beta,
+  std::vector<double, CudaHostAllocator<double>>& y);
+
+template void cusparse_view_t<int, double>::spmv<std::allocator<double>, std::allocator<double>>(
+  double alpha,
+  const std::vector<double, std::allocator<double>>& x,
+  double beta,
+  std::vector<double, std::allocator<double>>& y);
+
+template void
+cusparse_view_t<int, double>::transpose_spmv<CudaHostAllocator<double>, CudaHostAllocator<double>>(
+  double alpha,
+  const std::vector<double, CudaHostAllocator<double>>& x,
+  double beta,
+  std::vector<double, CudaHostAllocator<double>>& y);
+
+template void
+cusparse_view_t<int, double>::transpose_spmv<CudaHostAllocator<double>, std::allocator<double>>(
+  double alpha,
+  const std::vector<double, CudaHostAllocator<double>>& x,
+  double beta,
+  std::vector<double, std::allocator<double>>& y);
+
+template void
+cusparse_view_t<int, double>::transpose_spmv<std::allocator<double>, CudaHostAllocator<double>>(
+  double alpha,
+  const std::vector<double, std::allocator<double>>& x,
+  double beta,
+  std::vector<double, CudaHostAllocator<double>>& y);
+
+template void
+cusparse_view_t<int, double>::transpose_spmv<std::allocator<double>, std::allocator<double>>(
+  double alpha,
+  const std::vector<double, std::allocator<double>>& x,
+  double beta,
+  std::vector<double, std::allocator<double>>& y);
 
 }  // namespace cuopt::linear_programming::dual_simplex

@@ -74,8 +74,8 @@ f_t device_vector_norm_inf(const rmm::device_uvector<f_t>& in, rmm::cuda_stream_
 
 // TMP we should just have a CPU and GPU version to do the comparison
 // Should never have to norm inf a CPU vector if we are using the GPU
-template <typename i_t, typename f_t>
-f_t vector_norm_inf(const std::vector<f_t>& x, rmm::cuda_stream_view stream_view)
+template <typename i_t, typename f_t, typename Allocator>
+f_t vector_norm_inf(const std::vector<f_t, Allocator>& x, rmm::cuda_stream_view stream_view)
 {
   const auto d_x = device_copy(x, stream_view);
   return device_vector_norm_inf<i_t, f_t>(d_x, stream_view);

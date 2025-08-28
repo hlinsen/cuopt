@@ -109,7 +109,8 @@ class csc_matrix_t {
   void compare(csc_matrix_t<i_t, f_t> const& B) const;
 
   // Perform column scaling of the matrix
-  void scale_columns(const std::vector<f_t>& scale);
+  template <typename Allocator>
+  void scale_columns(const std::vector<f_t, Allocator>& scale);
 
   struct view_t {
     raft::device_span<i_t> col_start;
@@ -380,19 +381,19 @@ f_t sparse_dot(const std::vector<i_t>& xind,
                i_t y_col);
 
 // y <- alpha*A*x + beta*y
-template <typename i_t, typename f_t>
+template <typename i_t, typename f_t, typename AllocatorA, typename AllocatorB>
 i_t matrix_vector_multiply(const csc_matrix_t<i_t, f_t>& A,
                            f_t alpha,
-                           const std::vector<f_t>& x,
+                           const std::vector<f_t, AllocatorA>& x,
                            f_t beta,
-                           std::vector<f_t>& y);
+                           std::vector<f_t, AllocatorB>& y);
 
 // y <- alpha*A'*x + beta*y
-template <typename i_t, typename f_t>
+template <typename i_t, typename f_t, typename AllocatorA, typename AllocatorB>
 i_t matrix_transpose_vector_multiply(const csc_matrix_t<i_t, f_t>& A,
                                      f_t alpha,
-                                     const std::vector<f_t>& x,
+                                     const std::vector<f_t, AllocatorA>& x,
                                      f_t beta,
-                                     std::vector<f_t>& y);
+                                     std::vector<f_t, AllocatorB>& y);
 
 }  // namespace cuopt::linear_programming::dual_simplex

@@ -24,8 +24,28 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
-template <typename i_t, typename f_t>
-class dense_vector_t : public std::vector<f_t> {
+template <typename T>
+struct CudaHostAllocator {
+  using value_type = T;
+
+  CudaHostAllocator() noexcept {}
+  template <class U>
+  CudaHostAllocator(const CudaHostAllocator<U>&) noexcept
+  {
+  }
+
+  T* allocate(std::size_t n)
+  {
+    T* ptr = nullptr;
+    RAFT_CUDA_TRY(cudaMallocHost((void**)&ptr, n * sizeof(T)));
+    return ptr;
+  }
+
+  void deallocate(T* p, std::size_t) noexcept { RAFT_CUDA_TRY(cudaFreeHost(p)); }
+};
+
+template <typename i_t, typename f_t, typename Allocator = std::allocator<f_t>>
+class dense_vector_t : public std::vector<f_t, Allocator> {
  public:
   dense_vector_t(i_t n) { this->resize(n, 0.0); }
   dense_vector_t(const std::vector<f_t>& in)
@@ -34,6 +54,32 @@ class dense_vector_t : public std::vector<f_t> {
     for (i_t i = 0; i < in.size(); i++) {
       (*this)[i] = in[i];
     }
+  }
+
+  template <typename OtherAlloc>
+  dense_vector_t& operator=(const std::vector<f_t, OtherAlloc>& rhs)
+  {
+    this->assign(rhs.begin(), rhs.end());
+    return *this;
+  }
+
+  template <typename OtherAlloc>
+  dense_vector_t& operator=(const dense_vector_t<i_t, f_t, OtherAlloc>& rhs)
+  {
+    this->assign(rhs.begin(), rhs.end());
+    return *this;
+  }
+
+  template <typename OtherAlloc>
+  dense_vector_t(const std::vector<f_t, OtherAlloc>& rhs)
+  {
+    this->assign(rhs.begin(), rhs.end());
+  }
+
+  template <typename OtherAlloc>
+  dense_vector_t(const dense_vector_t<i_t, f_t, OtherAlloc>& rhs)
+  {
+    this->assign(rhs.begin(), rhs.end());
   }
 
   f_t minimum() const
@@ -57,7 +103,8 @@ class dense_vector_t : public std::vector<f_t> {
   }
 
   // b <- sqrt(a)
-  void sqrt(dense_vector_t<i_t, f_t>& b) const
+  template <typename OtherAlloc>
+  void sqrt(dense_vector_t<i_t, f_t, OtherAlloc>& b) const
   {
     const i_t n = this->size();
     for (i_t i = 0; i < n; i++) {
@@ -98,7 +145,8 @@ class dense_vector_t : public std::vector<f_t> {
     return sum;
   }
 
-  f_t inner_product(dense_vector_t<i_t, f_t>& b) const
+  template <typename AllocatorB>
+  f_t inner_product(dense_vector_t<i_t, f_t, AllocatorB>& b) const
   {
     f_t dot     = 0.0;
     const i_t n = this->size();
@@ -109,7 +157,9 @@ class dense_vector_t : public std::vector<f_t> {
   }
 
   // c <- a .* b
-  void pairwise_product(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& c) const
+  template <typename AllocatorA, typename AllocatorB>
+  void pairwise_product(const std::vector<f_t, AllocatorA>& b,
+                        std::vector<f_t, AllocatorB>& c) const
   {
     const i_t n = this->size();
     if (b.size() != n) {
@@ -134,7 +184,9 @@ class dense_vector_t : public std::vector<f_t> {
   }
 
   // c <- a - b
-  void pairwise_subtract(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& c) const
+  template <typename AllocatorA, typename AllocatorB>
+  void pairwise_subtract(const dense_vector_t<i_t, f_t, AllocatorA>& b,
+                         dense_vector_t<i_t, f_t, AllocatorB>& c) const
   {
     const i_t n = this->size();
     for (i_t i = 0; i < n; i++) {
@@ -143,7 +195,8 @@ class dense_vector_t : public std::vector<f_t> {
   }
 
   // y <- alpha * x + beta * y
-  void axpy(f_t alpha, const dense_vector_t<i_t, f_t>& x, f_t beta)
+  template <typename InputAllocator>
+  void axpy(f_t alpha, const std::vector<f_t, InputAllocator>& x, f_t beta)
   {
     const i_t n = this->size();
     for (i_t i = 0; i < n; i++) {
@@ -169,7 +222,8 @@ class dense_vector_t : public std::vector<f_t> {
   }
 
   // b <- 1.0 /a
-  void inverse(dense_vector_t<i_t, f_t>& b) const
+  template <typename InputAllocator>
+  void inverse(dense_vector_t<i_t, f_t, InputAllocator>& b) const
   {
     const i_t n = this->size();
     for (i_t i = 0; i < n; i++) {
@@ -177,5 +231,14 @@ class dense_vector_t : public std::vector<f_t> {
     }
   }
 };
+
+template <typename i_t, typename f_t>
+using pinned_dense_vector_t = dense_vector_t<i_t, f_t, CudaHostAllocator<f_t>>;
+
+template <typename T, typename Alloc>
+std::vector<T> copy(const std::vector<T, Alloc>& src)
+{
+  return std::vector<T>(src.begin(), src.end());
+}
 
 }  // namespace cuopt::linear_programming::dual_simplex

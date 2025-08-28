@@ -42,9 +42,17 @@ class cusparse_view_t {
 
   static cusparseDnVecDescr_t create_vector(const rmm::device_uvector<f_t>& vec);
 
-  void spmv(f_t alpha, const std::vector<f_t>& x, f_t beta, std::vector<f_t>& y);
+  template <typename AllocatorA, typename AllocatorB>
+  void spmv(f_t alpha,
+            const std::vector<f_t, AllocatorA>& x,
+            f_t beta,
+            std::vector<f_t, AllocatorB>& y);
   void spmv(f_t alpha, cusparseDnVecDescr_t x, f_t beta, cusparseDnVecDescr_t y);
-  void transpose_spmv(f_t alpha, const std::vector<f_t>& x, f_t beta, std::vector<f_t>& y);
+  template <typename AllocatorA, typename AllocatorB>
+  void transpose_spmv(f_t alpha,
+                      const std::vector<f_t, AllocatorA>& x,
+                      f_t beta,
+                      std::vector<f_t, AllocatorB>& y);
   void transpose_spmv(f_t alpha, cusparseDnVecDescr_t x, f_t beta, cusparseDnVecDescr_t y);
 
   raft::handle_t const* handle_ptr_{nullptr};
