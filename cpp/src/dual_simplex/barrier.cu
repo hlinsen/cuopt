@@ -1492,7 +1492,7 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     d_primal_residual_(0, lp.handle_ptr->get_stream()),
     d_bound_residual_(0, lp.handle_ptr->get_stream()),
     d_upper_(0, lp.handle_ptr->get_stream()),
-    d_complementarity_xz_residual_(0, lp.handle_ptr->get_stream()),
+    d_complementarity_xz_residual_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_complementarity_wv_residual_(0, lp.handle_ptr->get_stream())
 {
   cusparse_dual_residual_ = cusparse_view_.create_vector(d_dual_residual_);
@@ -1918,15 +1918,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::copy(d_dy_.data(), dy.data(), dy.size(), stream_view_);
     d_dx_.resize(dx.size(), stream_view_);
     raft::copy(d_h_.data(), data.primal_rhs.data(), data.primal_rhs.size(), stream_view_);
-    raft::copy(d_complementarity_xz_rhs_.data(),
-               data.complementarity_xz_rhs.data(),
-               data.complementarity_xz_rhs.size(),
-               stream_view_);
-    d_complementarity_wv_rhs_.resize(data.complementarity_wv_rhs.size(), stream_view_);
-    raft::copy(d_complementarity_wv_rhs_.data(),
-               data.complementarity_wv_rhs.data(),
-               data.complementarity_wv_rhs.size(),
-               stream_view_);
     raft::copy(d_dual_rhs_.data(), data.dual_rhs.data(), data.dual_rhs.size(), stream_view_);
     d_dz_.resize(dz.size(), stream_view_);
     d_dv_.resize(dv.size(), stream_view_);
@@ -1940,8 +1931,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     d_bound_residual_.resize(data.bound_residual.size(), stream_view_);
     d_upper_.resize(lp.upper.size(), stream_view_);
     raft::copy(d_upper_.data(), lp.upper.data(), lp.upper.size(), stream_view_);
-    d_complementarity_xz_residual_.resize(d_complementarity_xz_rhs_.size(), stream_view_);
-    d_complementarity_wv_residual_.resize(d_complementarity_wv_rhs_.size(), stream_view_);
 
     my_pop_range(debug);
   }
@@ -2532,15 +2521,33 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
   f_t primal_residual_norm;
   f_t dual_residual_norm;
   f_t complementarity_residual_norm;
-  compute_residual_norms(data.w_save,
-                         data.x_save,
-                         data.y_save,
-                         data.v_save,
-                         data.z_save,
-                         data,
-                         primal_residual_norm,
-                         dual_residual_norm,
-                         complementarity_residual_norm);
+  if (use_gpu) {
+    auto d_w_save = cuopt::device_copy(data.w_save, stream_view_);
+    auto d_x_save = cuopt::device_copy(data.x_save, stream_view_);
+    auto d_y_save = cuopt::device_copy(data.y_save, stream_view_);
+    auto d_v_save = cuopt::device_copy(data.v_save, stream_view_);
+    auto d_z_save = cuopt::device_copy(data.z_save, stream_view_);
+
+    gpu_compute_residual_norms(d_w_save,
+                               d_x_save,
+                               d_y_save,
+                               d_v_save,
+                               d_z_save,
+                               data,
+                               primal_residual_norm,
+                               dual_residual_norm,
+                               complementarity_residual_norm);
+  } else {
+    compute_residual_norms(data.w_save,
+                           data.x_save,
+                           data.y_save,
+                           data.v_save,
+                           data.z_save,
+                           data,
+                           primal_residual_norm,
+                           dual_residual_norm,
+                           complementarity_residual_norm);
+  }
   if (relative_primal_residual < 100 * options.feasibility_tol &&
       relative_dual_residual < 100 * options.optimality_tol &&
       relative_complementarity_residual < 100 * options.complementarity_tol) {
@@ -2704,6 +2711,27 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                    dual_residual_norm < options.optimality_tol &&
                    complementarity_residual_norm < options.complementarity_tol;
 
+  d_complementarity_xz_residual_.resize(data.complementarity_xz_residual.size(), stream_view_);
+  d_complementarity_wv_residual_.resize(data.complementarity_wv_residual.size(), stream_view_);
+  d_complementarity_xz_rhs_.resize(data.complementarity_xz_rhs.size(), stream_view_);
+  d_complementarity_wv_rhs_.resize(data.complementarity_wv_rhs.size(), stream_view_);
+  raft::copy(d_complementarity_xz_residual_.data(),
+             data.complementarity_xz_residual.data(),
+             data.complementarity_xz_residual.size(),
+             stream_view_);
+  raft::copy(d_complementarity_wv_residual_.data(),
+             data.complementarity_wv_residual.data(),
+             data.complementarity_wv_residual.size(),
+             stream_view_);
+  raft::copy(d_complementarity_xz_rhs_.data(),
+             data.complementarity_xz_rhs.data(),
+             data.complementarity_xz_rhs.size(),
+             stream_view_);
+  raft::copy(d_complementarity_wv_rhs_.data(),
+             data.complementarity_wv_rhs.data(),
+             data.complementarity_wv_rhs.size(),
+             stream_view_);
+
   data.w_save = data.w;
   data.x_save = data.x;
   data.y_save = data.y;
@@ -2728,16 +2756,44 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         return lp_status_t::CONCURRENT_LIMIT;
       }
       // Compute the affine step
-      data.primal_rhs             = data.primal_residual;
-      data.bound_rhs              = data.bound_residual;
-      data.dual_rhs               = data.dual_residual;
-      data.complementarity_xz_rhs = data.complementarity_xz_residual;
-      data.complementarity_wv_rhs = data.complementarity_wv_residual;
-      // x.*z ->  -x .* z
-      data.complementarity_xz_rhs.multiply_scalar(-1.0);
-      // w.*v -> -w .* v
-      data.complementarity_wv_rhs.multiply_scalar(-1.0);
+      data.primal_rhs = data.primal_residual;
+      data.bound_rhs  = data.bound_residual;
+      data.dual_rhs   = data.dual_residual;
 
+      if (use_gpu) {
+        raft::copy(d_complementarity_xz_rhs_.data(),
+                   d_complementarity_xz_residual_.data(),
+                   d_complementarity_xz_residual_.size(),
+                   stream_view_);
+        raft::copy(d_complementarity_wv_rhs_.data(),
+                   d_complementarity_wv_residual_.data(),
+                   d_complementarity_wv_residual_.size(),
+                   stream_view_);
+
+        // x.*z ->  -x .* z
+        cub::DeviceTransform::Transform(
+          d_complementarity_xz_rhs_.data(),
+          d_complementarity_xz_rhs_.data(),
+          d_complementarity_xz_rhs_.size(),
+          [] HD(f_t xz_rhs) { return -xz_rhs; },
+          stream_view_);
+
+        // w.*v -> -w .* v
+        cub::DeviceTransform::Transform(
+          d_complementarity_wv_rhs_.data(),
+          d_complementarity_wv_rhs_.data(),
+          d_complementarity_wv_rhs_.size(),
+          [] HD(f_t wv_rhs) { return -wv_rhs; },
+          stream_view_);
+      } else {
+        data.complementarity_xz_rhs = data.complementarity_xz_residual;
+        data.complementarity_wv_rhs = data.complementarity_wv_residual;
+
+        // x.*z ->  -x .* z
+        data.complementarity_xz_rhs.multiply_scalar(-1.0);
+        // w.*v -> -w .* v
+        data.complementarity_wv_rhs.multiply_scalar(-1.0);
+      }
     }  // Close nvtx range
 
     f_t max_affine_residual = 0.0;
@@ -2843,11 +2899,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       raft::copy(d_dv_aff_.data(), data.dv_aff.data(), data.dv_aff.size(), stream_view_);
       raft::copy(d_dz_aff_.data(), data.dz_aff.data(), data.dz_aff.size(), stream_view_);
 
-      rmm::device_uvector<f_t> d_complementarity_xz_rhs(data.complementarity_xz_rhs.size(),
-                                                        stream_view_);
-      rmm::device_uvector<f_t> d_complementarity_wv_rhs(data.complementarity_wv_rhs.size(),
-                                                        stream_view_);
-
       f_t step_primal_aff = std::min(gpu_max_step_to_boundary(d_w_, d_dw_aff_),
                                      gpu_max_step_to_boundary(d_x_, d_dx_aff_));
       f_t step_dual_aff   = std::min(gpu_max_step_to_boundary(d_v_, d_dv_aff_),
@@ -2902,21 +2953,17 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
 
       cub::DeviceTransform::Transform(
         cuda::std::make_tuple(d_dx_aff_.data(), d_dz_aff_.data()),
-        d_complementarity_xz_rhs.data(),
-        d_complementarity_xz_rhs.size(),
+        d_complementarity_xz_rhs_.data(),
+        d_complementarity_xz_rhs_.size(),
         [new_mu] HD(f_t dx_aff, f_t dz_aff) { return -(dx_aff * dz_aff) + new_mu; },
         stream_view_);
 
       cub::DeviceTransform::Transform(
         cuda::std::make_tuple(d_dw_aff_.data(), d_dv_aff_.data()),
-        d_complementarity_wv_rhs.data(),
-        d_complementarity_wv_rhs.size(),
+        d_complementarity_wv_rhs_.data(),
+        d_complementarity_wv_rhs_.size(),
         [new_mu] HD(f_t dw_aff, f_t dv_aff) { return -(dw_aff * dv_aff) + new_mu; },
         stream_view_);
-
-      // TMP should not copy and data should always be on the GPU
-      data.complementarity_xz_rhs = host_copy(d_complementarity_xz_rhs);
-      data.complementarity_wv_rhs = host_copy(d_complementarity_wv_rhs);
     }
 
     // TMP should be CPU to 0 if CPU and GPU to 0 if GPU
