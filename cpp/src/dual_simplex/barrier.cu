@@ -3009,7 +3009,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                                         d_uv.data(),
                                                         stream_view_));
         primal_objective = d_cx.value(stream_view_);
-        dual_objective   = d_by.value(stream_view_) + d_uv.value(stream_view_);
+        dual_objective   = d_by.value(stream_view_) - d_uv.value(stream_view_);
       } else {
         primal_objective = data.c.inner_product(data.x);
         dual_objective   = data.b.inner_product(data.y) - restrict_u_.inner_product(data.v);
