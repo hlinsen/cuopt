@@ -2425,7 +2425,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     if (lp.upper[j] < inf) { num_upper_bounds++; }
   }
 
-  raft::common::nvtx::push_range("Barrier: LP Data Creation");
   iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
   data.cusparse_dual_residual_ = data.cusparse_view_.create_vector(d_dual_residual_);
   data.cusparse_r1_            = data.cusparse_view_.create_vector(d_r1_);
@@ -2435,7 +2434,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   data.cusparse_u_             = data.cusparse_view_.create_vector(d_u_);
   data.cusparse_y_residual_    = data.cusparse_view_.create_vector(d_y_residual_);
   restrict_u_.resize(num_upper_bounds);
-  raft::common::nvtx::pop_range();
 
   if (toc(start_time) > settings.time_limit) {
     settings.log.printf("Barrier time limit exceeded\n");
