@@ -1568,6 +1568,8 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
              stream_view_);
   raft::copy(
     data.bound_residual.data(), d_bound_residual_.data(), d_bound_residual_.size(), stream_view_);
+  // Sync to make sure host data has been copied
+  RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 }
 
 template <typename i_t, typename f_t>
@@ -2597,6 +2599,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                                     data.dv_aff,
                                                     data.dz_aff,
                                                     max_affine_residual);
+    // Sync to make sure all the async copies to host done inside are finished
+    if (use_gpu) RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 
     if (status < 0) {
       return check_for_suboptimal_solution(options,
@@ -2753,6 +2757,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                          data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual)
                                          : compute_search_direction(
                          data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
+    // Sync to make sure all the async copies to host done inside are finished
+    if (use_gpu) RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 
     {
       raft::common::nvtx::range fun_scope("Barrier: after second compute_search_direction");
@@ -2884,11 +2890,13 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                            });
         }
 
-        data.w = host_copy(d_w_);
-        data.x = host_copy(d_x_);
-        data.y = host_copy(d_y_);
-        data.v = host_copy(d_v_);
-        data.z = host_copy(d_z_);
+        raft::copy(data.w.data(), d_w_.data(), d_w_.size(), stream_view_);
+        raft::copy(data.x.data(), d_x_.data(), d_x_.size(), stream_view_);
+        raft::copy(data.y.data(), d_y_.data(), d_y_.size(), stream_view_);
+        raft::copy(data.v.data(), d_v_.data(), d_v_.size(), stream_view_);
+        raft::copy(data.z.data(), d_z_.data(), d_z_.size(), stream_view_);
+        // Sync to make sure all host variable are done copying
+        RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
       } else {
         raft::common::nvtx::range fun_scope("Barrier: CPU vector operations");
         // dw = dw_aff + dw_cc
