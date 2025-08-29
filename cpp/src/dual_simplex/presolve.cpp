@@ -649,6 +649,60 @@ constexpr int8_t kCol = 1;
 constexpr int8_t kActive = 1;
 constexpr int8_t kInactive = 0;
 
+template <typename i_t>
+void find_vertices_to_refine(const std::vector<i_t>& refining_color_vertices,
+                             const std::vector<i_t>& offset,
+                             const std::vector<i_t>& vertex_list,
+                             const std::vector<i_t>& color_map,
+                             std::vector<i_t>& marked_vertices,
+                             std::vector<i_t>& vertices_to_refine,
+                             std::vector<i_t>& marked_colors,
+                             std::vector<i_t>& colors_to_update)
+{
+  for (i_t u : refining_color_vertices) {
+    const i_t start = offset[u];
+    const i_t end = offset[u + 1];
+    for (i_t p = start; p < end; p++) {
+      const i_t v = vertex_list[p];
+      if (marked_vertices[v] == 0) {
+        marked_vertices[v] = 1;
+        vertices_to_refine.push_back(v);
+      }
+      const i_t color = color_map[v];
+      if (marked_colors[color] == 0) {
+        marked_colors[color] = 1;
+        colors_to_update.push_back(color);
+      }
+    }
+  }
+  for (i_t v : vertices_to_refine) {
+    marked_vertices[v] = 0;
+  }
+}
+
+template <typename i_t, typename f_t>
+void compute_sums_of_refined_vertices(i_t refining_color,
+                                      const std::vector<i_t>& vertices_to_refine,
+                                      const std::vector<i_t>& offsets,
+                                      const std::vector<i_t>& vertex_list,
+                                      const std::vector<f_t>& weight_list,
+                                      const std::vector<i_t>& color_map,
+                                      std::vector<f_t>& vertex_to_sum)
+{
+  for (i_t v : vertices_to_refine) {
+    f_t sum = 0.0;
+    const i_t start = offsets[v];
+    const i_t end = offsets[v + 1];
+    for (i_t p = start; p < end; p++) {
+      const i_t u = vertex_list[p];
+      if (color_map[u] == refining_color) {
+        sum += weight_list[p];
+      }
+    }
+    vertex_to_sum[v] = sum;
+  }
+}
+
 template <typename i_t, typename f_t>
 void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                   const csr_matrix_t<i_t, f_t>& Arow,
@@ -660,90 +714,125 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                   const color_t<i_t>& refining_color,
                   std::vector<i_t>& colors_to_update,
                   std::vector<i_t>& vertices_to_refine,
+                  std::vector<i_t>& marked_vertices,
                   std::vector<f_t>& vertex_to_sum)
 {
   i_t num_colors = num_row_colors + num_col_colors;
   std::vector<i_t> marked_colors(total_colors_seen, 0);
+  colors_to_update.clear();
+  vertices_to_refine.clear();
   if (refining_color.row_or_column == kRow) {
     // The refining color is a row color
     // Find all vertices (columns) that have a neighbor in the refining color
-    vertices_to_refine.clear();
-    std::vector<i_t> marked_vertices(A.n, 0);
-
-    colors_to_update.clear();
     colors_to_update.reserve(num_col_colors);
-    for (i_t u : refining_color.vertices) {
-      const i_t row_start = Arow.row_start[u];
-      const i_t row_end = Arow.row_start[u + 1];
-      for (i_t p = row_start; p < row_end; p++) {
-        const i_t v = Arow.j[p];
-        if (marked_vertices[v] == 0) {
-          marked_vertices[v] = 1;
-          vertices_to_refine.push_back(v);
-        }
-        const i_t col_color = col_color_map[v];
-        if (marked_colors[col_color] == 0) {
-          marked_colors[col_color] = 1;
-          colors_to_update.push_back(col_color);
-        }
-      }
-    }
+    find_vertices_to_refine(refining_color.vertices,
+                            Arow.row_start,
+                            Arow.j,
+                            col_color_map,
+                            marked_vertices,
+                            vertices_to_refine,
+                            marked_colors,
+                            colors_to_update);
 
-    for (i_t v: vertices_to_refine) {
-      //printf("Refining column vertex %d\n", v);
-      f_t col_sum = 0.0;
-      const i_t col_start = A.col_start[v];
-      const i_t col_end = A.col_start[v + 1];
-      for (i_t p = col_start; p < col_end; p++) {
-        i_t i = A.i[p];
-        if (row_color_map[i] == refining_color.color) {
-          col_sum += A.x[p];
-        }
-      }
-      vertex_to_sum[v] = col_sum;
-      //printf("Column %d has a sum of %f\n", v, col_sum);
-    }
-
-   }
-   else {
+    compute_sums_of_refined_vertices(refining_color.color,
+                                     vertices_to_refine,
+                                     A.col_start,
+                                     A.i,
+                                     A.x,
+                                     row_color_map,
+                                     vertex_to_sum);
+  } else {
     // The refining color is a column color
     // Find all vertices (rows) that have a neighbor in the refining color
-    vertices_to_refine.clear();
-    std::vector<i_t> marked_vertices(A.m, 0);
-
-    colors_to_update.clear();
     colors_to_update.reserve(num_row_colors);
-    for (i_t v : refining_color.vertices) {
-      const i_t col_start = A.col_start[v];
-      const i_t col_end = A.col_start[v + 1];
-      for (i_t p = col_start; p < col_end; p++) {
-        const i_t u = A.i[p];
-        if (marked_vertices[u] == 0) {
-          marked_vertices[u] = 1;
-          vertices_to_refine.push_back(u);
-        }
+    find_vertices_to_refine(refining_color.vertices,
+                            A.col_start,
+                            A.i,
+                            row_color_map,
+                            marked_vertices,
+                            vertices_to_refine,
+                            marked_colors,
+                            colors_to_update);
 
-        const i_t row_color = row_color_map[u];
-        if (marked_colors[row_color] == 0) {
-          marked_colors[row_color] = 1;
-          colors_to_update.push_back(row_color);
+    compute_sums_of_refined_vertices(refining_color.color,
+                                     vertices_to_refine,
+                                     Arow.row_start,
+                                     Arow.j,
+                                     Arow.x,
+                                     col_color_map,
+                                     vertex_to_sum);
+  }
+}
+
+template <typename i_t, typename f_t>
+void split_colors(const std::vector<i_t>& colors_to_update,
+                  const std::vector<i_t>& offset,
+                  const std::vector<i_t>& vertex_list,
+                  const std::vector<f_t>& weight_list,
+                  const std::vector<i_t>& color_map_A,
+                  i_t refining_color,
+                  int8_t side_being_split,
+                  std::vector<f_t>& vertex_to_sum,
+                  std::unordered_map<f_t, std::vector<i_t>>& color_sums,
+                  std::unordered_map<f_t, i_t>& sum_to_color,
+                  std::vector<color_t<i_t>>& colors,
+                  std::vector<i_t>& color_index,
+                  std::queue<color_t<i_t>>& color_queue,
+                  std::vector<i_t>& color_map_B,
+                  i_t& num_colors,
+                  i_t& num_side_colors,
+                  i_t& total_colors_seen)
+{
+  for (i_t color : colors_to_update) {
+    color_t<i_t> current_color = colors[color_index[color]];  // Expensive copy
+    color_sums.clear();
+    for (i_t v : current_color.vertices) {
+      if (vertex_to_sum[v] != vertex_to_sum[v]) {
+        f_t sum         = 0.0;
+        const i_t start = offset[v];
+        const i_t end   = offset[v + 1];
+        for (i_t p = start; p < end; p++) {
+          const i_t u = vertex_list[p];
+          if (color_map_A[u] == refining_color) { sum += weight_list[p]; }
         }
+        vertex_to_sum[v] = sum;
       }
+      color_sums[vertex_to_sum[v]].push_back(v);
     }
+    if (color_sums.size() > 1) {
+      // We need to split the color
+      sum_to_color.clear();
+      i_t max_size = 0;
+      f_t max_sum  = std::numeric_limits<f_t>::quiet_NaN();
+      for (auto& [sum, vertices] : color_sums) {
+        colors.emplace_back(side_being_split, kActive, total_colors_seen, vertices);
+        color_index.push_back(total_colors_seen);
 
-    for (i_t u: vertices_to_refine) {
-      //printf("Refining row vertex %d\n", u);
-      f_t row_sum = 0.0;
-      const i_t row_start = Arow.row_start[u];
-      const i_t row_end = Arow.row_start[u + 1];
-      for (i_t p = row_start; p < row_end; p++) {
-        const i_t j = Arow.j[p];
-        if (col_color_map[j] == refining_color.color) {
-          row_sum += Arow.x[p];
+        // Update the color map, to ensure vertices are assigned to the new color
+        for (i_t v : vertices) {
+          color_map_B[v] = total_colors_seen;
+        }
+
+        if (vertices.size() > max_size) {
+          max_size = vertices.size();
+          max_sum  = sum;
+        }
+        sum_to_color[sum] = total_colors_seen;
+
+        num_colors++;
+        num_side_colors++;
+        total_colors_seen++;
+      }
+      num_side_colors--;  // Remove the old column color
+      num_colors--;       // Remove the old color
+      colors[color_index[color]].active = kInactive;
+
+      // Push all but the color with the largest size onto the queue
+      for (auto& [sum, vertices] : color_sums) {
+        if (1 || sum != max_sum) { // TODO: Understand why not pushing the color with maximum size onto the queue does not create an equitable partition for neos5
+          color_queue.push(colors[sum_to_color[sum]]);
         }
       }
-      vertex_to_sum[u] = row_sum;
-      //printf("Row %d has a sum of %f\n", u, row_sum);
     }
   }
 }
@@ -944,9 +1033,12 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   color_index[0] = 0;
   color_index[1] = 1;
 
-  std::vector<f_t> vertex_to_sum(std::max(m_prime, n_prime), std::numeric_limits<f_t>::quiet_NaN());
+  const i_t max_vertices = std::max(m_prime, n_prime);
+  std::vector<f_t> vertex_to_sum(max_vertices, std::numeric_limits<f_t>::quiet_NaN());
   std::vector<i_t> vertices_to_refine;
-  vertices_to_refine.reserve(std::max(m_prime, n_prime));
+  vertices_to_refine.reserve(max_vertices);
+  std::vector<i_t> marked_vertices(max_vertices, 0);
+
 
   std::unordered_map<f_t, std::vector<i_t>> color_sums;
   std::unordered_map<f_t, i_t> sum_to_color;
@@ -955,166 +1047,69 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     color_t<i_t> refining_color = color_queue.front();
     std::vector<i_t> colors_to_update;
     //printf("Refining %s color %d of size %ld\n", refining_color.row_or_column == kRow ? "row" : "column", refining_color.color, refining_color.vertices.size());
-    compute_sums(augmented, augmented_row, num_row_colors, num_col_colors, total_colors_seen, row_color_map, col_color_map, refining_color, colors_to_update, vertices_to_refine, vertex_to_sum);
-    color_queue.pop(); // Can pop since refining color is no longer needed. New colors will be added to the queue.
+    compute_sums(augmented,
+                 augmented_row,
+                 num_row_colors,
+                 num_col_colors,
+                 total_colors_seen,
+                 row_color_map,
+                 col_color_map,
+                 refining_color,
+                 colors_to_update,
+                 vertices_to_refine,
+                 marked_vertices,
+                 vertex_to_sum);
+    color_queue.pop();  // Can pop since refining color is no longer needed. New colors will be
+                        // added to the queue.
 
     // We now need to split the current colors into new colors
     if (refining_color.row_or_column == kRow) {
       // Refining color is a row color.
       // See if we need to split the column colors
-      for (i_t color: colors_to_update) {
-        //printf("Checking for updates to color %d\n", color);
-        //printf("Color index %d\n", color_index[color]);
-        color_t<i_t> current_color = colors[color_index[color]];  // Expensive copy
-        //printf("Current color size: %ld\n", current_color.vertices.size());
-        color_sums.clear();
-        for (i_t v: current_color.vertices) {
-          if (vertex_to_sum[v] != vertex_to_sum[v]) {
-            //printf("Vertex %d has not been computed\n", v);
-            // This vertex has not has been computed
-            // Compute the row sum over the refining color
-            f_t row_sum = 0.0;
-            const i_t col_start = augmented.col_start[v];
-            const i_t col_end = augmented.col_start[v + 1];
-            for (i_t p = col_start; p < col_end; p++) {
-              const i_t i = augmented.i[p];
-              if (row_color_map[i] == refining_color.color) {
-                row_sum += augmented.x[p];
-              }
-            }
-            //printf("Vertex %d has a sum of %f\n", v, row_sum);
-            vertex_to_sum[v] = row_sum;
-          }
-          color_sums[vertex_to_sum[v]].push_back(v);
-        }
-        //printf("Color sums size: %ld\n", color_sums.size());
-        if (color_sums.size() > 1) {
-          //printf("Splitting column color %d\n", color);
-          // We need to split the color
-          sum_to_color.clear();
-          i_t max_size = 0;
-          f_t max_sum = std::numeric_limits<f_t>::quiet_NaN();
-          for (auto& [sum, vertices]: color_sums) {
-            //printf("Found %d columns with a sum of %.16f\n", vertices.size(), sum);
-            colors.emplace_back(kCol, kActive, total_colors_seen, vertices);
-            color_index.push_back(total_colors_seen);
-
-            // Update the column color map
-            for (i_t v: vertices) {
-              col_color_map[v] = total_colors_seen;
-            }
-
-            if (vertices.size() > max_size) {
-              max_size = vertices.size();
-              max_sum = sum;
-            }
-            sum_to_color[sum] = total_colors_seen;
-
-            num_colors++;
-            num_col_colors++;
-            total_colors_seen++;
-          }
-          //printf("Removing old column color %d\n", color);
-          num_col_colors--;   // Remove the old column color
-          num_colors--;       // Remove the old color
-          colors[color_index[color]].active = kInactive;
-
-          // Push all but the color with the largest size onto the queue
-          for (auto& [sum, vertices]: color_sums) {
-            if (1 || sum != max_sum) {
-            //  printf("Adding column color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
-              color_queue.push(colors[sum_to_color[sum]]);
-            }
-            else {
-              //printf("Not adding column color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
-            }
-          }
-        }
-      }
+      split_colors(colors_to_update,
+                   augmented.col_start,
+                   augmented.i,
+                   augmented.x,
+                   row_color_map,
+                   refining_color.color,
+                   kCol,
+                   vertex_to_sum,
+                   color_sums,
+                   sum_to_color,
+                   colors,
+                   color_index,
+                   color_queue,
+                   col_color_map,
+                   num_colors,
+                   num_col_colors,
+                   total_colors_seen);
     } else {
       // Refining color is a column color.
       // See if we need to split the row colors
-      for (i_t color: colors_to_update) {
-        color_t<i_t> current_color = colors[color_index[color]];  // Expensive copy
-        //printf("Update row color %d\n", color);
-        color_sums.clear();
-        for (i_t u: current_color.vertices) {
-          if (vertex_to_sum[u] != vertex_to_sum[u]) {
-            //printf("Vertex %d has not been computed\n", u);
-            // This vertex has not has been computed
-            // Compute the column sum over the refining color
-            f_t col_sum = 0.0;
-            const i_t row_start = augmented_row.row_start[u];
-            const i_t row_end = augmented_row.row_start[u + 1];
-            for (i_t p = row_start; p < row_end; p++) {
-              const i_t j = augmented_row.j[p];
-              if (col_color_map[j] == refining_color.color) {
-                col_sum += augmented_row.x[p];
-              }
-            }
-            vertex_to_sum[u] = col_sum;
-            //printf("NaN Row color %d vertex %d has a sum of %e\n", current_color.color, u, col_sum);
-          }
-          else {
-            //printf("Row color %d vertex %d has a sum of %e over refining color %d refining color active %d\n", current_color.color, u, vertex_to_sum[u], refining_color.color, refining_color.active);
-          }
-
-          color_sums[vertex_to_sum[u]].push_back(u);
-        }
-
-        if (color_sums.size() > 1) {
-          // We need to split the color
-          //printf("Splitting row color %d\n", color);
-          std::vector<i_t> vertex_mark(m_prime, 0);
-          sum_to_color.clear();
-          i_t max_size = 0;
-          f_t max_sum = std::numeric_limits<f_t>::quiet_NaN();
-          for (auto& [sum, vertices]: color_sums) {
-            ///printf("Creating new row color %d with %ld vertices, sum %e by splitting row color %d\n", total_colors_seen, vertices.size(), sum, color);
-            colors.emplace_back(kRow, kActive, total_colors_seen, vertices);
-            color_index.push_back(total_colors_seen);
-            // Update the row color map
-            for (i_t u: vertices) {
-              row_color_map[u] = total_colors_seen;
-              vertex_mark[u] = 1;
-            }
-
-            if (vertices.size() > max_size) {
-              max_size = vertices.size();
-              max_sum = sum;
-            }
-
-
-            sum_to_color[sum] = total_colors_seen;
-
-            num_colors++;
-            num_row_colors++;
-            total_colors_seen++;
-          }
-
-          //printf("Removing old row color %d\n", color);
-          num_row_colors--;  // Remove the old row color
-          num_colors--;      // Remove the old color
-          colors[color_index[color]].active = kInactive;
-
-          // Push all but the color with the largest size onto the queue
-          for (auto& [sum, vertices]: color_sums) {
-            if (1 || sum != max_sum) {
-            //  printf("Adding row color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
-              color_queue.push(colors[sum_to_color[sum]]);
-            }
-            else {
-              //printf("Not adding row color %d (sum %e, size %ld) to the queue\n", sum_to_color[sum], sum, vertices.size());
-            }
-          }
-        }
-      }
+      split_colors(colors_to_update,
+                   augmented_row.row_start,
+                   augmented_row.j,
+                   augmented_row.x,
+                   col_color_map,
+                   refining_color.color,
+                   kRow,
+                   vertex_to_sum,
+                   color_sums,
+                   sum_to_color,
+                   colors,
+                   color_index,
+                   color_queue,
+                   row_color_map,
+                   num_colors,
+                   num_row_colors,
+                   total_colors_seen);
     }
 
     for (i_t v: vertices_to_refine) {
       vertex_to_sum[v] = std::numeric_limits<f_t>::quiet_NaN();
     }
 
+#ifdef DEBUG
     for (i_t i = 0; i < m_prime; i++) {
       if (row_color_map[i] >= total_colors_seen) {
         printf("Row color %d is not in the colors vector\n", row_color_map[i]);
@@ -1127,12 +1122,14 @@ void folding(lp_problem_t<i_t, f_t>& problem)
         exit(1);
       }
     }
+#endif
 
 
     //printf("Number of row colors: %d\n", num_row_colors);
     //printf("Number of column colors: %d\n", num_col_colors);
     //printf("Number of colors: %d\n", num_colors);
 
+#ifdef DEBUG
     // Count the number of active colors
     i_t num_active_colors = 0;
     i_t num_active_row_colors = 0;
@@ -1164,6 +1161,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
       printf("Number of active column colors does not match number of column colors\n");
       exit(1);
     }
+#endif
   }
   printf("Coloring time %.2f seconds\n", toc(start_time));
 
