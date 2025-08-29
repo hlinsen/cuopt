@@ -145,6 +145,7 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_r1_prime_;
   rmm::device_uvector<f_t> d_dx_;
   rmm::device_uvector<f_t> d_dy_;
+  rmm::device_uvector<f_t> d_c_;
 
   rmm::device_uvector<f_t> d_dual_residual_;
   rmm::device_uvector<f_t> d_complementarity_xz_rhs_;
@@ -172,6 +173,8 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_upper_;
   rmm::device_uvector<f_t> d_complementarity_xz_residual_;
   rmm::device_uvector<f_t> d_complementarity_wv_residual_;
+
+  pinned_dense_vector_t<i_t, f_t> restrict_u_;
 
   rmm::cuda_stream_view stream_view_;
 };
