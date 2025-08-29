@@ -784,7 +784,7 @@ void split_colors(const std::vector<i_t>& colors_to_update,
                   i_t& total_colors_seen)
 {
   for (i_t color : colors_to_update) {
-    color_t<i_t> current_color = colors[color_index[color]];  // Expensive copy
+    const color_t<i_t>& current_color = colors[color_index[color]];
     color_sums.clear();
     for (i_t v : current_color.vertices) {
       if (vertex_to_sum[v] != vertex_to_sum[v]) {
