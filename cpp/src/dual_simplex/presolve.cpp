@@ -690,7 +690,7 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
     }
 
     for (i_t v: vertices_to_refine) {
-      printf("Refining column vertex %d\n", v);
+      //printf("Refining column vertex %d\n", v);
       f_t col_sum = 0.0;
       const i_t col_start = A.col_start[v];
       const i_t col_end = A.col_start[v + 1];
@@ -732,7 +732,7 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
     }
 
     for (i_t u: vertices_to_refine) {
-      printf("Refining row vertex %d\n", u);
+      //printf("Refining row vertex %d\n", u);
       f_t row_sum = 0.0;
       const i_t row_start = Arow.row_start[u];
       const i_t row_end = Arow.row_start[u + 1];
@@ -770,6 +770,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   // [ A 0   b]
   // [ I I   u]
   // [ c 0 inf]
+  f_t start_time = tic();
 
   i_t m = problem.num_rows;
   i_t n = problem.num_cols;
@@ -953,7 +954,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   while (!color_queue.empty()) {
     color_t<i_t> refining_color = color_queue.front();
     std::vector<i_t> colors_to_update;
-    printf("Refining %s color %d of size %ld\n", refining_color.row_or_column == kRow ? "row" : "column", refining_color.color, refining_color.vertices.size());
+    //printf("Refining %s color %d of size %ld\n", refining_color.row_or_column == kRow ? "row" : "column", refining_color.color, refining_color.vertices.size());
     compute_sums(augmented, augmented_row, num_row_colors, num_col_colors, total_colors_seen, row_color_map, col_color_map, refining_color, colors_to_update, vertices_to_refine, vertex_to_sum);
     color_queue.pop(); // Can pop since refining color is no longer needed. New colors will be added to the queue.
 
@@ -962,10 +963,10 @@ void folding(lp_problem_t<i_t, f_t>& problem)
       // Refining color is a row color.
       // See if we need to split the column colors
       for (i_t color: colors_to_update) {
-        printf("Checking for updates to color %d\n", color);
-        printf("Color index %d\n", color_index[color]);
+        //printf("Checking for updates to color %d\n", color);
+        //printf("Color index %d\n", color_index[color]);
         color_t<i_t> current_color = colors[color_index[color]];  // Expensive copy
-        printf("Current color size: %ld\n", current_color.vertices.size());
+        //printf("Current color size: %ld\n", current_color.vertices.size());
         color_sums.clear();
         for (i_t v: current_color.vertices) {
           if (vertex_to_sum[v] != vertex_to_sum[v]) {
@@ -986,15 +987,15 @@ void folding(lp_problem_t<i_t, f_t>& problem)
           }
           color_sums[vertex_to_sum[v]].push_back(v);
         }
-        printf("Color sums size: %ld\n", color_sums.size());
+        //printf("Color sums size: %ld\n", color_sums.size());
         if (color_sums.size() > 1) {
-          printf("Splitting column color %d\n", color);
+          //printf("Splitting column color %d\n", color);
           // We need to split the color
           sum_to_color.clear();
           i_t max_size = 0;
           f_t max_sum = std::numeric_limits<f_t>::quiet_NaN();
           for (auto& [sum, vertices]: color_sums) {
-            printf("Found %d columns with a sum of %.16f\n", vertices.size(), sum);
+            //printf("Found %d columns with a sum of %.16f\n", vertices.size(), sum);
             colors.emplace_back(kCol, kActive, total_colors_seen, vertices);
             color_index.push_back(total_colors_seen);
 
@@ -1013,7 +1014,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
             num_col_colors++;
             total_colors_seen++;
           }
-          printf("Removing old column color %d\n", color);
+          //printf("Removing old column color %d\n", color);
           num_col_colors--;   // Remove the old column color
           num_colors--;       // Remove the old color
           colors[color_index[color]].active = kInactive;
@@ -1021,11 +1022,11 @@ void folding(lp_problem_t<i_t, f_t>& problem)
           // Push all but the color with the largest size onto the queue
           for (auto& [sum, vertices]: color_sums) {
             if (1 || sum != max_sum) {
-              printf("Adding column color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
+            //  printf("Adding column color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
               color_queue.push(colors[sum_to_color[sum]]);
             }
             else {
-              printf("Not adding column color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
+              //printf("Not adding column color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
             }
           }
         }
@@ -1035,7 +1036,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
       // See if we need to split the row colors
       for (i_t color: colors_to_update) {
         color_t<i_t> current_color = colors[color_index[color]];  // Expensive copy
-        printf("Update row color %d\n", color);
+        //printf("Update row color %d\n", color);
         color_sums.clear();
         for (i_t u: current_color.vertices) {
           if (vertex_to_sum[u] != vertex_to_sum[u]) {
@@ -1052,10 +1053,10 @@ void folding(lp_problem_t<i_t, f_t>& problem)
               }
             }
             vertex_to_sum[u] = col_sum;
-            printf("NaN Row color %d vertex %d has a sum of %e\n", current_color.color, u, col_sum);
+            //printf("NaN Row color %d vertex %d has a sum of %e\n", current_color.color, u, col_sum);
           }
           else {
-            printf("Row color %d vertex %d has a sum of %e over refining color %d refining color active %d\n", current_color.color, u, vertex_to_sum[u], refining_color.color, refining_color.active);
+            //printf("Row color %d vertex %d has a sum of %e over refining color %d refining color active %d\n", current_color.color, u, vertex_to_sum[u], refining_color.color, refining_color.active);
           }
 
           color_sums[vertex_to_sum[u]].push_back(u);
@@ -1063,13 +1064,13 @@ void folding(lp_problem_t<i_t, f_t>& problem)
 
         if (color_sums.size() > 1) {
           // We need to split the color
-          printf("Splitting row color %d\n", color);
+          //printf("Splitting row color %d\n", color);
           std::vector<i_t> vertex_mark(m_prime, 0);
           sum_to_color.clear();
           i_t max_size = 0;
           f_t max_sum = std::numeric_limits<f_t>::quiet_NaN();
           for (auto& [sum, vertices]: color_sums) {
-            printf("Creating new row color %d with %ld vertices, sum %e by splitting row color %d\n", total_colors_seen, vertices.size(), sum, color);
+            ///printf("Creating new row color %d with %ld vertices, sum %e by splitting row color %d\n", total_colors_seen, vertices.size(), sum, color);
             colors.emplace_back(kRow, kActive, total_colors_seen, vertices);
             color_index.push_back(total_colors_seen);
             // Update the row color map
@@ -1091,7 +1092,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
             total_colors_seen++;
           }
 
-          printf("Removing old row color %d\n", color);
+          //printf("Removing old row color %d\n", color);
           num_row_colors--;  // Remove the old row color
           num_colors--;      // Remove the old color
           colors[color_index[color]].active = kInactive;
@@ -1099,11 +1100,11 @@ void folding(lp_problem_t<i_t, f_t>& problem)
           // Push all but the color with the largest size onto the queue
           for (auto& [sum, vertices]: color_sums) {
             if (1 || sum != max_sum) {
-              printf("Adding row color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
+            //  printf("Adding row color %d (size %ld) to the queue\n", sum_to_color[sum], vertices.size());
               color_queue.push(colors[sum_to_color[sum]]);
             }
             else {
-              printf("Not adding row color %d (sum %e, size %ld) to the queue\n", sum_to_color[sum], sum, vertices.size());
+              //printf("Not adding row color %d (sum %e, size %ld) to the queue\n", sum_to_color[sum], sum, vertices.size());
             }
           }
         }
@@ -1128,9 +1129,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     }
 
 
-    printf("Number of row colors: %d\n", num_row_colors);
-    printf("Number of column colors: %d\n", num_col_colors);
-    printf("Number of colors: %d\n", num_colors);
+    //printf("Number of row colors: %d\n", num_row_colors);
+    //printf("Number of column colors: %d\n", num_col_colors);
+    //printf("Number of colors: %d\n", num_colors);
 
     // Count the number of active colors
     i_t num_active_colors = 0;
@@ -1148,22 +1149,23 @@ void folding(lp_problem_t<i_t, f_t>& problem)
         }
       }
     }
-    printf("Number of active colors: %d\n", num_active_colors);
+    //printf("Number of active colors: %d\n", num_active_colors);
     if (num_active_colors != num_colors) {
       printf("Number of active colors does not match number of colors\n");
       exit(1);
     }
-    printf("Number of active row colors: %d\n", num_active_row_colors);
+    //printf("Number of active row colors: %d\n", num_active_row_colors);
      if (num_active_row_colors != num_row_colors) {
       printf("Number of active row colors does not match number of row colors\n");
       exit(1);
     }
-    printf("Number of active column colors: %d\n", num_active_col_colors);
+    //printf("Number of active column colors: %d\n", num_active_col_colors);
     if (num_active_col_colors != num_col_colors) {
       printf("Number of active column colors does not match number of column colors\n");
       exit(1);
     }
   }
+  printf("Coloring time %.2f seconds\n", toc(start_time));
 
 
   // Go through the active colors and ensure that the row corresponding to the objective is its own color
@@ -1192,7 +1194,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   {
     if (color.active == kActive) {
       if (color.row_or_column == kRow) {
-        printf("Active row color %d has %ld vertices\n", color.color, color.vertices.size());
+        //printf("Active row color %d has %ld vertices\n", color.color, color.vertices.size());
         if (color.vertices.size() == 1) {
           if (color.vertices[0] == m + nz_ub) {
             printf("Row color %d is the objective color\n", color.color);
@@ -1239,7 +1241,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   {
     if (color.active == kActive) {
       if (color.row_or_column == kCol) {
-        printf("Active column color %d has %ld vertices\n", color.color, color.vertices.size());
+        //printf("Active column color %d has %ld vertices\n", color.color, color.vertices.size());
         if (color.vertices.size() == 1) {
           if (color.vertices[0] == n_prime - 1) {
             printf("Column color %d is the rhs color\n", color.color);
@@ -1298,6 +1300,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   // Construct the matrix Pi_P
   // Pi_vP = { 1 if v in P
   //         { 0 otherwise
+#ifdef DEBUG
   printf("Constructing Pi_P\n");
   csc_matrix_t<i_t, f_t> Pi_P(previous_rows, reduced_rows, previous_rows);
   nnz = 0;
@@ -1316,6 +1319,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   FILE* fid = fopen("Pi_P.txt", "w");
   Pi_P.write_matrix_market(fid);
   fclose(fid);
+#endif
 
   // Start by constructing the matrix C^s
   // C^s = Pi^s_P
@@ -1344,7 +1348,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     }
     const color_t<i_t>& color = colors[color_index];
     const i_t color_size = color.vertices.size();
-    printf("Color %d row %d active %d has %ld vertices\n", color.color, color.row_or_column, color.active, color_size);
+    //printf("Color %d row %d active %d has %ld vertices\n", color.color, color.row_or_column, color.active, color_size);
     for (i_t v : color.vertices) {
       C_s_row.j[nnz] = v;
       C_s_row.x[nnz] = 1.0 / static_cast<f_t>(color_size);
@@ -1357,6 +1361,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   csc_matrix_t<i_t, f_t> C_s(reduced_rows, previous_rows, 1);
   C_s_row.to_compressed_col(C_s);
   printf("Completed C^s\n");
+#if DEBUG
   fid = fopen("C_s.txt", "w");
   C_s.write_matrix_market(fid);
   fclose(fid);
@@ -1374,7 +1379,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   csc_matrix_t<i_t, f_t> error(reduced_rows, reduced_rows, 1);
   add(product, identity, 1.0, -1.0, error);
   printf("|| C^s Pi_P - I ||_1 = %f\n", error.norm1());
-
+#endif
 
   // Construct that matrix D
   // D = Pi_Q
@@ -1403,6 +1408,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   }
   D.col_start[reduced_cols] = nnz;
   printf("D nz %d predicted %d\n", nnz, previous_cols);
+#if DEBUG
   fid = fopen("D.txt", "w");
   D.write_matrix_market(fid);
   fclose(fid);
@@ -1513,7 +1519,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     }
   }
   printf("Verfied Y is doubly stochastic\n");
-
+#endif
   // Construct the matrix A_tilde
   printf("Constructing A_tilde\n");
   i_t A_nnz = problem.A.col_start[n];
@@ -1522,14 +1528,16 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   A_tilde.m--;
   A_tilde.remove_column(n + nz_ub);
   A_tilde.n--;
+#ifdef DEBUG
   fid = fopen("A_tilde.txt", "w");
   A_tilde.write_matrix_market(fid);
   fclose(fid);
+#endif
 
   csr_matrix_t<i_t, f_t> A_tilde_row(A_tilde.m, A_tilde.n, A_tilde.col_start[A_tilde.n]);
   A_tilde.to_compressed_row(A_tilde_row);
 
-
+#ifdef DEBUG
   std::vector<i_t> row_to_color(A_tilde.m, -1);
   for (i_t k = 0; k < total_colors_seen; k++) {
     const color_t<i_t>& row_color = colors[k];
@@ -1537,7 +1545,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     if (row_color.active == kActive && row_color.row_or_column == kRow) {
       for (i_t u : row_color.vertices) {
         row_to_color[u] = k;
-        printf("Row %d assigned to color %d =? %d\n", u, k, row_color.color);
+        //printf("Row %d assigned to color %d =? %d\n", u, k, row_color.color);
       }
     }
   }
@@ -1548,7 +1556,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     if (col_color.active == kActive && col_color.row_or_column == kCol) {
       for (i_t v : col_color.vertices) {
         col_to_color[v] = k;
-        printf("Col %d assigned to color %d =? %d\n", v, k, col_color.color);
+        //printf("Col %d assigned to color %d =? %d\n", v, k, col_color.color);
       }
     }
   }
@@ -1664,7 +1672,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   fid = fopen("Y.txt", "w");
   Y.write_matrix_market(fid);
   fclose(fid);
-
+#endif
   if (A_tilde.m != previous_rows || A_tilde.n != previous_cols) {
     printf("A_tilde has %d rows and %d cols, expected %d and %d\n",
            A_tilde.m,
@@ -1676,6 +1684,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
 
   printf("partial A_tilde nz %d predicted %d\n", nnz, A_nnz + 2 * nz_ub);
 
+#ifdef DEBUG
   // Verify that XA = AY
   csc_matrix_t<i_t, f_t> XA(previous_rows, previous_cols, 1);
   multiply(X, A_tilde, XA);
@@ -1690,7 +1699,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   csc_matrix_t<i_t, f_t> XA_AY_error(previous_rows, previous_cols, 1);
   add(XA, AY, 1.0, -1.0, XA_AY_error);
   printf("|| XA - AY ||_1 = %f\n", XA_AY_error.norm1());
-
+#endif
   // Construct the matrix A_prime
   printf("Constructing A_prime\n");
   csc_matrix_t<i_t, f_t> A_prime(reduced_rows, reduced_cols, 1);
@@ -1711,9 +1720,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   }
   std::vector<f_t> b_prime(reduced_rows);
   matrix_vector_multiply(C_s, 1.0, b_tilde, 0.0, b_prime);
-  printf("b_prime\n");
+  //printf("b_prime\n");
   for (i_t i = 0; i < reduced_rows; i++) {
-    printf("b_prime[%d] = %f\n", i, b_prime[i]);
+    //printf("b_prime[%d] = %f\n", i, b_prime[i]);
   }
 
   // Construct the vector c_prime
@@ -1727,11 +1736,11 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   }
   std::vector<f_t> c_prime(reduced_cols);
   matrix_transpose_vector_multiply(D, 1.0, c_tilde, 0.0, c_prime);
-  printf("c_prime\n");
+  //printf("c_prime\n");
   for (i_t j = 0; j < reduced_cols; j++) {
-    printf("c_prime[%d] = %f\n", j, c_prime[j]);
+    //printf("c_prime[%d] = %f\n", j, c_prime[j]);
   }
-  A_prime.print_matrix();
+  //A_prime.print_matrix();
 
   if (reduced_rows > reduced_cols) {
     printf("reduced_rows %d > reduced_cols %d\n", reduced_rows, reduced_cols);
@@ -1744,8 +1753,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
          reduced_cols,
          A_prime.col_start[reduced_cols]);
   raft::handle_t handle{};
-  lp_problem_t<i_t, f_t> reduced_problem(
-    &handle, reduced_rows, reduced_cols, A_prime.col_start[reduced_cols]);
+  user_problem_t<i_t, f_t> reduced_problem(&handle);
   reduced_problem.num_rows     = reduced_rows;
   reduced_problem.num_cols     = reduced_cols;
   reduced_problem.A            = A_prime;
@@ -1755,21 +1763,25 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   reduced_problem.upper        = std::vector<f_t>(reduced_cols, inf);
   reduced_problem.obj_constant = 0.0;
   reduced_problem.obj_scale    = 1.0;
+  reduced_problem.num_range_rows = 0;
+  reduced_problem.row_sense      = std::vector<char>(reduced_rows, 'E');
+  reduced_problem.var_types    = std::vector<variable_type_t>(reduced_cols, variable_type_t::CONTINUOUS);
+  printf("Folding time %.2f seconds\n", toc(start_time));
+
   // Solve the reduced problem
   lp_solution_t<i_t, f_t> reduced_solution(reduced_rows, reduced_cols);
   simplex_solver_settings_t<i_t, f_t> reduced_settings;
   reduced_settings.folding = false;
   reduced_settings.barrier = false;
+  reduced_settings.barrier_presolve = false;
   reduced_settings.log.log = true;
-  std::vector<variable_status_t> vstatus(reduced_cols);
-  std::vector<f_t> edge_norms;
-  solve_linear_program_advanced(
-    reduced_problem, tic(), reduced_settings, reduced_solution, vstatus, edge_norms);
+  solve_linear_program(
+    reduced_problem, reduced_settings, reduced_solution);
 
   std::vector<f_t> x_prime = reduced_solution.x;
-  printf("Reduced solution\n");
+  //printf("Reduced solution\n");
   for (i_t j = 0; j < reduced_cols; j++) {
-    printf("x_prime[%d] = %f\n", j, x_prime[j]);
+    //printf("x_prime[%d] = %f\n", j, x_prime[j]);
   }
   printf("Reduced objective = %e\n", reduced_solution.objective);
 
@@ -1856,7 +1868,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   }
 
   // Add artifical variables
-  if (!settings.barrier_presolve) { add_artifical_variables(problem, equality_rows, new_slacks); }
+  if (!settings.barrier_presolve) { printf("Adding artifical variables\n"); add_artifical_variables(problem, equality_rows, new_slacks); }
 }
 
 template <typename i_t, typename f_t>
