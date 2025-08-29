@@ -777,7 +777,7 @@ void split_colors(const std::vector<i_t>& colors_to_update,
                   std::unordered_map<f_t, i_t>& sum_to_color,
                   std::vector<color_t<i_t>>& colors,
                   std::vector<i_t>& color_index,
-                  std::queue<color_t<i_t>>& color_queue,
+                  std::queue<i_t>& color_queue,
                   std::vector<i_t>& color_map_B,
                   i_t& num_colors,
                   i_t& num_side_colors,
@@ -823,14 +823,14 @@ void split_colors(const std::vector<i_t>& colors_to_update,
         num_side_colors++;
         total_colors_seen++;
       }
-      num_side_colors--;  // Remove the old column color
+      num_side_colors--;  // Remove the old color
       num_colors--;       // Remove the old color
       colors[color_index[color]].active = kInactive;
 
       // Push all but the color with the largest size onto the queue
       for (auto& [sum, vertices] : color_sums) {
         if (1 || sum != max_sum) { // TODO: Understand why not pushing the color with maximum size onto the queue does not create an equitable partition for neos5
-          color_queue.push(colors[sum_to_color[sum]]);
+          color_queue.push(sum_to_color[sum]);
         }
       }
     }
@@ -858,9 +858,9 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
   std::iota(all_cols_vertices.begin(), all_cols_vertices.end(), 0);
   color_t<i_t> all_cols(kCol, kActive, 1, all_cols_vertices);
 
-  std::queue<color_t<i_t>> color_queue;
-  color_queue.push(all_rows);
-  color_queue.push(all_cols);
+  std::queue<i_t> color_queue;
+  color_queue.push(0);
+  color_queue.push(1);
 
   std::vector<i_t> row_color_map(m, 0);
   std::vector<i_t> col_color_map(n, 1);
@@ -887,7 +887,7 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
   std::unordered_map<f_t, i_t> sum_to_color;
 
   while (!color_queue.empty()) {
-    color_t<i_t> refining_color = color_queue.front();
+    color_t<i_t> refining_color = colors[color_queue.front()];
     std::vector<i_t> colors_to_update;
     compute_sums(A,
                  A_row,
