@@ -838,6 +838,176 @@ void split_colors(const std::vector<i_t>& colors_to_update,
 }
 
 template <typename i_t, typename f_t>
+void color_graph(const csc_matrix_t<i_t, f_t>& A,
+                 std::vector<color_t<i_t>>& colors,
+                 i_t& num_row_colors,
+                 i_t& num_col_colors,
+                 i_t& num_colors,
+                 i_t& total_colors_seen)
+{
+  const i_t m = A.m;
+  const i_t n = A.n;
+  csr_matrix_t<i_t, f_t> A_row(m, n, 1);
+  A.to_compressed_row(A_row);
+
+  std::vector<i_t> all_rows_vertices(m);
+  std::iota(all_rows_vertices.begin(), all_rows_vertices.end(), 0);
+  color_t<i_t> all_rows(kRow, kActive, 0, all_rows_vertices);
+
+  std::vector<i_t> all_cols_vertices(n);
+  std::iota(all_cols_vertices.begin(), all_cols_vertices.end(), 0);
+  color_t<i_t> all_cols(kCol, kActive, 1, all_cols_vertices);
+
+  std::queue<color_t<i_t>> color_queue;
+  color_queue.push(all_rows);
+  color_queue.push(all_cols);
+
+  std::vector<i_t> row_color_map(m, 0);
+  std::vector<i_t> col_color_map(n, 1);
+
+  num_row_colors = 1;
+  num_col_colors = 1;
+  num_colors = num_row_colors + num_col_colors;
+  total_colors_seen = 2;   // The total colors seen includes inactive colors
+
+  colors.emplace_back(all_rows);
+  colors.emplace_back(all_cols);
+
+  std::vector<i_t> color_index(num_colors);
+  color_index[0] = 0;
+  color_index[1] = 1;
+
+  const i_t max_vertices = std::max(m, n);
+  std::vector<f_t> vertex_to_sum(max_vertices, std::numeric_limits<f_t>::quiet_NaN());
+  std::vector<i_t> vertices_to_refine;
+  vertices_to_refine.reserve(max_vertices);
+  std::vector<i_t> marked_vertices(max_vertices, 0);
+
+  std::unordered_map<f_t, std::vector<i_t>> color_sums;
+  std::unordered_map<f_t, i_t> sum_to_color;
+
+  while (!color_queue.empty()) {
+    color_t<i_t> refining_color = color_queue.front();
+    std::vector<i_t> colors_to_update;
+    compute_sums(A,
+                 A_row,
+                 num_row_colors,
+                 num_col_colors,
+                 total_colors_seen,
+                 row_color_map,
+                 col_color_map,
+                 refining_color,
+                 colors_to_update,
+                 vertices_to_refine,
+                 marked_vertices,
+                 vertex_to_sum);
+    color_queue.pop();  // Can pop since refining color is no longer needed. New colors will be
+                        // added to the queue.
+
+    // We now need to split the current colors into new colors
+    if (refining_color.row_or_column == kRow) {
+      // Refining color is a row color.
+      // See if we need to split the column colors
+      split_colors(colors_to_update,
+                   A.col_start,
+                   A.i,
+                   A.x,
+                   row_color_map,
+                   refining_color.color,
+                   kCol,
+                   vertex_to_sum,
+                   color_sums,
+                   sum_to_color,
+                   colors,
+                   color_index,
+                   color_queue,
+                   col_color_map,
+                   num_colors,
+                   num_col_colors,
+                   total_colors_seen);
+    } else {
+      // Refining color is a column color.
+      // See if we need to split the row colors
+      split_colors(colors_to_update,
+                   A_row.row_start,
+                   A_row.j,
+                   A_row.x,
+                   col_color_map,
+                   refining_color.color,
+                   kRow,
+                   vertex_to_sum,
+                   color_sums,
+                   sum_to_color,
+                   colors,
+                   color_index,
+                   color_queue,
+                   row_color_map,
+                   num_colors,
+                   num_row_colors,
+                   total_colors_seen);
+    }
+
+    for (i_t v: vertices_to_refine) {
+      vertex_to_sum[v] = std::numeric_limits<f_t>::quiet_NaN();
+    }
+
+#ifdef DEBUG
+    for (i_t i = 0; i < m; i++) {
+      if (row_color_map[i] >= total_colors_seen) {
+        printf("Row color %d is not in the colors vector\n", row_color_map[i]);
+        exit(1);
+      }
+    }
+    for (i_t j = 0; j < n; j++) {
+      if (col_color_map[j] >= total_colors_seen) {
+        printf("Column color %d is not in the colors vector. %d\n", col_color_map[j], num_colors);
+        exit(1);
+      }
+    }
+#endif
+
+
+    //printf("Number of row colors: %d\n", num_row_colors);
+    //printf("Number of column colors: %d\n", num_col_colors);
+    //printf("Number of colors: %d\n", num_colors);
+
+#ifdef DEBUG
+    // Count the number of active colors
+    i_t num_active_colors = 0;
+    i_t num_active_row_colors = 0;
+    i_t num_active_col_colors = 0;
+    for (color_t<i_t>& color : colors)
+    {
+      if (color.active == kActive) {
+        num_active_colors++;
+        if (color.row_or_column == kRow) {
+          num_active_row_colors++;
+        }
+        else {
+          num_active_col_colors++;
+        }
+      }
+    }
+    //printf("Number of active colors: %d\n", num_active_colors);
+    if (num_active_colors != num_colors) {
+      printf("Number of active colors does not match number of colors\n");
+      exit(1);
+    }
+    //printf("Number of active row colors: %d\n", num_active_row_colors);
+     if (num_active_row_colors != num_row_colors) {
+      printf("Number of active row colors does not match number of row colors\n");
+      exit(1);
+    }
+    //printf("Number of active column colors: %d\n", num_active_col_colors);
+    if (num_active_col_colors != num_col_colors) {
+      printf("Number of active column colors does not match number of column colors\n");
+      exit(1);
+    }
+#endif
+  }
+}
+
+template <typename i_t, typename f_t>
 void folding(lp_problem_t<i_t, f_t>& problem)
 {
 
@@ -994,176 +1164,14 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     exit(1);
   }
 
-  csr_matrix_t<i_t, f_t> augmented_row(m_prime, n_prime, 1);
-  augmented.to_compressed_row(augmented_row);
-
-  std::vector<i_t> all_rows_vertices(m_prime);
-  std::iota(all_rows_vertices.begin(), all_rows_vertices.end(), 0);
-  color_t<i_t> all_rows(kRow, kActive, 0, all_rows_vertices);
-
-  std::vector<i_t> all_cols_vertices(n_prime);
-  std::iota(all_cols_vertices.begin(), all_cols_vertices.end(), 0);
-  color_t<i_t> all_cols(kCol, kActive, 1, all_cols_vertices);
-
-  std::queue<color_t<i_t>> color_queue;
-  color_queue.push(all_rows);
-  color_queue.push(all_cols);
-
-  std::vector<i_t> row_color_map(m_prime);
-  std::vector<i_t> col_color_map(n_prime);
-
-  for (i_t i = 0; i < m_prime; i++) {
-    row_color_map[i] = 0;
-  }
-
-  for (i_t j = 0; j < n_prime; j++) {
-    col_color_map[j] = 1;
-  }
-
-  i_t num_row_colors = 1;
-  i_t num_col_colors = 1;
-  i_t num_colors = num_row_colors + num_col_colors;
-  i_t total_colors_seen = 2;   // The total colors seen includes inactive colors
-
   std::vector<color_t<i_t>> colors;
-  colors.emplace_back(all_rows);
-  colors.emplace_back(all_cols);
-
-  std::vector<i_t> color_index(num_colors);
-  color_index[0] = 0;
-  color_index[1] = 1;
-
-  const i_t max_vertices = std::max(m_prime, n_prime);
-  std::vector<f_t> vertex_to_sum(max_vertices, std::numeric_limits<f_t>::quiet_NaN());
-  std::vector<i_t> vertices_to_refine;
-  vertices_to_refine.reserve(max_vertices);
-  std::vector<i_t> marked_vertices(max_vertices, 0);
-
-
-  std::unordered_map<f_t, std::vector<i_t>> color_sums;
-  std::unordered_map<f_t, i_t> sum_to_color;
-
-  while (!color_queue.empty()) {
-    color_t<i_t> refining_color = color_queue.front();
-    std::vector<i_t> colors_to_update;
-    //printf("Refining %s color %d of size %ld\n", refining_color.row_or_column == kRow ? "row" : "column", refining_color.color, refining_color.vertices.size());
-    compute_sums(augmented,
-                 augmented_row,
-                 num_row_colors,
-                 num_col_colors,
-                 total_colors_seen,
-                 row_color_map,
-                 col_color_map,
-                 refining_color,
-                 colors_to_update,
-                 vertices_to_refine,
-                 marked_vertices,
-                 vertex_to_sum);
-    color_queue.pop();  // Can pop since refining color is no longer needed. New colors will be
-                        // added to the queue.
-
-    // We now need to split the current colors into new colors
-    if (refining_color.row_or_column == kRow) {
-      // Refining color is a row color.
-      // See if we need to split the column colors
-      split_colors(colors_to_update,
-                   augmented.col_start,
-                   augmented.i,
-                   augmented.x,
-                   row_color_map,
-                   refining_color.color,
-                   kCol,
-                   vertex_to_sum,
-                   color_sums,
-                   sum_to_color,
-                   colors,
-                   color_index,
-                   color_queue,
-                   col_color_map,
-                   num_colors,
-                   num_col_colors,
-                   total_colors_seen);
-    } else {
-      // Refining color is a column color.
-      // See if we need to split the row colors
-      split_colors(colors_to_update,
-                   augmented_row.row_start,
-                   augmented_row.j,
-                   augmented_row.x,
-                   col_color_map,
-                   refining_color.color,
-                   kRow,
-                   vertex_to_sum,
-                   color_sums,
-                   sum_to_color,
-                   colors,
-                   color_index,
-                   color_queue,
-                   row_color_map,
-                   num_colors,
-                   num_row_colors,
-                   total_colors_seen);
-    }
-
-    for (i_t v: vertices_to_refine) {
-      vertex_to_sum[v] = std::numeric_limits<f_t>::quiet_NaN();
-    }
-
-#ifdef DEBUG
-    for (i_t i = 0; i < m_prime; i++) {
-      if (row_color_map[i] >= total_colors_seen) {
-        printf("Row color %d is not in the colors vector\n", row_color_map[i]);
-        exit(1);
-      }
-    }
-    for (i_t j = 0; j < n_prime; j++) {
-      if (col_color_map[j] >= total_colors_seen) {
-        printf("Column color %d is not in the colors vector. %d\n", col_color_map[j], num_colors);
-        exit(1);
-      }
-    }
-#endif
-
-
-    //printf("Number of row colors: %d\n", num_row_colors);
-    //printf("Number of column colors: %d\n", num_col_colors);
-    //printf("Number of colors: %d\n", num_colors);
-
-#ifdef DEBUG
-    // Count the number of active colors
-    i_t num_active_colors = 0;
-    i_t num_active_row_colors = 0;
-    i_t num_active_col_colors = 0;
-    for (color_t<i_t>& color : colors)
-    {
-      if (color.active == kActive) {
-        num_active_colors++;
-        if (color.row_or_column == kRow) {
-          num_active_row_colors++;
-        }
-        else {
-          num_active_col_colors++;
-        }
-      }
-    }
-    //printf("Number of active colors: %d\n", num_active_colors);
-    if (num_active_colors != num_colors) {
-      printf("Number of active colors does not match number of colors\n");
-      exit(1);
-    }
-    //printf("Number of active row colors: %d\n", num_active_row_colors);
-     if (num_active_row_colors != num_row_colors) {
-      printf("Number of active row colors does not match number of row colors\n");
-      exit(1);
-    }
-    //printf("Number of active column colors: %d\n", num_active_col_colors);
-    if (num_active_col_colors != num_col_colors) {
-      printf("Number of active column colors does not match number of column colors\n");
-      exit(1);
-    }
-#endif
-  }
-  printf("Coloring time %.2f seconds\n", toc(start_time));
+  i_t num_row_colors;
+  i_t num_col_colors;
+  i_t num_colors;
+  i_t total_colors_seen;
+  f_t color_start_time = tic();
+  color_graph(augmented, colors, num_row_colors, num_col_colors, num_colors, total_colors_seen);
+  printf("Coloring time %.2f seconds\n", toc(color_start_time));
 
 
   // Go through the active colors and ensure that the row corresponding to the objective is its own color
