@@ -21,14 +21,13 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
-
 template <typename T>
-struct CudaHostAllocator {
+struct PinnedHostAllocator {
   using value_type = T;
 
-  CudaHostAllocator() noexcept {}
+  PinnedHostAllocator() noexcept {}
   template <class U>
-  CudaHostAllocator(const CudaHostAllocator<U>&) noexcept
+  PinnedHostAllocator(const PinnedHostAllocator<U>&) noexcept
   {
   }
 
@@ -43,17 +42,19 @@ struct CudaHostAllocator {
 };
 
 template <typename T, typename U>
-bool operator==(const CudaHostAllocator<T>&, const CudaHostAllocator<U>&) noexcept {
-    return true;
+bool operator==(const PinnedHostAllocator<T>&, const PinnedHostAllocator<U>&) noexcept
+{
+  return true;
 }
 template <typename T, typename U>
-bool operator!=(const CudaHostAllocator<T>&, const CudaHostAllocator<U>&) noexcept {
-    return false;
+bool operator!=(const PinnedHostAllocator<T>&, const PinnedHostAllocator<U>&) noexcept
+{
+  return false;
 }
 
 #ifdef DUAL_SIMPLEX_INSTANTIATE_DOUBLE
-template class CudaHostAllocator<double>;
+template class PinnedHostAllocator<double>;
 #endif
-template class CudaHostAllocator<int>;
+template class PinnedHostAllocator<int>;
 
-}
+}  // namespace cuopt::linear_programming::dual_simplex

@@ -341,23 +341,25 @@ void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
 
 template class cusparse_view_t<int, double>;
 template void
-cusparse_view_t<int, double>::spmv<CudaHostAllocator<double>, CudaHostAllocator<double>>(
+cusparse_view_t<int, double>::spmv<PinnedHostAllocator<double>, PinnedHostAllocator<double>>(
   double alpha,
-  const std::vector<double, CudaHostAllocator<double>>& x,
+  const std::vector<double, PinnedHostAllocator<double>>& x,
   double beta,
-  std::vector<double, CudaHostAllocator<double>>& y);
+  std::vector<double, PinnedHostAllocator<double>>& y);
 
-template void cusparse_view_t<int, double>::spmv<CudaHostAllocator<double>, std::allocator<double>>(
+template void
+cusparse_view_t<int, double>::spmv<PinnedHostAllocator<double>, std::allocator<double>>(
   double alpha,
-  const std::vector<double, CudaHostAllocator<double>>& x,
+  const std::vector<double, PinnedHostAllocator<double>>& x,
   double beta,
   std::vector<double, std::allocator<double>>& y);
 
-template void cusparse_view_t<int, double>::spmv<std::allocator<double>, CudaHostAllocator<double>>(
+template void
+cusparse_view_t<int, double>::spmv<std::allocator<double>, PinnedHostAllocator<double>>(
   double alpha,
   const std::vector<double, std::allocator<double>>& x,
   double beta,
-  std::vector<double, CudaHostAllocator<double>>& y);
+  std::vector<double, PinnedHostAllocator<double>>& y);
 
 template void cusparse_view_t<int, double>::spmv<std::allocator<double>, std::allocator<double>>(
   double alpha,
@@ -365,26 +367,26 @@ template void cusparse_view_t<int, double>::spmv<std::allocator<double>, std::al
   double beta,
   std::vector<double, std::allocator<double>>& y);
 
-template void
-cusparse_view_t<int, double>::transpose_spmv<CudaHostAllocator<double>, CudaHostAllocator<double>>(
+template void cusparse_view_t<int, double>::transpose_spmv<PinnedHostAllocator<double>,
+                                                           PinnedHostAllocator<double>>(
   double alpha,
-  const std::vector<double, CudaHostAllocator<double>>& x,
+  const std::vector<double, PinnedHostAllocator<double>>& x,
   double beta,
-  std::vector<double, CudaHostAllocator<double>>& y);
+  std::vector<double, PinnedHostAllocator<double>>& y);
 
 template void
-cusparse_view_t<int, double>::transpose_spmv<CudaHostAllocator<double>, std::allocator<double>>(
+cusparse_view_t<int, double>::transpose_spmv<PinnedHostAllocator<double>, std::allocator<double>>(
   double alpha,
-  const std::vector<double, CudaHostAllocator<double>>& x,
+  const std::vector<double, PinnedHostAllocator<double>>& x,
   double beta,
   std::vector<double, std::allocator<double>>& y);
 
 template void
-cusparse_view_t<int, double>::transpose_spmv<std::allocator<double>, CudaHostAllocator<double>>(
+cusparse_view_t<int, double>::transpose_spmv<std::allocator<double>, PinnedHostAllocator<double>>(
   double alpha,
   const std::vector<double, std::allocator<double>>& x,
   double beta,
-  std::vector<double, CudaHostAllocator<double>>& y);
+  std::vector<double, PinnedHostAllocator<double>>& y);
 
 template void
 cusparse_view_t<int, double>::transpose_spmv<std::allocator<double>, std::allocator<double>>(

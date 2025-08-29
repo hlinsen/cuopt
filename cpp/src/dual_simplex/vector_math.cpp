@@ -182,10 +182,10 @@ template double vector_norm2_squared<int, double, std::allocator<double>>(
 template double vector_norm2<int, double, std::allocator<double>>(
   const std::vector<double, std::allocator<double>>& x);
 
-template double vector_norm2_squared<int, double, CudaHostAllocator<double>>(
-  const std::vector<double, CudaHostAllocator<double>>&);
-template double vector_norm2<int, double, CudaHostAllocator<double>>(
-  const std::vector<double, CudaHostAllocator<double>>&);
+template double vector_norm2_squared<int, double, PinnedHostAllocator<double>>(
+  const std::vector<double, PinnedHostAllocator<double>>&);
+template double vector_norm2<int, double, PinnedHostAllocator<double>>(
+  const std::vector<double, PinnedHostAllocator<double>>&);
 
 template double dot<int, double>(const std::vector<double>& x, const std::vector<double>& y);
 
