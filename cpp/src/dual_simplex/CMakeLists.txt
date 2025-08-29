@@ -33,6 +33,7 @@ set(DUAL_SIMPLEX_SRC_FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/singletons.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/solve.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/sparse_matrix.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/device_sparse_matrix.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/sparse_vector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/tic_toc.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/triangle_solve.cpp
