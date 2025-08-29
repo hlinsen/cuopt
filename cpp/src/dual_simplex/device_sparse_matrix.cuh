@@ -28,26 +28,6 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
-template <typename T>
-struct CudaHostAllocator {
-  using value_type = T;
-
-  CudaHostAllocator() noexcept {}
-  template <class U>
-  CudaHostAllocator(const CudaHostAllocator<U>&) noexcept
-  {
-  }
-
-  T* allocate(std::size_t n)
-  {
-    T* ptr = nullptr;
-    RAFT_CUDA_TRY(cudaMallocHost((void**)&ptr, n * sizeof(T)));
-    return ptr;
-  }
-
-  void deallocate(T* p, std::size_t) noexcept { RAFT_CUDA_TRY(cudaFreeHost(p)); }
-};
-
 template <typename f_t>
 struct sum_reduce_helper_t {
   rmm::device_buffer buffer_data;

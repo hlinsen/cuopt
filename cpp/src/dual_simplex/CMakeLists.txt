@@ -36,7 +36,9 @@ set(DUAL_SIMPLEX_SRC_FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/sparse_vector.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/tic_toc.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/triangle_solve.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/vector_math.cpp)
+  ${CMAKE_CURRENT_SOURCE_DIR}/vector_math.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/pinned_host_allocator.cu
+  )
 
 set_source_files_properties(${DUAL_SIMPLEX_SRC_FILES} DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTIES COMPILE_OPTIONS "-g1")
 

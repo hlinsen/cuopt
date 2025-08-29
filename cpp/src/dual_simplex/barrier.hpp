@@ -18,6 +18,7 @@
 
 #include <rmm/device_uvector.hpp>
 #include "dual_simplex/dense_vector.hpp"
+#include "dual_simplex/pinned_host_allocator.hpp"
 #include "dual_simplex/presolve.hpp"
 #include "dual_simplex/simplex_solver_settings.hpp"
 #include "dual_simplex/solution.hpp"
@@ -35,12 +36,6 @@ struct barrier_solver_settings_t {
   i_t iteration_limit     = 1000;
   f_t step_scale          = 0.9;
 };
-
-template <typename T>
-struct CudaHostAllocator;
-
-template <typename i_t, typename f_t>
-using pinned_dense_vector_t = dense_vector_t<i_t, f_t, CudaHostAllocator<f_t>>;
 
 template <typename i_t, typename f_t>
 class iteration_data_t;  // Forward declare

@@ -15,14 +15,13 @@
  * limitations under the License.
  */
 
-#include <dual_simplex/types.hpp>
 #include <dual_simplex/dense_vector.hpp>
 #include <dual_simplex/sparse_matrix.hpp>
+#include <dual_simplex/types.hpp>
 
 #pragma once
 
 namespace cuopt::linear_programming::dual_simplex {
-
 
 template <typename i_t, typename f_t>
 class dense_matrix_t {
@@ -239,4 +238,4 @@ class dense_matrix_t {
   std::vector<f_t> values;
 };
 
-} // namespace cuopt::linear_programming::dual_simplex
+}  // namespace cuopt::linear_programming::dual_simplex

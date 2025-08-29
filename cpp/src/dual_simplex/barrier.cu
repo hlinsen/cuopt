@@ -1184,7 +1184,7 @@ class iteration_data_t {
   raft::handle_t const* handle_ptr;
   i_t n_upper_bounds;
   pinned_dense_vector_t<i_t, i_t> upper_bounds;
-  dense_vector_t<i_t, f_t> c;
+  pinned_dense_vector_t<i_t, f_t> c;
   dense_vector_t<i_t, f_t> b;
 
   pinned_dense_vector_t<i_t, f_t> w;
@@ -1237,11 +1237,11 @@ class iteration_data_t {
   bool has_solve_info;
   i_t num_factorizations;
 
-  dense_vector_t<i_t, f_t> primal_residual;
-  dense_vector_t<i_t, f_t> bound_residual;
-  dense_vector_t<i_t, f_t> dual_residual;
-  dense_vector_t<i_t, f_t> complementarity_xz_residual;
-  dense_vector_t<i_t, f_t> complementarity_wv_residual;
+  pinned_dense_vector_t<i_t, f_t> primal_residual;
+  pinned_dense_vector_t<i_t, f_t> bound_residual;
+  pinned_dense_vector_t<i_t, f_t> dual_residual;
+  pinned_dense_vector_t<i_t, f_t> complementarity_xz_residual;
+  pinned_dense_vector_t<i_t, f_t> complementarity_wv_residual;
 
   pinned_dense_vector_t<i_t, f_t> primal_rhs;
   pinned_dense_vector_t<i_t, f_t> bound_rhs;
@@ -1551,13 +1551,23 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
                                   d_complementarity_wv_residual_.size(),
                                   cuda::std::multiplies<>{},
                                   stream_view_);
-  RAFT_CHECK_CUDA(stream_view_);
-  data.complementarity_wv_residual = cuopt::host_copy(d_complementarity_wv_residual_);
-  data.complementarity_xz_residual = cuopt::host_copy(d_complementarity_xz_residual_);
-  data.c                           = cuopt::host_copy(d_c);
-  data.dual_residual               = cuopt::host_copy(d_dual_residual_);
-  data.primal_residual             = cuopt::host_copy(d_primal_residual_);
-  data.bound_residual              = cuopt::host_copy(d_bound_residual_);
+  raft::copy(data.complementarity_wv_residual.data(),
+             d_complementarity_wv_residual_.data(),
+             d_complementarity_wv_residual_.size(),
+             stream_view_);
+  raft::copy(data.complementarity_xz_residual.data(),
+             d_complementarity_xz_residual_.data(),
+             d_complementarity_xz_residual_.size(),
+             stream_view_);
+  raft::copy(data.c.data(), d_c.data(), d_c.size(), stream_view_);
+  raft::copy(
+    data.dual_residual.data(), d_dual_residual_.data(), d_dual_residual_.size(), stream_view_);
+  raft::copy(data.primal_residual.data(),
+             d_primal_residual_.data(),
+             d_primal_residual_.size(),
+             stream_view_);
+  raft::copy(
+    data.bound_residual.data(), d_bound_residual_.data(), d_bound_residual_.size(), stream_view_);
 }
 
 template <typename i_t, typename f_t>
@@ -1707,16 +1717,6 @@ f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(
 }
 
 template <typename i_t, typename f_t>
-void barrier_solver_t<i_t, f_t>::my_pop_range(bool debug) const
-{
-  // Else the range will pop from the CPU side while some work is still hapenning on the GPU
-  // In benchmarking this is useful, in production we should not sync constantly
-  // Also necessary in debug since we often use local device vector, need to sync the GPU
-  // operation before we go out of scope on the CPU constexpr bool gpu_sync = true; if (gpu_sync
-  // || debug) RAFT_CUDA_TRY(cudaDeviceSynchronize()); raft::common::nvtx::pop_range();
-}
-
-template <typename i_t, typename f_t>
 i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                                              pinned_dense_vector_t<i_t, f_t>& dw,
                                                              pinned_dense_vector_t<i_t, f_t>& dx,
@@ -1763,8 +1763,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     d_bound_residual_.resize(data.bound_residual.size(), stream_view_);
     d_upper_.resize(lp.upper.size(), stream_view_);
     raft::copy(d_upper_.data(), lp.upper.data(), lp.upper.size(), stream_view_);
-
-    my_pop_range(debug);
   }
 
   // Solves the linear system
@@ -1814,11 +1812,8 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       [] HD(f_t diag) { return f_t(1) / diag; },
       stream_view_);
 
-    // TMP data should always be on the GPU
-    data.diag     = host_copy(d_diag_);
-    data.inv_diag = host_copy(data.d_inv_diag);
-
-    my_pop_range(debug);
+    raft::copy(data.diag.data(), d_diag_.data(), d_diag_.size(), stream_view_);
+    raft::copy(data.inv_diag.data(), data.d_inv_diag.data(), data.d_inv_diag.size(), stream_view_);
   }
 
   // Form A*D*A'
@@ -1841,7 +1836,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     data.has_factorization = true;
     data.num_factorizations++;
 
-    my_pop_range(debug);
     data.has_solve_info = false;
   }
 
@@ -1884,12 +1878,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::copy(d_r1_prime_.data(), d_tmp3_.data(), d_tmp3_.size(), stream_view_);
 
     // h <- A @ tmp4 .+ primal_rhs
-
     data.cusparse_view_.spmv(1, data.cusparse_tmp4_, 1, data.cusparse_h_);
-
-    // TMP until solve adat is on the CPU
-
-    my_pop_range(debug);
   }
 
   {
@@ -1904,7 +1893,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       settings.log.printf("Linear solve failed\n");
       return -1;
     }
-
   }  // Close NVTX range
 
   // y_residual <- ADAT*dy - h
@@ -1933,19 +1921,12 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       settings.log.printf("|| h || = %.2e\n", device_vector_norm_inf<i_t, f_t>(d_h_, stream_view_));
       settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
     }
-    if (y_residual_norm > 10) {
-      my_pop_range(debug);
-      return -1;
-    }
-
-    my_pop_range(debug);
+    if (y_residual_norm > 10) { return -1; }
   }
 
   // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
   // v
   // .* bound_rhs) ./ w))
-
-  // TMP should not be allocated if we are on the GPU
   {
     raft::common::nvtx::range fun_scope("Barrier: dx formation GPU");
 
@@ -1965,9 +1946,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       },
       stream_view_);
 
-    // TODO Chris, we need to write to cpu because dx is used outside
-    // Can't we also GPUify what's usinng this dx?
-    dx = host_copy(d_dx_);
+    raft::copy(dx.data(), d_dx_.data(), d_dx_.size(), stream_view_);
 
     data.cusparse_view_.transpose_spmv(-1.0, data.cusparse_dy_, 1.0, data.cusparse_dx_residual_);
     cub::DeviceTransform::Transform(
@@ -1976,8 +1955,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       d_dx_residual_.size(),
       [] HD(f_t dx_residual, f_t r1_prime) { return dx_residual + r1_prime; },
       stream_view_);
-
-    my_pop_range(debug);
   }
 
   // Not put on the GPU since debug only
@@ -2007,8 +1984,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     max_residual = std::max(max_residual, dx_residual_2_norm);
     if (dx_residual_2_norm > 1e-2)
       settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
-
-    my_pop_range(debug);
   }
 
   if (debug) {
@@ -2038,8 +2013,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     if (dx_residual_6_norm > 1e-2) {
       settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
     }
-
-    my_pop_range(debug);
   }
 
   if (debug) {
@@ -2063,8 +2036,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 
     data.cusparse_view_.spmv(1.0, data.cusparse_dx_residual_3_, 0.0, data.cusparse_dx_residual_4_);
     data.cusparse_view_.spmv(1.0, data.cusparse_dx_, 1.0, data.cusparse_dx_residual_4_);
-
-    my_pop_range(debug);
   }
 
 #if CHECK_FORM_ADAT
@@ -2116,8 +2087,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     if (dx_residual_7_norm > 1e-2) {
       settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
     }
-
-    my_pop_range(debug);
   }
 
   // Only debug so not ported to the GPU
@@ -2137,8 +2106,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     if (x_residual_norm > 1e-2) {
       settings.log.printf("|| A * dx - rp || = %.2e\n", x_residual_norm);
     }
-
-    my_pop_range(debug);
   }
 
   {
@@ -2155,11 +2122,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       },
       stream_view_);
 
-    // TODO Chris, we need to write to cpu because dx is used outside
-    // Can't we also GPUify what's usinng this dv?
-    dz = host_copy(d_dz_);
-
-    my_pop_range(debug);
+    raft::copy(dz.data(), d_dz_.data(), d_dz_.size(), stream_view_);
   }
 
   if (debug) {
@@ -2179,11 +2142,9 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     max_residual               = std::max(max_residual, xz_residual_norm);
     if (xz_residual_norm > 1e-2)
       settings.log.printf("|| Z dx + X dz - rxz || = %.2e\n", xz_residual_norm);
-
-    my_pop_range(debug);
   }
 
-  if (use_gpu) {
+  {
     raft::common::nvtx::range fun_scope("Barrier: dv formation GPU");
     // dv <- (v .* E' * dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
     cub::DeviceTransform::Transform(
@@ -2199,11 +2160,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       },
       stream_view_);
 
-    // TODO Chris, we need to write to cpu because dx is used outside
-    // Can't we also GPUify what's usinng this dv?
-    dv = host_copy(d_dv_);
-
-    my_pop_range(debug);
+    raft::copy(dv.data(), d_dv_.data(), d_dv_.size(), stream_view_);
   }
 
   if (debug) {
@@ -2233,8 +2190,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
         "|| -v .* E' * dx + w .* dv - complementarity_wv_rhs - v .* bound_rhs || = %.2e\n",
         dv_residual_norm);
     }
-
-    my_pop_range(debug);
   }
 
   if (debug) {
@@ -2267,8 +2222,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     if (dual_residual_norm > 1e-2) {
       settings.log.printf("|| A' * dy - E * dv  + dz -  dual_rhs || = %.2e\n", dual_residual_norm);
     }
-
-    my_pop_range(debug);
   }
 
   {
@@ -2283,9 +2236,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       [] HD(f_t dw, f_t gathered_dx) { return dw - gathered_dx; },
       stream_view_);
 
-    // TODO Chris, we need to write to cpu because dx is used outside
-    // Can't we also GPUify what's usinng this dw?
-    dw = host_copy(d_dw_);
+    raft::copy(dw.data(), d_dw_.data(), d_dw_.size(), stream_view_);
 
     if (debug) {
       // dw_residual <- dw + E'*dx - bound_rhs
@@ -2306,8 +2257,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
         settings.log.printf("|| dw + E'*dx - bound_rhs || = %.2e\n", dw_residual_norm);
       }
     }
-
-    my_pop_range(debug);
   }
 
   if (debug) {
@@ -2329,8 +2278,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     if (wv_residual_norm > 1e-2) {
       settings.log.printf("|| V dw + W dv - rwv || = %.2e\n", wv_residual_norm);
     }
-
-    my_pop_range(debug);
   }
 
   return 0;
