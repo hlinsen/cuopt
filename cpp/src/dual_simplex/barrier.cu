@@ -392,7 +392,7 @@ class iteration_data_t {
       //
       // We can use a dense cholesky factorization of H to solve for y
 
-      const bool debug = false;
+      const bool debug = true;
 
       dense_vector_t<i_t, f_t> w(AD.m);
       i_t solve_status = chol->solve(b, w);
