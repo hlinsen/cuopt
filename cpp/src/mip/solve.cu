@@ -197,6 +197,7 @@ mip_solution_t<i_t, f_t> solve_mip(optimization_problem_t<i_t, f_t>& op_problem,
                          cuopt::linear_programming::problem_category_t::MIP,
                          settings.tolerances.absolute_tolerance,
                          settings.tolerances.relative_tolerance,
+                         settings.num_cpu_threads,
                          presolve_time_limit);
       if (!feasible) {
         return mip_solution_t<i_t, f_t>(mip_termination_status_t::Infeasible,

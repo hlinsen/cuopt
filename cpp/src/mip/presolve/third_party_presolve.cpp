@@ -299,15 +299,16 @@ void set_presolve_methods(papilo::Presolve<f_t>& presolver, problem_category_t c
   presolver.addPresolveMethod(uptr(new papilo::Substitution<f_t>()));
 }
 
-template <typename f_t>
+template <typename i_t, typename f_t>
 void set_presolve_options(papilo::Presolve<f_t>& presolver,
                           problem_category_t category,
                           f_t absolute_tolerance,
                           f_t relative_tolerance,
-                          double time_limit)
+                          double time_limit,
+                          i_t num_cpu_threads)
 {
   presolver.getPresolveOptions().tlim    = time_limit;
-  presolver.getPresolveOptions().threads = 0;
+  presolver.getPresolveOptions().threads = num_cpu_threads;  //  user setting or  0 (automatic)
 }
 
 template <typename i_t, typename f_t>
@@ -316,7 +317,8 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
   problem_category_t category,
   f_t absolute_tolerance,
   f_t relative_tolerance,
-  double time_limit)
+  double time_limit,
+  i_t num_cpu_threads)
 {
   cuopt_expects(
     presolve_calls_ == 0, error_type_t::ValidationError, "Presolve can only be called once");
@@ -331,11 +333,11 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
 
   papilo::Presolve<f_t> presolver;
   set_presolve_methods<f_t>(presolver, category);
-  set_presolve_options<f_t>(
-    presolver, category, absolute_tolerance, relative_tolerance, time_limit);
+  set_presolve_options<i_t, f_t>(
+    presolver, category, absolute_tolerance, relative_tolerance, time_limit, num_cpu_threads);
 
   // Disable papilo logs
-  // presolver.setVerbosityLevel(papilo::VerbosityLevel::kQuiet);
+  presolver.setVerbosityLevel(papilo::VerbosityLevel::kQuiet);
 
   auto result = presolver.apply(papilo_problem);
   check_presolve_status(result.status);
