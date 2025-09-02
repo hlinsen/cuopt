@@ -705,8 +705,10 @@ class iteration_data_t {
 
       i_t out = solve_adat(b, x);
 
-      d_b = device_copy(b, stream_view_);
-      d_x = device_copy(w, stream_view_);
+      d_b.resize(b.size(), stream_view_);
+      d_x.resize(x.size(), stream_view_);
+      raft::copy(d_b.data(), b.data(), b.size(), stream_view_);
+      raft::copy(d_x.data(), x.data(), x.size(), stream_view_);
 
       return out;
     }
