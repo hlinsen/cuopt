@@ -43,7 +43,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(argparse)
 
-set(TBB OFF CACHE BOOL "Disable TBB")
+# set(TBB OFF CACHE BOOL "Disable TBB")
 set(BUILD_TESTING OFF CACHE BOOL "Disable test build for papilo")
 set(PAPILO_NO_BINARIES ON)
 option(LUSOL "Disable LUSOL" OFF)

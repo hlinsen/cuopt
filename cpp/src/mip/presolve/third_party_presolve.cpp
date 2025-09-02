@@ -306,7 +306,8 @@ void set_presolve_options(papilo::Presolve<f_t>& presolver,
                           f_t relative_tolerance,
                           double time_limit)
 {
-  presolver.getPresolveOptions().tlim = time_limit;
+  presolver.getPresolveOptions().tlim    = time_limit;
+  presolver.getPresolveOptions().threads = 0;
 }
 
 template <typename i_t, typename f_t>
@@ -334,7 +335,7 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
     presolver, category, absolute_tolerance, relative_tolerance, time_limit);
 
   // Disable papilo logs
-  presolver.setVerbosityLevel(papilo::VerbosityLevel::kQuiet);
+  // presolver.setVerbosityLevel(papilo::VerbosityLevel::kQuiet);
 
   auto result = presolver.apply(papilo_problem);
   check_presolve_status(result.status);

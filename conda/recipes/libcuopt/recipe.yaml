@@ -57,6 +57,7 @@ cache:
       - cuda-version =${{ cuda_version }}
       - cmake ${{ cmake_version }}
       - ninja
+      - tbb-devel
     host:
       - cpp-argparse
       - cuda-version =${{ cuda_version }}
@@ -70,6 +71,7 @@ cache:
       - libcusparse-dev
       - cuda-cudart-dev
       - boost
+      - tbb-devel
 
 outputs:
   - package:
