@@ -128,12 +128,16 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
   CUOPT_LOG_INFO("Setting col integrality time: %f", building_timer.elapsed_time());
 
   std::vector<papilo::RowFlags> h_row_flags(h_constr_lb.size());
+  std::vector<std::tuple<i_t, i_t, f_t>> h_entries(h_constr_lb.size());
   // // Add constraints row by row
   for (size_t i = 0; i < h_constr_lb.size(); ++i) {
     //   // Get row entries
-    //   i_t row_start   = h_offsets[i];
-    //   i_t row_end     = h_offsets[i + 1];
-    //   i_t num_entries = row_end - row_start;
+    i_t row_start   = h_offsets[i];
+    i_t row_end     = h_offsets[i + 1];
+    i_t num_entries = row_end - row_start;
+    for (size_t j = 0; j < num_entries; ++j) {
+      h_entries[i] = std::make_tuple(i, h_variables[row_start + j], h_coefficients[row_start + j]);
+    }
 
     //   builder.addRowEntries(
     //     i, num_entries, h_variables.data() + row_start, h_coefficients.data() + row_start);
@@ -162,9 +166,9 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
     if (h_var_ub[i] == std::numeric_limits<f_t>::infinity()) { builder.setColUb(i, 0); }
   }
   CUOPT_LOG_INFO("Building time: %f", building_timer.elapsed_time());
-  auto problem     = builder.build();
-  auto csr_storage = papilo::SparseStorage<f_t>(
-    h_coefficients.data(), h_variables.data(), h_offsets.data(), num_rows, num_cols, nnz);
+  auto problem                        = builder.build();
+  auto constexpr const sorted_entries = true;
+  auto csr_storage = papilo::SparseStorage<f_t>(h_entries, num_rows, num_cols, sorted_entries);
   problem.setConstraintMatrix(csr_storage, h_constr_lb, h_constr_ub, h_row_flags);
 
   CUOPT_LOG_INFO("Building time: %f", building_timer.elapsed_time());
