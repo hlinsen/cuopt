@@ -932,7 +932,6 @@ void split_colors(i_t color,
     exit(1);
   }
 
-  // This messes up the complexity. Because we are now O(|C|) where C is the current color
   for (i_t v: vertices_to_refine_by_color[color]) {
     if (color_map_B[v] != color) {
       colors[color].vertices.erase(v);
