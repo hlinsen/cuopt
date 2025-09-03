@@ -116,6 +116,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     status     = CUDSS_STATUS_SUCCESS;
     CUDSS_CALL_AND_CHECK_EXIT(cudssCreate(&handle), status, "cudssCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssSetStream(handle, stream), status, "cudaStreamCreate");
+
+    CUDSS_CALL_AND_CHECK_EXIT(cudssSetThreadingLayer(handle, NULL), status, "cudssSetThreadingLayer");
+
+
+
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigCreate(&solverConfig), status, "cudssConfigCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
 
@@ -230,24 +235,35 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     // Perform symbolic analysis
     f_t start_symbolic = tic();
+    f_t start_symbolic_factor;
 
     {
       raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : CUDSS_PHASE_ANALYSIS");
       CUDSS_CALL_AND_CHECK(
-        cudssExecute(handle, CUDSS_PHASE_ANALYSIS, solverConfig, solverData, A, cudss_x, cudss_b),
+        cudssExecute(handle, CUDSS_PHASE_REORDERING, solverConfig, solverData, A, cudss_x, cudss_b),
         status,
         "cudssExecute for analysis");
+      f_t reordering_time = toc(start_symbolic);
+      settings_.log.printf("Reordering time: %.2fs\n");
+      start_symbolic_factor = tic();
+
+      CUDSS_CALL_AND_CHECK(
+        cudssExecute(handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b),
+        status,
+        "cudssExecute for analysis");
+
     }
 
-    f_t symbolic_time = toc(start_symbolic);
-    printf("Symbolic time %.2fs\n", symbolic_time);
+    f_t symbolic_factorization_time = toc(start_symbolic_factor);
+    settings_.log.printf("Symbolic factorization time: %.2fs\n", symbolic_factorization_time);
+    settings_.log.printf("Total symbolic time: %.2fs\n", toc(start_symbolic)); 
     int64_t lu_nz       = 0;
     size_t size_written = 0;
     CUDSS_CALL_AND_CHECK(
       cudssDataGet(handle, solverData, CUDSS_DATA_LU_NNZ, &lu_nz, sizeof(int64_t), &size_written),
       status,
       "cudssDataGet for LU_NNZ");
-    printf("Symbolic nonzeros in factor %e\n", static_cast<f_t>(lu_nz) / 2.0);
+    settings_.log.printf("Symbolic nonzeros in factor %e\n", static_cast<f_t>(lu_nz) / 2.0);
     // TODO: Is there any way to get nonzeros in the factors?
     // TODO: Is there any way to get flops for the factorization?
 
@@ -289,16 +305,16 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       status,
       "cudssDataGet for info");
     if (info != 0) {
-      printf("Factorization failed info %d\n", info);
+      settings_.log.printf("Factorization failed info %d\n", info);
       return -1;
     }
 
     if (first_factor) {
-      printf("Factor time %.2fs\n", numeric_time);
+      settings_.log.printf("Factor time %.2fs\n", numeric_time);
       first_factor = false;
     }
     if (status != CUDSS_STATUS_SUCCESS) {
-      printf("cuDSS Factorization failed\n");
+      settings_.log.printf("cuDSS Factorization failed\n");
       return -1;
     }
     return 0;
