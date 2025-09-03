@@ -19,6 +19,7 @@
 #include <cuopt/logger.hpp>
 #include <mip/mip_constants.hpp>
 #include <mip/presolve/third_party_presolve.hpp>
+#include <utilities/timer.hpp>
 
 #include <papilo/core/Presolve.hpp>
 #include <papilo/core/ProblemBuilder.hpp>
@@ -32,6 +33,7 @@ static bool maximize_      = false;
 template <typename i_t, typename f_t>
 papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>& op_problem)
 {
+  auto building_timer = cuopt::timer_t(3600);
   // Build papilo problem from optimization problem
   papilo::ProblemBuilder<f_t> builder;
 
@@ -123,20 +125,35 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
     builder.setRowLhsAll(h_constr_lb);
     builder.setRowRhsAll(h_constr_ub);
   }
+  CUOPT_LOG_INFO("Setting col integrality time: %f", building_timer.elapsed_time());
 
-  // Add constraints row by row
+  std::vector<papilo::RowFlags> h_row_flags(h_constr_lb.size());
+  // // Add constraints row by row
   for (size_t i = 0; i < h_constr_lb.size(); ++i) {
-    // Get row entries
-    i_t row_start   = h_offsets[i];
-    i_t row_end     = h_offsets[i + 1];
-    i_t num_entries = row_end - row_start;
-    builder.addRowEntries(
-      i, num_entries, h_variables.data() + row_start, h_coefficients.data() + row_start);
-    builder.setRowLhsInf(i, h_constr_lb[i] == -std::numeric_limits<f_t>::infinity());
-    builder.setRowRhsInf(i, h_constr_ub[i] == std::numeric_limits<f_t>::infinity());
-    if (h_constr_lb[i] == -std::numeric_limits<f_t>::infinity()) { builder.setRowLhs(i, 0); }
-    if (h_constr_ub[i] == std::numeric_limits<f_t>::infinity()) { builder.setRowRhs(i, 0); }
+    //   // Get row entries
+    //   i_t row_start   = h_offsets[i];
+    //   i_t row_end     = h_offsets[i + 1];
+    //   i_t num_entries = row_end - row_start;
+
+    //   builder.addRowEntries(
+    //     i, num_entries, h_variables.data() + row_start, h_coefficients.data() + row_start);
+    //   // CUOPT_LOG_INFO("Adding row entries time: %f", building_timer.elapsed_time());
+    //   builder.setRowLhsInf(i, h_constr_lb[i] == -std::numeric_limits<f_t>::infinity());
+    //   builder.setRowRhsInf(i, h_constr_ub[i] == std::numeric_limits<f_t>::infinity());
+    if (h_constr_lb[i] == -std::numeric_limits<f_t>::infinity()) {
+      h_row_flags[i] = papilo::RowFlag::kLhsInf;
+    }
+    if (h_constr_ub[i] == std::numeric_limits<f_t>::infinity()) {
+      h_row_flags[i] = papilo::RowFlag::kRhsInf;
+    }
+    if (h_constr_lb[i] == -std::numeric_limits<f_t>::infinity()) {
+      h_constr_lb[i] = 0;
+    }  // builder.setRowLhs(i, 0); }
+    if (h_constr_ub[i] == std::numeric_limits<f_t>::infinity()) {
+      h_constr_ub[i] = 0;
+    }  // builder.setRowRhs(i, 0); }
   }
+  CUOPT_LOG_INFO("Setting row bounds time: %f", building_timer.elapsed_time());
 
   for (size_t i = 0; i < h_var_lb.size(); ++i) {
     builder.setColLbInf(i, h_var_lb[i] == -std::numeric_limits<f_t>::infinity());
@@ -144,7 +161,14 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
     if (h_var_lb[i] == -std::numeric_limits<f_t>::infinity()) { builder.setColLb(i, 0); }
     if (h_var_ub[i] == std::numeric_limits<f_t>::infinity()) { builder.setColUb(i, 0); }
   }
-  return builder.build();
+  CUOPT_LOG_INFO("Building time: %f", building_timer.elapsed_time());
+  auto problem     = builder.build();
+  auto csr_storage = papilo::SparseStorage<f_t>(
+    h_coefficients.data(), h_variables.data(), h_offsets.data(), num_rows, num_cols, nnz);
+  problem.setConstraintMatrix(csr_storage, h_constr_lb, h_constr_ub, h_row_flags);
+
+  CUOPT_LOG_INFO("Building time: %f", building_timer.elapsed_time());
+  return problem;
 }
 
 template <typename i_t, typename f_t>
