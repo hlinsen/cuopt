@@ -23,6 +23,7 @@
 #include <dual_simplex/tic_toc.hpp>
 
 #include <unordered_map>
+#include <unordered_set>
 #include <numeric>
 #include <queue>
 #include <cmath>
@@ -635,13 +636,13 @@ i_t add_artifical_variables(lp_problem_t<i_t, f_t>& problem,
 template <typename i_t>
 struct color_t {
   color_t(int8_t row_or_column, int8_t active, i_t color, std::vector<i_t> vertices)
-    : row_or_column(row_or_column), active(active), color(color), vertices(vertices)
+    : row_or_column(row_or_column), active(active), color(color), vertices(vertices.begin(), vertices.end())
   {
   }
   int8_t row_or_column;
   int8_t active;
   i_t color;
-  std::vector<i_t> vertices;
+  std::unordered_set<i_t> vertices;
 };
 
 constexpr int8_t kRow = 0;
@@ -650,12 +651,13 @@ constexpr int8_t kActive = 1;
 constexpr int8_t kInactive = 0;
 
 template <typename i_t>
-void find_vertices_to_refine(const std::vector<i_t>& refining_color_vertices,
+void find_vertices_to_refine(const std::unordered_set<i_t>& refining_color_vertices,
                              const std::vector<i_t>& offset,
                              const std::vector<i_t>& vertex_list,
                              const std::vector<i_t>& color_map,
                              std::vector<i_t>& marked_vertices,
                              std::vector<i_t>& vertices_to_refine,
+                             std::vector<std::vector<i_t>>& vertices_to_refine_by_color,
                              std::vector<i_t>& marked_colors,
                              std::vector<i_t>& colors_to_update)
 {
@@ -664,11 +666,12 @@ void find_vertices_to_refine(const std::vector<i_t>& refining_color_vertices,
     const i_t end = offset[u + 1];
     for (i_t p = start; p < end; p++) {
       const i_t v = vertex_list[p];
+      const i_t color = color_map[v];
       if (marked_vertices[v] == 0) {
         marked_vertices[v] = 1;
         vertices_to_refine.push_back(v);
+        vertices_to_refine_by_color[color].push_back(v);
       }
-      const i_t color = color_map[v];
       if (marked_colors[color] == 0) {
         marked_colors[color] = 1;
         colors_to_update.push_back(color);
@@ -686,8 +689,10 @@ void compute_sums_of_refined_vertices(i_t refining_color,
                                       const std::vector<i_t>& offsets,
                                       const std::vector<i_t>& vertex_list,
                                       const std::vector<f_t>& weight_list,
-                                      const std::vector<i_t>& color_map,
-                                      std::vector<f_t>& vertex_to_sum)
+                                      const std::vector<i_t>& color_map_A,
+                                      const std::vector<i_t>& color_map_B,
+                                      std::vector<f_t>& vertex_to_sum,
+                                      std::vector<f_t>& max_sum_by_color)
 {
   for (i_t v : vertices_to_refine) {
     f_t sum = 0.0;
@@ -695,11 +700,16 @@ void compute_sums_of_refined_vertices(i_t refining_color,
     const i_t end = offsets[v + 1];
     for (i_t p = start; p < end; p++) {
       const i_t u = vertex_list[p];
-      if (color_map[u] == refining_color) {
+      if (color_map_A[u] == refining_color) {
         sum += weight_list[p];
       }
     }
     vertex_to_sum[v] = sum;
+    if (std::isnan(max_sum_by_color[color_map_B[v]])) {
+      max_sum_by_color[color_map_B[v]] = sum;
+    } else {
+      max_sum_by_color[color_map_B[v]] = std::max(max_sum_by_color[color_map_B[v]], sum);
+    }
   }
 }
 
@@ -715,7 +725,9 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                   std::vector<i_t>& colors_to_update,
                   std::vector<i_t>& vertices_to_refine,
                   std::vector<i_t>& marked_vertices,
-                  std::vector<f_t>& vertex_to_sum)
+                  std::vector<std::vector<i_t>>& vertices_to_refine_by_color,
+                  std::vector<f_t>& vertex_to_sum,
+                  std::vector<f_t>& max_sum_by_color)
 {
   i_t num_colors = num_row_colors + num_col_colors;
   std::vector<i_t> marked_colors(total_colors_seen, 0);
@@ -731,6 +743,7 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                             col_color_map,
                             marked_vertices,
                             vertices_to_refine,
+                            vertices_to_refine_by_color,
                             marked_colors,
                             colors_to_update);
 
@@ -740,7 +753,9 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                                      A.i,
                                      A.x,
                                      row_color_map,
-                                     vertex_to_sum);
+                                     col_color_map,
+                                     vertex_to_sum,
+                                     max_sum_by_color);
   } else {
     // The refining color is a column color
     // Find all vertices (rows) that have a neighbor in the refining color
@@ -751,6 +766,7 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                             row_color_map,
                             marked_vertices,
                             vertices_to_refine,
+                            vertices_to_refine_by_color,
                             marked_colors,
                             colors_to_update);
 
@@ -760,81 +776,177 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                                      Arow.j,
                                      Arow.x,
                                      col_color_map,
-                                     vertex_to_sum);
+                                     row_color_map,
+                                     vertex_to_sum,
+                                     max_sum_by_color);
   }
 }
 
 template <typename i_t, typename f_t>
-void split_colors(const std::vector<i_t>& colors_to_update,
-                  const std::vector<i_t>& offset,
-                  const std::vector<i_t>& vertex_list,
-                  const std::vector<f_t>& weight_list,
-                  const std::vector<i_t>& color_map_A,
+void find_colors_to_split(const std::vector<i_t> colors_to_update,
+                          const std::vector<color_t<i_t>>& colors,
+                          const std::vector<std::vector<i_t>>& vertices_to_refine_by_color,
+                          const std::vector<f_t>& vertex_to_sum,
+                          std::vector<f_t>& max_sum_by_color,
+                          std::vector<f_t>& min_sum_by_color,
+                          std::vector<i_t>& colors_to_split)
+{
+  for (i_t color : colors_to_update) {
+    min_sum_by_color[color] = max_sum_by_color[color];
+    for (i_t v : vertices_to_refine_by_color[color]) {
+      if (vertex_to_sum[v] < min_sum_by_color[color]) {
+        min_sum_by_color[color] = vertex_to_sum[v];
+      }
+    }
+
+
+    if (vertices_to_refine_by_color[color].size() != colors[color].vertices.size()) {
+      // We didn't touch all the vertices in the color. These vertices must have a sum of 0.0
+      if (0.0 > max_sum_by_color[color]) {
+        max_sum_by_color[color] = 0.0;
+      }
+      if (0.0 < min_sum_by_color[color]) {
+        min_sum_by_color[color] = 0.0;
+      }
+    } else {
+      // We touched all the vertices in the color. Compute the minimum sum seen
+    }
+  }
+
+
+  colors_to_split.clear();
+  for (i_t color : colors_to_update) {
+    if (max_sum_by_color[color] < min_sum_by_color[color]) {
+      printf("Color %d has max sum %e < min sum %e\n", color, max_sum_by_color[color], min_sum_by_color[color]);
+      exit(1);
+    }
+    if (min_sum_by_color[color] < max_sum_by_color[color]) { colors_to_split.push_back(color); }
+  }
+}
+
+
+template <typename i_t, typename f_t>
+void split_colors(i_t color,
                   i_t refining_color,
                   int8_t side_being_split,
                   std::vector<f_t>& vertex_to_sum,
                   std::unordered_map<f_t, std::vector<i_t>>& color_sums,
-                  std::unordered_map<f_t, i_t>& sum_to_color,
+                  std::unordered_map<f_t, i_t>& sum_to_sizes,
                   std::vector<color_t<i_t>>& colors,
-                  std::vector<i_t>& color_index,
-                  std::queue<i_t>& color_queue,
+                  std::vector<i_t>& color_stack,
+                  std::vector<i_t>& color_in_stack,
                   std::vector<i_t>& color_map_B,
+                  std::vector<i_t>& marked_vertices,
+                  std::vector<std::vector<i_t>>& vertices_to_refine_by_color,
+                  std::vector<f_t>& min_sum_by_color,
+                  std::vector<f_t>& max_sum_by_color,
                   i_t& num_colors,
                   i_t& num_side_colors,
                   i_t& total_colors_seen)
 {
-  for (i_t color : colors_to_update) {
-    const color_t<i_t>& current_color = colors[color_index[color]];
-    color_sums.clear();
-    for (i_t v : current_color.vertices) {
-      if (vertex_to_sum[v] != vertex_to_sum[v]) {
-        f_t sum         = 0.0;
-        const i_t start = offset[v];
-        const i_t end   = offset[v + 1];
-        for (i_t p = start; p < end; p++) {
-          const i_t u = vertex_list[p];
-          if (color_map_A[u] == refining_color) { sum += weight_list[p]; }
-        }
-        vertex_to_sum[v] = sum;
+  bool in_stack = color_in_stack[color];
+  //printf("Splitting color %d, size %ld\n", color, colors[color].vertices.size());
+
+  sum_to_sizes.clear();
+  color_sums.clear();
+  for (i_t v : vertices_to_refine_by_color[color]) {
+    sum_to_sizes[vertex_to_sum[v]]++;
+  }
+  if (vertices_to_refine_by_color[color].size() != colors[color].vertices.size()) {
+    const i_t remaining_size = colors[color].vertices.size() - vertices_to_refine_by_color[color].size();
+    //printf("Color %d has %d remaining vertices\n", color, remaining_size);
+    if (remaining_size < 0) {
+      printf("Negative remaining size %d\n", remaining_size);
+
+      printf("Color %d vertices\n");
+      for (i_t v : colors[color].vertices) {
+        printf("Vertex %d\n", v);
       }
-      color_sums[vertex_to_sum[v]].push_back(v);
+      printf("Vertices to refine by color %d\n", color);
+      for (i_t v : vertices_to_refine_by_color[color]) {
+        printf("Vertex %d\n", v);
+      }
+      exit(1);
     }
-    if (color_sums.size() > 1) {
-      // We need to split the color
-      sum_to_color.clear();
-      i_t max_size = 0;
-      f_t max_sum  = std::numeric_limits<f_t>::quiet_NaN();
-      for (auto& [sum, vertices] : color_sums) {
-        colors.emplace_back(side_being_split, kActive, total_colors_seen, vertices);
-        color_index.push_back(total_colors_seen);
+    sum_to_sizes[0.0] += remaining_size;
+    color_sums[0.0] = std::vector<i_t>();
+  }
 
-        // Update the color map, to ensure vertices are assigned to the new color
-        for (i_t v : vertices) {
-          color_map_B[v] = total_colors_seen;
-        }
-
-        if (vertices.size() > max_size) {
-          max_size = vertices.size();
-          max_sum  = sum;
-        }
-        sum_to_color[sum] = total_colors_seen;
-
-        num_colors++;
-        num_side_colors++;
-        total_colors_seen++;
-      }
-      num_side_colors--;  // Remove the old color
-      num_colors--;       // Remove the old color
-      colors[color_index[color]].active = kInactive;
-
-      // Push all but the color with the largest size onto the queue
-      for (auto& [sum, vertices] : color_sums) {
-        if (1 || sum != max_sum) { // TODO: Understand why not pushing the color with maximum size onto the queue does not create an equitable partition for neos5
-          color_queue.push(sum_to_color[sum]);
-        }
-      }
+  i_t max_size = -1;
+  f_t max_sum = std::numeric_limits<f_t>::quiet_NaN();
+  for (auto& [sum, size] : sum_to_sizes) {
+    if (size > max_size) {
+      max_size = size;
+      max_sum = sum;
     }
   }
+
+  for (i_t v: vertices_to_refine_by_color[color]) {
+    color_sums[vertex_to_sum[v]].push_back(v);
+  }
+  bool only_one = sum_to_sizes.size() == 1;
+  if (only_one) {
+    printf("Color %d has only one sum. color_sums size %ld. In stack %d\n", color, color_sums.size(), in_stack);
+    exit(1);
+  }
+
+  i_t vertices_considered = 0;
+  for (auto& [sum, vertices] : color_sums) {
+    i_t size = vertices.size();
+    if (sum == 0.0) {
+      const i_t additional_size =
+        (colors[color].vertices.size() - vertices_to_refine_by_color[color].size());
+      size += additional_size;
+    }
+
+    vertices_considered += size;
+    if (sum == 0.0) {
+      // Push the current color back onto the stack
+      if (!in_stack && max_size != size && max_sum != sum) {
+        color_stack.push_back(color);
+        color_in_stack[color] = 1;
+      }
+    } else {
+      // Create a new color
+      colors.emplace_back(side_being_split, kActive, total_colors_seen, vertices);
+
+      // Push the new color onto the stack
+      if (in_stack || !(max_size == size && max_sum == sum)) {
+        color_stack.push_back(total_colors_seen);
+        color_in_stack[total_colors_seen] = 1;
+      }
+
+      for (i_t v : vertices) {
+        color_map_B[v] = total_colors_seen;
+      }
+
+      total_colors_seen++;
+      num_colors++;
+      num_side_colors++;
+    }
+  }
+  if (vertices_considered != colors[color].vertices.size()) {
+    printf("Vertices considered %d does not match color size %ld\n",
+           vertices_considered,
+           colors[color].vertices.size());
+    exit(1);
+  }
+
+  // This messes up the complexity. Because we are now O(|C|) where C is the current color
+  for (i_t v: vertices_to_refine_by_color[color]) {
+    if (color_map_B[v] != color) {
+      colors[color].vertices.erase(v);
+    }
+  }
+  if (colors[color].vertices.size() == 0) {
+    colors[color].active = kInactive;
+    num_colors--;
+    num_side_colors--;
+  }
+
+  vertices_to_refine_by_color[color].clear();
+  max_sum_by_color[color] = std::numeric_limits<f_t>::quiet_NaN();
+  min_sum_by_color[color] = std::numeric_limits<f_t>::quiet_NaN();
 }
 
 template <typename i_t, typename f_t>
@@ -845,6 +957,7 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
                  i_t& num_colors,
                  i_t& total_colors_seen)
 {
+  f_t start_time = tic();
   const i_t m = A.m;
   const i_t n = A.n;
   csr_matrix_t<i_t, f_t> A_row(m, n, 1);
@@ -858,9 +971,9 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
   std::iota(all_cols_vertices.begin(), all_cols_vertices.end(), 0);
   color_t<i_t> all_cols(kCol, kActive, 1, all_cols_vertices);
 
-  std::queue<i_t> color_queue;
-  color_queue.push(0);
-  color_queue.push(1);
+  std::vector<i_t> color_stack;
+  color_stack.push_back(0);
+  color_stack.push_back(1);
 
   std::vector<i_t> row_color_map(m, 0);
   std::vector<i_t> col_color_map(n, 1);
@@ -873,21 +986,36 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
   colors.emplace_back(all_rows);
   colors.emplace_back(all_cols);
 
-  std::vector<i_t> color_index(num_colors);
-  color_index[0] = 0;
-  color_index[1] = 1;
-
   const i_t max_vertices = std::max(m, n);
-  std::vector<f_t> vertex_to_sum(max_vertices, std::numeric_limits<f_t>::quiet_NaN());
+  std::vector<f_t> vertex_to_sum(max_vertices, 0.0);
   std::vector<i_t> vertices_to_refine;
   vertices_to_refine.reserve(max_vertices);
   std::vector<i_t> marked_vertices(max_vertices, 0);
 
-  std::unordered_map<f_t, std::vector<i_t>> color_sums;
-  std::unordered_map<f_t, i_t> sum_to_color;
+  std::vector<i_t> color_in_stack(max_vertices, 0);
+  color_in_stack[0] = 1;
+  color_in_stack[1] = 1;
 
-  while (!color_queue.empty()) {
-    color_t<i_t> refining_color = colors[color_queue.front()];
+  std::unordered_map<f_t, std::vector<i_t>> color_sums;
+  std::unordered_map<f_t, i_t> sum_to_sizes;
+
+  std::vector<std::vector<i_t>> vertices_to_refine_by_color(max_vertices);
+  std::vector<f_t> max_sum_by_color(max_vertices, std::numeric_limits<f_t>::quiet_NaN());
+  std::vector<f_t> min_sum_by_color(max_vertices, std::numeric_limits<f_t>::quiet_NaN());
+
+
+  std::vector<i_t> colors_to_split;
+  colors_to_split.reserve(max_vertices);
+
+  //printf("Max vertices %d\n", max_vertices);
+  i_t num_refinements = 0;
+  while (!color_stack.empty()) {
+    num_refinements++;
+    i_t refining_color_index = color_stack.back();
+    const color_t<i_t>& refining_color = colors[refining_color_index];
+    color_stack.pop_back(); // Can pop since refining color is no longer needed. New colors will be
+                            // added to the stack.
+    color_in_stack[refining_color_index] = 0;
     std::vector<i_t> colors_to_update;
     compute_sums(A,
                  A_row,
@@ -900,56 +1028,77 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
                  colors_to_update,
                  vertices_to_refine,
                  marked_vertices,
-                 vertex_to_sum);
-    color_queue.pop();  // Can pop since refining color is no longer needed. New colors will be
-                        // added to the queue.
+                 vertices_to_refine_by_color,
+                 vertex_to_sum,
+                 max_sum_by_color);
 
+    colors_to_split.clear();
+    find_colors_to_split(colors_to_update,
+                         colors,
+                         vertices_to_refine_by_color,
+                         vertex_to_sum,
+                         max_sum_by_color,
+                         min_sum_by_color,
+                         colors_to_split);
     // We now need to split the current colors into new colors
     if (refining_color.row_or_column == kRow) {
       // Refining color is a row color.
       // See if we need to split the column colors
-      split_colors(colors_to_update,
-                   A.col_start,
-                   A.i,
-                   A.x,
-                   row_color_map,
-                   refining_color.color,
-                   kCol,
-                   vertex_to_sum,
-                   color_sums,
-                   sum_to_color,
-                   colors,
-                   color_index,
-                   color_queue,
-                   col_color_map,
-                   num_colors,
-                   num_col_colors,
-                   total_colors_seen);
+
+      for (i_t color : colors_to_split) {
+        split_colors(color,
+                     refining_color.color,
+                     kCol,
+                     vertex_to_sum,
+                     color_sums,
+                     sum_to_sizes,
+                     colors,
+                     color_stack,
+                     color_in_stack,
+                     col_color_map,
+                     marked_vertices,
+                     vertices_to_refine_by_color,
+                     min_sum_by_color,
+                     max_sum_by_color,
+                     num_colors,
+                     num_col_colors,
+                     total_colors_seen);
+      }
     } else {
       // Refining color is a column color.
       // See if we need to split the row colors
-      split_colors(colors_to_update,
-                   A_row.row_start,
-                   A_row.j,
-                   A_row.x,
-                   col_color_map,
-                   refining_color.color,
-                   kRow,
-                   vertex_to_sum,
-                   color_sums,
-                   sum_to_color,
-                   colors,
-                   color_index,
-                   color_queue,
-                   row_color_map,
-                   num_colors,
-                   num_row_colors,
-                   total_colors_seen);
+      for (i_t color : colors_to_split) {
+        split_colors(color,
+                     refining_color.color,
+                     kRow,
+                     vertex_to_sum,
+                     color_sums,
+                     sum_to_sizes,
+                     colors,
+                     color_stack,
+                     color_in_stack,
+                     row_color_map,
+                     marked_vertices,
+                     vertices_to_refine_by_color,
+                     min_sum_by_color,
+                     max_sum_by_color,
+                     num_colors,
+                     num_row_colors,
+                     total_colors_seen);
+      }
     }
 
     for (i_t v: vertices_to_refine) {
-      vertex_to_sum[v] = std::numeric_limits<f_t>::quiet_NaN();
+      vertex_to_sum[v] = 0.0;
     }
+
+    for (i_t color: colors_to_update) {
+      vertices_to_refine_by_color[color].clear();
+      max_sum_by_color[color] = std::numeric_limits<f_t>::quiet_NaN();
+      min_sum_by_color[color] = std::numeric_limits<f_t>::quiet_NaN();
+    }
+
+
 
 #ifdef DEBUG
     for (i_t i = 0; i < m; i++) {
@@ -966,11 +1115,6 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
     }
 #endif
 
-
-    //printf("Number of row colors: %d\n", num_row_colors);
-    //printf("Number of column colors: %d\n", num_col_colors);
-    //printf("Number of colors: %d\n", num_colors);
-
 #ifdef DEBUG
     // Count the number of active colors
     i_t num_active_colors = 0;
@@ -982,9 +1126,21 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
         num_active_colors++;
         if (color.row_or_column == kRow) {
           num_active_row_colors++;
+          for (i_t v : color.vertices) {
+            if (row_color_map[v] != color.color) {
+              printf("Row color map %d does not match color %d for vertex %d\n", row_color_map[v], color.color, v);
+              exit(1);
+            }
+          }
         }
         else {
           num_active_col_colors++;
+          for (i_t v : color.vertices) {
+            if (col_color_map[v] != color.color) {
+              printf("Column color map %d does not match color %d for vertex %d\n", col_color_map[v], color.color, v);
+              exit(1);
+            }
+          }
         }
       }
     }
@@ -1004,7 +1160,22 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
       exit(1);
     }
 #endif
+    if (num_refinements % 100 == 0) {
+      printf("Number of refinements %8d in %.2f seconds\n", num_refinements, toc(start_time));
+    }
+    if (num_row_colors >= max_vertices)
+    {
+      printf("Too many row colors %d max %d\n", num_row_colors, max_vertices);
+      exit(1);
+    }
+    if (num_col_colors >= max_vertices)
+    {
+      printf("Too many column colors %d max %d\n", num_col_colors, max_vertices);
+      exit(1);
+    }
   }
+  printf("Number of refinements: %d\n", num_refinements);
+#undef DEBUG
 }
 
 template <typename i_t, typename f_t>
@@ -1037,18 +1208,12 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   i_t nz_obj = 0;
   for (i_t j = 0; j < n; j++)
   {
-    if (problem.objective[j] != 0.0)
-    {
-      nz_obj++;
-    }
+    if (problem.objective[j] != 0.0) { nz_obj++; }
   }
   i_t nz_rhs = 0;
   for (i_t i = 0; i < m; i++)
   {
-    if (problem.rhs[i] != 0.0)
-    {
-      nz_rhs++;
-    }
+    if (problem.rhs[i] != 0.0) { nz_rhs++; }
   }
   i_t nz_lb = 0;
   for (i_t j = 0; j < n; j++)
@@ -1202,7 +1367,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
       if (color.row_or_column == kRow) {
         //printf("Active row color %d has %ld vertices\n", color.color, color.vertices.size());
         if (color.vertices.size() == 1) {
-          if (color.vertices[0] == m + nz_ub) {
+          if (*color.vertices.begin() == m + nz_ub) {
             printf("Row color %d is the objective color\n", color.color);
             found_objective_color = true;
             objective_color = color_count;
@@ -1213,10 +1378,11 @@ void folding(lp_problem_t<i_t, f_t>& problem)
         else {
           row_colors.push_back(color_count);
           // Check that all vertices in the same row color have the same rhs value
-          f_t rhs_value = full_rhs[color.vertices[0]];
-          for (i_t k = 1; k < color.vertices.size(); k++) {
-            if (full_rhs[color.vertices[k]] != rhs_value) {
-              printf("RHS value for vertex %d is %e, but should be %e. Difference is %e\n", color.vertices[k], full_rhs[color.vertices[k]], rhs_value, full_rhs[color.vertices[k]] - rhs_value);
+          auto it = color.vertices.begin();
+          f_t rhs_value = full_rhs[*it];
+          for (++it; it != color.vertices.end(); ++it) {
+            if (full_rhs[*it] != rhs_value) {
+              printf("RHS value for vertex %d is %e, but should be %e. Difference is %e\n", *it, full_rhs[*it], rhs_value, full_rhs[*it] - rhs_value);
               exit(1);
             }
           }
@@ -1249,7 +1415,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
       if (color.row_or_column == kCol) {
         //printf("Active column color %d has %ld vertices\n", color.color, color.vertices.size());
         if (color.vertices.size() == 1) {
-          if (color.vertices[0] == n_prime - 1) {
+          if (*color.vertices.begin() == n_prime - 1) {
             printf("Column color %d is the rhs color\n", color.color);
             found_rhs_color = true;
             rhs_color = color_count;
@@ -1260,10 +1426,11 @@ void folding(lp_problem_t<i_t, f_t>& problem)
         else {
           col_colors.push_back(color_count);
           // Check that all vertices in the same column color have the same objective value
-          f_t objective_value = full_objective[color.vertices[0]];
-          for (i_t k = 1; k < color.vertices.size(); k++) {
-            if (full_objective[color.vertices[k]] != objective_value) {
-              printf("Objective value for vertex %d is %e, but should be %e. Difference is %e\n", color.vertices[k], full_objective[color.vertices[k]], objective_value, full_objective[color.vertices[k]] - objective_value);
+          auto it = color.vertices.begin();
+          f_t objective_value = full_objective[*it];
+          for (; it != color.vertices.end(); ++it) {
+            if (full_objective[*it] != objective_value) {
+              printf("Objective value for vertex %d is %e, but should be %e. Difference is %e\n", *it, full_objective[*it], objective_value, full_objective[*it] - objective_value);
               exit(1);
             }
           }
@@ -1277,7 +1444,6 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     printf("RHS color not found\n");
     exit(1);
   }
-
 
 
   // The original problem is in the form
@@ -1310,9 +1476,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   printf("Constructing Pi_P\n");
   csc_matrix_t<i_t, f_t> Pi_P(previous_rows, reduced_rows, previous_rows);
   nnz = 0;
-  for (i_t j = 0; j < reduced_rows; j++) {
-    Pi_P.col_start[j] = nnz;
-    const i_t color_index = row_colors[j];
+  for (i_t k = 0; k < reduced_rows; k++) {
+    Pi_P.col_start[k] = nnz;
+    const i_t color_index = row_colors[k];
     const color_t<i_t>& color = colors[color_index];
     for (i_t v : color.vertices) {
       Pi_P.i[nnz] = v;
@@ -1322,6 +1488,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   }
   Pi_P.col_start[reduced_rows] = nnz;
   printf("Pi_P nz %d predicted %d\n", nnz, previous_rows);
+  if (nnz != previous_rows) {
+    exit(1);
+  }
   FILE* fid = fopen("Pi_P.txt", "w");
   Pi_P.write_matrix_market(fid);
   fclose(fid);
@@ -1367,7 +1536,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   csc_matrix_t<i_t, f_t> C_s(reduced_rows, previous_rows, 1);
   C_s_row.to_compressed_col(C_s);
   printf("Completed C^s\n");
-#if DEBUG
+#ifdef DEBUG
   fid = fopen("C_s.txt", "w");
   C_s.write_matrix_market(fid);
   fclose(fid);
@@ -1385,6 +1554,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   csc_matrix_t<i_t, f_t> error(reduced_rows, reduced_rows, 1);
   add(product, identity, 1.0, -1.0, error);
   printf("|| C^s Pi_P - I ||_1 = %f\n", error.norm1());
+  if (error.norm1() > 1e-6) {
+    exit(1);
+  }
 #endif
 
   // Construct that matrix D
@@ -1414,7 +1586,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   }
   D.col_start[reduced_cols] = nnz;
   printf("D nz %d predicted %d\n", nnz, previous_cols);
-#if DEBUG
+#ifdef DEBUG
   fid = fopen("D.txt", "w");
   D.write_matrix_market(fid);
   fclose(fid);
@@ -1458,6 +1630,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   csc_matrix_t<i_t, f_t> D_error(reduced_cols, reduced_cols, 1);
   add(D_product, D_identity, 1.0, -1.0, D_error);
   printf("|| D^s D - I ||_1 = %f\n", D_error.norm1());
+  if (D_error.norm1() > 1e-6) {
+    exit(1);
+  }
 
   // Construct the matrix X
   // X = C C^s
@@ -1796,7 +1971,6 @@ void folding(lp_problem_t<i_t, f_t>& problem)
 
   printf("Original objective = %e\n", dot<i_t, f_t>(c_tilde, x));
 
-  //exit(0);
 }
 
 template <typename i_t, typename f_t>
