@@ -392,7 +392,7 @@ class iteration_data_t {
       //
       // We can use a dense cholesky factorization of H to solve for y
 
-      const bool debug = true;
+      const bool debug = false;
 
       dense_vector_t<i_t, f_t> w(AD.m);
       i_t solve_status = chol->solve(b, w);
@@ -1790,24 +1790,20 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
                                     cuda::std::divides<>{},
                                     stream_view_);
 
-    // Returns v / w and diag so that we can reuse it in the output iterator to do diag = diag + v
-    // /
-    // w
-    const auto diag_and_v_divide_w_iterator = thrust::make_transform_iterator(
-      thrust::make_zip_iterator(d_v_.data(), d_w_.data(), d_diag_.data()),
-      [] HD(const thrust::tuple<double, double, double> t) -> thrust::tuple<f_t, f_t> {
-        return {thrust::get<0>(t) / thrust::get<1>(t), thrust::get<2>(t)};
-      });
-
     // diag = z ./ x + E * (v ./ w) * E'
-    thrust::scatter(rmm::exec_policy(stream_view_),
-                    diag_and_v_divide_w_iterator,
-                    diag_and_v_divide_w_iterator + d_upper_bounds_.size(),
-                    d_upper_bounds_.data(),
-                    thrust::make_transform_output_iterator(
-                      d_diag_.data(), [] HD(const thrust::tuple<double, double> t) {
-                        return thrust::get<0>(t) + thrust::get<1>(t);
-                      }));
+
+    if (data.n_upper_bounds > 0) {
+      cub::DeviceTransform::Transform(
+        cuda::std::make_tuple(
+          d_v_.data(),
+          d_w_.data(),
+          thrust::make_permutation_iterator(d_diag_.data(), d_upper_bounds_.data())),
+        thrust::make_permutation_iterator(d_diag_.data(), d_upper_bounds_.data()),
+        d_upper_bounds_.size(),
+        [] HD(f_t v_k, f_t w_k, f_t diag_j) { return diag_j + (v_k / w_k); },
+        stream_view_);
+      RAFT_CHECK_CUDA(stream_view_);
+    }
 
     // inv_diag = 1.0 ./ diag
     cub::DeviceTransform::Transform(
