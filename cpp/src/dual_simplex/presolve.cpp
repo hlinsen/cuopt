@@ -684,7 +684,7 @@ void find_vertices_to_refine(const std::unordered_set<i_t>& refining_color_verti
 }
 
 template <typename i_t, typename f_t>
-void compute_sums_of_refined_vertices(i_t refining_color,
+void compute_sums_of_refined_vertices_old(i_t refining_color,
                                       const std::vector<i_t>& vertices_to_refine,
                                       const std::vector<i_t>& offsets,
                                       const std::vector<i_t>& vertex_list,
@@ -709,6 +709,36 @@ void compute_sums_of_refined_vertices(i_t refining_color,
       max_sum_by_color[color_map_B[v]] = sum;
     } else {
       max_sum_by_color[color_map_B[v]] = std::max(max_sum_by_color[color_map_B[v]], sum);
+    }
+  }
+}
+
+template <typename i_t, typename f_t>
+void compute_sums_of_refined_vertices_new(i_t refining_color,
+                                      const std::unordered_set<i_t>& refining_color_vertices,
+                                      const std::vector<i_t>& vertices_to_refine,
+                                      const std::vector<i_t>& offsets,
+                                      const std::vector<i_t>& vertex_list,
+                                      const std::vector<f_t>& weight_list,
+                                      const std::vector<i_t>& color_map,
+                                      std::vector<f_t>& vertex_to_sum,
+                                      std::vector<f_t>& max_sum_by_color)
+{
+  for (i_t v : refining_color_vertices) {
+    const i_t start = offsets[v];
+    const i_t end = offsets[v + 1];
+    for (i_t p = start; p < end; p++) {
+      const i_t u = vertex_list[p];
+      vertex_to_sum[u] += weight_list[p];
+    }
+  }
+
+  for (i_t v : vertices_to_refine) {
+    const i_t c = color_map[v];
+    if (std::isnan(max_sum_by_color[c])) {
+      max_sum_by_color[c] = vertex_to_sum[v];
+    } else {
+      max_sum_by_color[c] = std::max(max_sum_by_color[c], vertex_to_sum[v]);
     }
   }
 }
@@ -747,15 +777,49 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                             marked_colors,
                             colors_to_update);
 
-    compute_sums_of_refined_vertices(refining_color.color,
-                                     vertices_to_refine,
-                                     A.col_start,
-                                     A.i,
-                                     A.x,
-                                     row_color_map,
-                                     col_color_map,
-                                     vertex_to_sum,
-                                     max_sum_by_color);
+    // Let R be the refining color, R is a subset of the rows
+    // We need to compute
+    // sum_{v in R} A_vw for all w such that A_vw != 0
+    // Note that if A_vw != 0 and A_vw' != 0, we may
+    // have that w and w' are in a different (column) color
+#ifdef DEBUG
+    std::vector<f_t> vertex_to_sum_verify = vertex_to_sum;
+    std::vector<f_t> max_sum_by_color_verify = max_sum_by_color;
+#endif
+    compute_sums_of_refined_vertices_new(refining_color.color,
+                                         refining_color.vertices,
+                                         vertices_to_refine,
+                                         Arow.row_start,
+                                         Arow.j,
+                                         Arow.x,
+                                         col_color_map,
+                                         vertex_to_sum,
+                                         max_sum_by_color);
+#ifdef DEBUG
+    compute_sums_of_refined_vertices_old(refining_color.color,
+                                         vertices_to_refine,
+                                         A.col_start,
+                                         A.i,
+                                         A.x,
+                                         row_color_map,
+                                         col_color_map,
+                                         vertex_to_sum_verify,
+                                         max_sum_by_color_verify);
+
+    for (i_t v = 0; v < vertex_to_sum.size(); v++) {
+      if (vertex_to_sum[v] != vertex_to_sum_verify[v]) {
+        printf("Vertex %d has sum %e != %e\n", v, vertex_to_sum[v], vertex_to_sum_verify[v]);
+        exit(1);
+      }
+    }
+    for (i_t c = 0; c < max_sum_by_color.size(); c++) {
+      if ((!std::isnan(max_sum_by_color[c]) || !std::isnan(max_sum_by_color_verify[c])) && max_sum_by_color[c] != max_sum_by_color_verify[c]) {
+        printf(
+          "Column color %d has max sum %e != %e\n", c, max_sum_by_color[c], max_sum_by_color_verify[c]);
+        exit(1);
+      }
+    }
+#endif
   } else {
     // The refining color is a column color
     // Find all vertices (rows) that have a neighbor in the refining color
@@ -769,16 +833,49 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                             vertices_to_refine_by_color,
                             marked_colors,
                             colors_to_update);
-
-    compute_sums_of_refined_vertices(refining_color.color,
+#ifdef DEBUG
+    std::vector<f_t> vertex_to_sum_verify    = vertex_to_sum;
+    std::vector<f_t> max_sum_by_color_verify = max_sum_by_color;
+#endif
+    // Let Q be the refining color, Q is a subset of the columns
+    // We need to compute
+    // sum_{w in Q} A_vw for all v such that A_vw != 0
+    // Note that if A_vw != 0 and A_v'w != 0, we may
+    // have that v and v' are in a different (row) color
+    compute_sums_of_refined_vertices_new(refining_color.color,
+                                     refining_color.vertices,
+                                     vertices_to_refine,
+                                     A.col_start,
+                                     A.i,
+                                     A.x,
+                                     row_color_map,
+                                     vertex_to_sum,
+                                     max_sum_by_color);
+#ifdef DEBUG
+    compute_sums_of_refined_vertices_old(refining_color.color,
                                      vertices_to_refine,
                                      Arow.row_start,
                                      Arow.j,
                                      Arow.x,
                                      col_color_map,
                                      row_color_map,
-                                     vertex_to_sum,
-                                     max_sum_by_color);
+                                     vertex_to_sum_verify,
+                                     max_sum_by_color_verify);
+
+    for (i_t v = 0; v < vertex_to_sum.size(); v++) {
+      if (vertex_to_sum[v] != vertex_to_sum_verify[v]) {
+        printf("Vertex %d has sum %e != %e\n", v, vertex_to_sum[v], vertex_to_sum_verify[v]);
+        exit(1);
+      }
+    }
+    for (i_t c = 0; c < max_sum_by_color.size(); c++) {
+      if ((!std::isnan(max_sum_by_color[c]) || !std::isnan(max_sum_by_color_verify[c])) && max_sum_by_color[c] != max_sum_by_color_verify[c]) {
+        printf(
+          "Row color %d has max sum %e != %e\n", c, max_sum_by_color[c], max_sum_by_color_verify[c]);
+        exit(1);
+      }
+    }
+#endif
   }
 }
 
@@ -965,7 +1062,7 @@ void color_lower_bounds(const csc_matrix_t<i_t, f_t>& A,
     const i_t row_start = Arow.row_start[i];
     const i_t row_end = Arow.row_start[i + 1];
     f_t sum = 0.0;
-    for (i_t p = row_start; p < row_end; p++) {
+      for (i_t p = row_start; p < row_end; p++) {
       sum += Arow.x[p];
     }
     row_sums[i] = sum;
@@ -1147,6 +1244,15 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
     for (i_t v: vertices_to_refine) {
       vertex_to_sum[v] = 0.0;
     }
+
+#ifdef DEBUG
+    for (i_t k = 0; k < max_vertices; k++) {
+      if (vertex_to_sum[k] != 0.0) {
+        printf("Vertex %d has sum %e\n", k, vertex_to_sum[k]);
+        exit(1);
+      }
+    }
+#endif
 
     for (i_t color: colors_to_update) {
       vertices_to_refine_by_color[color].clear();
@@ -1397,8 +1503,8 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   i_t num_colors;
   i_t total_colors_seen;
   f_t color_start_time = tic();
-  i_t row_threshold = static_cast<i_t>( .20 * static_cast<f_t>(m));
-  i_t col_threshold = static_cast<i_t>( .20 * static_cast<f_t>(n));
+  i_t row_threshold = static_cast<i_t>( .50 * static_cast<f_t>(m));
+  i_t col_threshold = static_cast<i_t>( .50 * static_cast<f_t>(n));
   i_t status = color_graph(augmented, colors, row_threshold, col_threshold, num_row_colors, num_col_colors, num_colors, total_colors_seen);
   if (status != 0) {
     printf("Folding: Coloring aborted\n");
