@@ -230,7 +230,8 @@ optimization_problem_solution_t<i_t, f_t> convert_dual_simplex_sol(
   dual_simplex::lp_status_t status,
   f_t duration,
   f_t norm_user_objective,
-  f_t norm_rhs)
+  f_t norm_rhs,
+  i_t method)
 {
   auto to_termination_status = [](dual_simplex::lp_status_t status) {
     switch (status) {
@@ -287,7 +288,7 @@ optimization_problem_solution_t<i_t, f_t> convert_dual_simplex_sol(
   if (termination_status != pdlp_termination_status_t::Optimal &&
       termination_status != pdlp_termination_status_t::TimeLimit &&
       termination_status != pdlp_termination_status_t::ConcurrentLimit) {
-    CUOPT_LOG_INFO("Solve status %s", sol.get_termination_status_string().c_str());
+    CUOPT_LOG_INFO("%s Solve status %s", method == 0 ? "Dual Simplex" : "Barrier", sol.get_termination_status_string().c_str());
   }
 
   problem.handle_ptr->sync_stream();
@@ -349,7 +350,7 @@ optimization_problem_solution_t<i_t, f_t> run_barrier(
                                   std::get<1>(sol_dual_simplex),
                                   std::get<2>(sol_dual_simplex),
                                   std::get<3>(sol_dual_simplex),
-                                  std::get<4>(sol_dual_simplex));
+                                  std::get<4>(sol_dual_simplex), 1);
 }
 
 template <typename i_t, typename f_t>
@@ -417,7 +418,7 @@ optimization_problem_solution_t<i_t, f_t> run_dual_simplex(
                                   std::get<1>(sol_dual_simplex),
                                   std::get<2>(sol_dual_simplex),
                                   std::get<3>(sol_dual_simplex),
-                                  std::get<4>(sol_dual_simplex));
+                                  std::get<4>(sol_dual_simplex), 0);
 }
 
 template <typename i_t, typename f_t>
@@ -596,7 +597,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
                                                    std::get<1>(*sol_dual_simplex_ptr),
                                                    std::get<2>(*sol_dual_simplex_ptr),
                                                    std::get<3>(*sol_dual_simplex_ptr),
-                                                   std::get<4>(*sol_dual_simplex_ptr));
+                                                   std::get<4>(*sol_dual_simplex_ptr), 0);
 
   // copy the barrier solution to the device
   auto sol_barrier = convert_dual_simplex_sol(problem,
@@ -604,7 +605,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
                                               std::get<1>(*sol_barrier_ptr),
                                               std::get<2>(*sol_barrier_ptr),
                                               std::get<3>(*sol_barrier_ptr),
-                                              std::get<4>(*sol_barrier_ptr));
+                                              std::get<4>(*sol_barrier_ptr), 1);
 
   f_t end_time = dual_simplex::toc(start_time);
   CUOPT_LOG_INFO("Concurrent time:  %.3fs", end_time);

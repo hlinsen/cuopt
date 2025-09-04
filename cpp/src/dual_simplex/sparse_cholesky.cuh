@@ -146,8 +146,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     csr_values_d  = nullptr;
     x_values_d    = nullptr;
     b_values_d    = nullptr;
-    CUDA_CALL_AND_CHECK_EXIT(cudaMalloc(&x_values_d, n * sizeof(f_t)), "cudaMalloc for x_values");
-    CUDA_CALL_AND_CHECK_EXIT(cudaMalloc(&b_values_d, n * sizeof(f_t)), "cudaMalloc for b_values");
+    CUDA_CALL_AND_CHECK_EXIT(cudaMallocAsync(&x_values_d, n * sizeof(f_t), stream), "cudaMalloc for x_values");
+    CUDA_CALL_AND_CHECK_EXIT(cudaMallocAsync(&b_values_d, n * sizeof(f_t), stream), "cudaMalloc for b_values");
 
     i_t ldb = n;
     i_t ldx = n;
@@ -162,12 +162,12 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   }
   ~sparse_cholesky_cudss_t() override
   {
-    cudaFree(csr_values_d);
-    cudaFree(csr_columns_d);
-    cudaFree(csr_offset_d);
+    cudaFreeAsync(csr_values_d, stream);
+    cudaFreeAsync(csr_columns_d, stream);
+    cudaFreeAsync(csr_offset_d, stream);
 
-    cudaFree(x_values_d);
-    cudaFree(b_values_d);
+    cudaFreeAsync(x_values_d, stream);
+    cudaFreeAsync(b_values_d, stream);
 
     CUDSS_CALL_AND_CHECK_EXIT(cudssMatrixDestroy(A), status, "cudssMatrixDestroy for A");
 
@@ -187,26 +187,6 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     // csr_matrix_t<i_t, f_t> Arow;
     // A_in.to_compressed_row(Arow);
     nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
-
-    // CUDA_CALL_AND_CHECK(cudaMalloc(&csr_offset_d, (n + 1) * sizeof(i_t)),
-    //                     "cudaMalloc for csr_offset");
-    // CUDA_CALL_AND_CHECK(cudaMalloc(&csr_columns_d, nnz * sizeof(i_t)),
-    //                     "cudaMalloc for csr_columns");
-    // CUDA_CALL_AND_CHECK(cudaMalloc(&csr_values_d, nnz * sizeof(f_t)),
-    //                     "cudaMalloc for csr_values");
-
-    // CUDA_CALL_AND_CHECK(cudaMemcpy(csr_offset_d, Arow.row_start.data(),
-    //                                (n + 1) * sizeof(i_t),
-    //                                cudaMemcpyHostToDevice),
-    //                     "cudaMemcpy for csr_offset");
-    // CUDA_CALL_AND_CHECK(cudaMemcpy(csr_columns_d, Arow.j.data(),
-    //                                nnz * sizeof(i_t),
-    //                                cudaMemcpyHostToDevice),
-    //                     "cudaMemcpy for csr_columns");
-    // CUDA_CALL_AND_CHECK(cudaMemcpy(csr_values_d, Arow.x.data(),
-    //                                nnz * sizeof(f_t),
-    //                                cudaMemcpyHostToDevice),
-    //                     "cudaMemcpy for csr_values");
 
     if (!first_factor) {
       raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : Destroy");
@@ -256,7 +236,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     f_t symbolic_factorization_time = toc(start_symbolic_factor);
     settings_.log.printf("Symbolic factorization time: %.2fs\n", symbolic_factorization_time);
-    settings_.log.printf("Total symbolic time: %.2fs\n", toc(start_symbolic)); 
+    settings_.log.printf("Total symbolic time: %.2fs\n", toc(start_symbolic));
     int64_t lu_nz       = 0;
     size_t size_written = 0;
     CUDSS_CALL_AND_CHECK(
@@ -280,11 +260,6 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, d_nnz);
       exit(1);
     }
-
-    // CUDA_CALL_AND_CHECK(cudaMemcpy(csr_values_d, Arow.x.data(),
-    //                                nnz * sizeof(f_t),
-    //                                cudaMemcpyHostToDevice),
-    //                     "cudaMemcpy for csr_values");
 
     CUDSS_CALL_AND_CHECK(
       cudssMatrixSetValues(A, Arow.x.data()), status, "cudssMatrixSetValues for A");
@@ -340,22 +315,24 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     nnz = A_in.col_start[A_in.n];
 
-    CUDA_CALL_AND_CHECK(cudaMalloc(&csr_offset_d, (n + 1) * sizeof(i_t)),
+    CUDA_CALL_AND_CHECK(cudaMallocAsync(&csr_offset_d, (n + 1) * sizeof(i_t), stream),
                         "cudaMalloc for csr_offset");
-    CUDA_CALL_AND_CHECK(cudaMalloc(&csr_columns_d, nnz * sizeof(i_t)),
+    CUDA_CALL_AND_CHECK(cudaMallocAsync(&csr_columns_d, nnz * sizeof(i_t), stream),
                         "cudaMalloc for csr_columns");
-    CUDA_CALL_AND_CHECK(cudaMalloc(&csr_values_d, nnz * sizeof(f_t)), "cudaMalloc for csr_values");
+    CUDA_CALL_AND_CHECK(cudaMallocAsync(&csr_values_d, nnz * sizeof(f_t), stream), "cudaMalloc for csr_values");
 
     CUDA_CALL_AND_CHECK(
-      cudaMemcpy(
-        csr_offset_d, Arow.row_start.data(), (n + 1) * sizeof(i_t), cudaMemcpyHostToDevice),
+      cudaMemcpyAsync(
+        csr_offset_d, Arow.row_start.data(), (n + 1) * sizeof(i_t), cudaMemcpyHostToDevice, stream),
       "cudaMemcpy for csr_offset");
     CUDA_CALL_AND_CHECK(
-      cudaMemcpy(csr_columns_d, Arow.j.data(), nnz * sizeof(i_t), cudaMemcpyHostToDevice),
+      cudaMemcpyAsync(csr_columns_d, Arow.j.data(), nnz * sizeof(i_t), cudaMemcpyHostToDevice, stream),
       "cudaMemcpy for csr_columns");
     CUDA_CALL_AND_CHECK(
-      cudaMemcpy(csr_values_d, Arow.x.data(), nnz * sizeof(f_t), cudaMemcpyHostToDevice),
+      cudaMemcpyAsync(csr_values_d, Arow.x.data(), nnz * sizeof(f_t), cudaMemcpyHostToDevice, stream),
       "cudaMemcpy for csr_values");
+
+    CUDA_CALL_AND_CHECK(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
 
     if (!first_factor) {
       CUDSS_CALL_AND_CHECK(cudssMatrixDestroy(A), status, "cudssMatrixDestroy for A");
@@ -425,8 +402,10 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     }
 
     CUDA_CALL_AND_CHECK(
-      cudaMemcpy(csr_values_d, Arow.x.data(), nnz * sizeof(f_t), cudaMemcpyHostToDevice),
+      cudaMemcpyAsync(csr_values_d, Arow.x.data(), nnz * sizeof(f_t), cudaMemcpyHostToDevice, stream),
       "cudaMemcpy for csr_values");
+
+    CUDA_CALL_AND_CHECK(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
 
     CUDSS_CALL_AND_CHECK(
       cudssMatrixSetValues(A, csr_values_d), status, "cudssMatrixSetValues for A");
