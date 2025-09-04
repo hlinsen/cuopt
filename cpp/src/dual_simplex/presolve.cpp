@@ -949,8 +949,55 @@ void split_colors(i_t color,
 }
 
 template <typename i_t, typename f_t>
-void color_graph(const csc_matrix_t<i_t, f_t>& A,
+void color_lower_bounds(const csc_matrix_t<i_t, f_t>& A,
+                        const csr_matrix_t<i_t, f_t>& Arow,
+                        i_t& row_lower_bound,
+                        i_t& col_lower_bound)
+{
+
+  // Look at the number of unique row sums and column sum.
+  // This should be a lower bound on the number of colors.
+  const i_t m = A.m;
+  const i_t n = A.n;
+  std::vector<f_t> row_sums(m, 0.0);
+  std::vector<f_t> col_sums(n, 0.0);
+  for (i_t i = 0; i < m; i++) {
+    const i_t row_start = Arow.row_start[i];
+    const i_t row_end = Arow.row_start[i + 1];
+    f_t sum = 0.0;
+    for (i_t p = row_start; p < row_end; p++) {
+      sum += Arow.x[p];
+    }
+    row_sums[i] = sum;
+  }
+  for (i_t j = 0; j < n; j++) {
+    const i_t col_start = A.col_start[j];
+    const i_t col_end = A.col_start[j + 1];
+    f_t sum = 0.0;
+    for (i_t p = col_start; p < col_end; p++) {
+      sum += A.x[p];
+    }
+    col_sums[j] = sum;
+  }
+
+  std::unordered_map<f_t, i_t> unique_row_sums;
+  std::unordered_map<f_t, i_t> unique_col_sums;
+  for (i_t i = 0; i < m; i++) {
+    unique_row_sums[row_sums[i]]++;
+  }
+  for (i_t j = 0; j < n; j++) {
+    unique_col_sums[col_sums[j]]++;
+  }
+
+  row_lower_bound = static_cast<i_t>(unique_row_sums.size());
+  col_lower_bound = static_cast<i_t>(unique_col_sums.size());
+}
+
+template <typename i_t, typename f_t>
+i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
                  std::vector<color_t<i_t>>& colors,
+                 i_t row_threshold,
+                 i_t col_threshold,
                  i_t& num_row_colors,
                  i_t& num_col_colors,
                  i_t& num_colors,
@@ -961,6 +1008,16 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
   const i_t n = A.n;
   csr_matrix_t<i_t, f_t> A_row(m, n, 1);
   A.to_compressed_row(A_row);
+
+  i_t row_lower_bound = 0;
+  i_t col_lower_bound = 0;
+
+  color_lower_bounds(A, A_row, row_lower_bound, col_lower_bound);
+  printf("Row lower bound %d / %d col lower bound %d / %d\n", row_lower_bound, row_threshold, col_lower_bound, col_threshold);
+  if (row_lower_bound > row_threshold || col_lower_bound > col_threshold) {
+    printf("Folding: Row lower bound %d is greater than row threshold %d or col lower bound %d is greater than col threshold %d\n", row_lower_bound, row_threshold, col_lower_bound, col_threshold);
+    return -1;
+  }
 
   std::vector<i_t> all_rows_vertices(m);
   std::iota(all_rows_vertices.begin(), all_rows_vertices.end(), 0);
@@ -1160,7 +1217,7 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
     }
 #endif
     if (num_refinements % 100 == 0) {
-      printf("Number of refinements %8d in %.2f seconds\n", num_refinements, toc(start_time));
+      printf("Number of refinements %8d (row colors %d, col colors %d) in %.2f seconds\n", num_refinements, num_row_colors, num_col_colors, toc(start_time));
     }
     if (num_row_colors >= max_vertices)
     {
@@ -1172,9 +1229,15 @@ void color_graph(const csc_matrix_t<i_t, f_t>& A,
       printf("Too many column colors %d max %d\n", num_col_colors, max_vertices);
       exit(1);
     }
+
+    if (num_row_colors > row_threshold || num_col_colors > col_threshold) {
+      printf("Folding: Number of row colors %d is greater than row threshold %d or number of column colors %d is greater than col threshold %d\n", num_row_colors, row_threshold, num_col_colors, col_threshold);
+      return -1;
+    }
   }
   printf("Number of refinements: %d\n", num_refinements);
 #undef DEBUG
+  return 0;
 }
 
 template <typename i_t, typename f_t>
@@ -1334,7 +1397,13 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   i_t num_colors;
   i_t total_colors_seen;
   f_t color_start_time = tic();
-  color_graph(augmented, colors, num_row_colors, num_col_colors, num_colors, total_colors_seen);
+  i_t row_threshold = static_cast<i_t>( .20 * static_cast<f_t>(m));
+  i_t col_threshold = static_cast<i_t>( .20 * static_cast<f_t>(n));
+  i_t status = color_graph(augmented, colors, row_threshold, col_threshold, num_row_colors, num_col_colors, num_colors, total_colors_seen);
+  if (status != 0) {
+    printf("Folding: Coloring aborted\n");
+    return;
+  }
   printf("Coloring time %.2f seconds\n", toc(color_start_time));
 
 
