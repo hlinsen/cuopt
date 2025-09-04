@@ -21,8 +21,11 @@
 #include <mip/presolve/third_party_presolve.hpp>
 #include <utilities/timer.hpp>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"  // ignore boost error for pip wheel build
 #include <papilo/core/Presolve.hpp>
 #include <papilo/core/ProblemBuilder.hpp>
+#pragma GCC diagnostic pop
 
 namespace cuopt::linear_programming::detail {
 
