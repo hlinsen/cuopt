@@ -130,9 +130,9 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
 
   std::vector<papilo::RowFlags> h_row_flags(h_constr_lb.size());
   std::vector<std::tuple<i_t, i_t, f_t>> h_entries;
-  // // Add constraints row by row
+  // Add constraints row by row
   for (size_t i = 0; i < h_constr_lb.size(); ++i) {
-    //   // Get row entries
+    // Get row entries
     i_t row_start   = h_offsets[i];
     i_t row_end     = h_offsets[i + 1];
     i_t num_entries = row_end - row_start;
@@ -342,8 +342,7 @@ void set_presolve_options(papilo::Presolve<f_t>& presolver,
                           double time_limit,
                           i_t num_cpu_threads)
 {
-  presolver.getPresolveOptions().tlim = time_limit;
-  CUOPT_LOG_INFO("Setting presolve options:: time limit: %f", time_limit);
+  presolver.getPresolveOptions().tlim    = time_limit;
   presolver.getPresolveOptions().threads = num_cpu_threads;  //  user setting or  0 (automatic)
 }
 
@@ -373,7 +372,7 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
     presolver, category, absolute_tolerance, relative_tolerance, time_limit, num_cpu_threads);
 
   // Disable papilo logs
-  // presolver.setVerbosityLevel(papilo::VerbosityLevel::kQuiet);
+  presolver.setVerbosityLevel(papilo::VerbosityLevel::kQuiet);
 
   auto result = presolver.apply(papilo_problem);
   check_presolve_status(result.status);
