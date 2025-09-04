@@ -275,6 +275,7 @@ message(STATUS "  cudss_LINK_OPTIONS: ${cudss_LINK_OPTIONS}")
 
 # Use the specific cudss library version to avoid symlink issues
 set(CUDSS_LIB_FILE "${cudss_LIBRARY_DIR}/libcudss.so.0")
+set(CUDSS_MT_LIB_FILE "${cudss_LIBRARY_DIR}/libcudss_mtlayer_gomp.so.0")
 message(STATUS "Using cudss library: ${CUDSS_LIB_FILE}")
 
 
@@ -288,6 +289,7 @@ target_link_libraries(cuopt
   raft::raft
   cuopt::mps_parser
   ${CUDSS_LIB_FILE}
+  ${CUDSS_MT_LIB_FILE}
   PRIVATE
   ${CUOPT_PRIVATE_CUDA_LIBS}
   )
