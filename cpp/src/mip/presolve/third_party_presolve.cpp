@@ -145,11 +145,16 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
     //   builder.setRowLhsInf(i, h_constr_lb[i] == -std::numeric_limits<f_t>::infinity());
     //   builder.setRowRhsInf(i, h_constr_ub[i] == std::numeric_limits<f_t>::infinity());
     if (h_constr_lb[i] == -std::numeric_limits<f_t>::infinity()) {
-      h_row_flags[i] = papilo::RowFlag::kLhsInf;
+      h_row_flags[i].set(papilo::RowFlag::kLhsInf);
+    } else {
+      h_row_flags[i].unset(papilo::RowFlag::kLhsInf);
     }
     if (h_constr_ub[i] == std::numeric_limits<f_t>::infinity()) {
-      h_row_flags[i] = papilo::RowFlag::kRhsInf;
+      h_row_flags[i].set(papilo::RowFlag::kRhsInf);
+    } else {
+      h_row_flags[i].unset(papilo::RowFlag::kRhsInf);
     }
+
     if (h_constr_lb[i] == -std::numeric_limits<f_t>::infinity()) {
       h_constr_lb[i] = 0;
     }  // builder.setRowLhs(i, 0); }
@@ -170,7 +175,13 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
   auto constexpr const sorted_entries = true;
   auto csr_storage = papilo::SparseStorage<f_t>(h_entries, num_rows, num_cols, sorted_entries);
   problem.setConstraintMatrix(csr_storage, h_constr_lb, h_constr_ub, h_row_flags);
-
+  papilo::ConstraintMatrix<f_t>& matrix = problem.getConstraintMatrix();
+  for (int i = 0; i < problem.getNRows(); i++) {
+    papilo::RowFlags rowFlag = matrix.getRowFlags()[i];
+    if (!rowFlag.test(papilo::RowFlag::kRhsInf) && !rowFlag.test(papilo::RowFlag::kLhsInf) &&
+        matrix.getLeftHandSides()[i] == matrix.getRightHandSides()[i])
+      matrix.getRowFlags()[i].set(papilo::RowFlag::kEquation);
+  }
   CUOPT_LOG_INFO("Building time: %f", building_timer.elapsed_time());
   return problem;
 }
