@@ -159,18 +159,21 @@ papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>
     if (h_var_lb[i] == -std::numeric_limits<f_t>::infinity()) { builder.setColLb(i, 0); }
     if (h_var_ub[i] == std::numeric_limits<f_t>::infinity()) { builder.setColUb(i, 0); }
   }
+
   auto problem = builder.build();
 
-  auto constexpr const sorted_entries = true;
-  auto csr_storage = papilo::SparseStorage<f_t>(h_entries, num_rows, num_cols, sorted_entries);
-  problem.setConstraintMatrix(csr_storage, h_constr_lb, h_constr_ub, h_row_flags);
+  if (h_entries.size()) {
+    auto constexpr const sorted_entries = true;
+    auto csr_storage = papilo::SparseStorage<f_t>(h_entries, num_rows, num_cols, sorted_entries);
+    problem.setConstraintMatrix(csr_storage, h_constr_lb, h_constr_ub, h_row_flags);
 
-  papilo::ConstraintMatrix<f_t>& matrix = problem.getConstraintMatrix();
-  for (int i = 0; i < problem.getNRows(); ++i) {
-    papilo::RowFlags rowFlag = matrix.getRowFlags()[i];
-    if (!rowFlag.test(papilo::RowFlag::kRhsInf) && !rowFlag.test(papilo::RowFlag::kLhsInf) &&
-        matrix.getLeftHandSides()[i] == matrix.getRightHandSides()[i])
-      matrix.getRowFlags()[i].set(papilo::RowFlag::kEquation);
+    papilo::ConstraintMatrix<f_t>& matrix = problem.getConstraintMatrix();
+    for (int i = 0; i < problem.getNRows(); ++i) {
+      papilo::RowFlags rowFlag = matrix.getRowFlags()[i];
+      if (!rowFlag.test(papilo::RowFlag::kRhsInf) && !rowFlag.test(papilo::RowFlag::kLhsInf) &&
+          matrix.getLeftHandSides()[i] == matrix.getRightHandSides()[i])
+        matrix.getRowFlags()[i].set(papilo::RowFlag::kEquation);
+    }
   }
 
   return problem;
