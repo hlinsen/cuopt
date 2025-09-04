@@ -307,6 +307,8 @@ dependencies:
           - librmm==25.10.*
           - libraft-headers==25.10.*
           - tbb-devel
+          - zlib
+          - bzip2
   test_cpp:
     common:
       - output_types: [conda]
