@@ -277,6 +277,10 @@ message(STATUS "  cudss_LINK_OPTIONS: ${cudss_LINK_OPTIONS}")
 set(CUDSS_LIB_FILE "${cudss_LIBRARY_DIR}/libcudss.so.0")
 set(CUDSS_MT_LIB_FILE "${cudss_LIBRARY_DIR}/libcudss_mtlayer_gomp.so.0")
 message(STATUS "Using cudss library: ${CUDSS_LIB_FILE}")
+message(STATUS "Using cudss MT library: ${CUDSS_MT_LIB_FILE}")
+
+# Pass CUDSS_MT_LIB_FILE as a compile definition
+target_compile_definitions(cuopt PRIVATE CUDSS_MT_LIB_FILE="${CUDSS_MT_LIB_FILE}")
 
 
 target_link_libraries(cuopt

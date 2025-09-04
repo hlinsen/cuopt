@@ -45,6 +45,11 @@ void force_link_cudss()
 {
   cudssHandle_t handle;
   cudssCreate(&handle);
+  
+  // Set up multi-threading layer using CMake-defined CUDSS_MT_LIB_FILE
+  printf("CUDSS_MT_LIB_FILE: %s\n", CUDSS_MT_LIB_FILE);
+  cudssSetThreadingLayer(handle, CUDSS_MT_LIB_FILE);
+  
   cudssDestroy(handle);
 }
 
