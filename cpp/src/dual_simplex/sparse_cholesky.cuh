@@ -134,7 +134,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssConfigSet for reordering alg");
 #endif
 
-#if 0
+#if 1
         int32_t ir_n_steps = 2;
         CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig, CUDSS_CONFIG_IR_N_STEPS,
                                           &ir_n_steps, sizeof(int32_t)), status, "cudssConfigSet for ir n steps");
@@ -298,6 +298,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   i_t analyze(const csc_matrix_t<i_t, f_t>& A_in) override
   {
     csr_matrix_t<i_t, f_t> Arow(A_in.n, A_in.m, A_in.col_start[A_in.n]);
+#define WRITE_MATRIX_MARKET
 #ifdef WRITE_MATRIX_MARKET
     FILE* fid = fopen("A.mtx", "w");
     A_in.write_matrix_market(fid);
@@ -312,6 +313,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     Arow.check_matrix();
     settings_.log.printf("Finished checking matrices\n");
 #endif
+    if (A_in.n != n)
+    {
+      printf("Analyze input does not match size %d != %d\n", A_in.n, n);
+      exit(1);
+    }
 
     nnz = A_in.col_start[A_in.n];
 
@@ -394,6 +400,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   {
     csr_matrix_t<i_t, f_t> Arow(A_in.n, A_in.m, A_in.col_start[A_in.n]);
     A_in.to_compressed_row(Arow);
+
+    if (A_in.n != n)
+    {
+      settings_.log.printf("Error A in n %d != size %d\n", A_in.n, n);
+    }
 
     if (nnz != A_in.col_start[A_in.n]) {
       settings_.log.printf(
