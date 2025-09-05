@@ -49,7 +49,7 @@
 namespace cuopt::linear_programming::dual_simplex {
 
 auto constexpr use_gpu = true;
-bool use_augmented = true;
+bool use_augmented = false;
 
 
 template <typename i_t, typename f_t>
@@ -175,11 +175,19 @@ class iteration_data_t {
     inv_sqrt_diag.set_scalar(1.0);
     if (n_upper_bounds > 0) { inv_diag.sqrt(inv_sqrt_diag); }
 
+    if (settings.concurrent_halt != nullptr &&
+      settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        return;
+    }
     n_dense_columns = 0;
     std::vector<i_t> dense_columns_unordered;
     if (!use_augmented && settings.eliminate_dense_columns) {
       f_t start_column_density = tic();
       find_dense_columns(lp.A, settings, dense_columns_unordered);
+      if (settings.concurrent_halt != nullptr &&
+        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          return;
+      }
       for (i_t j : dense_columns_unordered) {
         settings.log.printf("Dense column %6d\n", j);
       }
@@ -188,6 +196,7 @@ class iteration_data_t {
       settings.log.printf(
         "Found %d dense columns in %.2fs\n", n_dense_columns, column_density_time);
     }
+
 
     // Copy A into AD
     AD = lp.A;
@@ -237,19 +246,33 @@ class iteration_data_t {
       RAFT_CHECK_CUDA(handle_ptr->get_stream());
     }
 
-
+    if (settings.concurrent_halt != nullptr &&
+      settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        return;
+    }
     i_t factorization_size = use_augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
     chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(
       settings, factorization_size, handle_ptr->get_stream());
     chol->set_positive_definite(false);
-
+    if (settings.concurrent_halt != nullptr &&
+      settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        return;
+    }
     // Perform symbolic analysis
     if (use_augmented) {
       // Build the sparsity pattern of the augmented system
       form_augmented(true);
+      if (settings.concurrent_halt != nullptr &&
+        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          return;
+      }
       chol->analyze(augmented);
     } else {
       form_adat(true);
+      if (settings.concurrent_halt != nullptr &&
+        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          return;
+      }
       if (use_gpu) {
         chol->analyze(device_ADAT);
       } else {
@@ -360,11 +383,19 @@ class iteration_data_t {
                           span_col_ind = cuopt::make_span(device_AD.col_index)] __device__(i_t i) {
                            span_x[i] *= span_scale[span_col_ind[i]];
                          });
-
+      if (settings_.concurrent_halt != nullptr &&
+          settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        return;
+      }
       if (first_call) {
         initialize_cusparse_data<i_t, f_t>(
           handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
       }
+      if (settings_.concurrent_halt != nullptr &&
+        settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          return;
+      }
+
 
       // float64_t start_multiply = tic();
       // handle_ptr->sync_stream();
@@ -963,6 +994,10 @@ class iteration_data_t {
         delta_nz[j] +=
           fill;  // Capture contributions from A(:, j). j will be encountered multiple times
       }
+      if (settings.concurrent_halt != nullptr &&
+        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          return;
+      }
     }
 
     int64_t sparse_nz_C = 0;
@@ -999,6 +1034,10 @@ class iteration_data_t {
           static_cast<int64_t>(m) * static_cast<int64_t>(m),
           delta_nz[j] + static_cast<int64_t>(
                           fill_estimate));  // Capture the estimated fill associated with column j
+      }
+      if (settings.concurrent_halt != nullptr &&
+        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          return;
       }
     }
 
@@ -1495,6 +1534,9 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     } else {
       status = data.chol->factorize(data.ADAT);
     }
+  }
+  if (status == -2) {
+    return;
   }
   if (status != 0) {
     settings.log.printf("Initial factorization failed\n");
@@ -2100,6 +2142,9 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     data.num_factorizations++;
 
     data.has_solve_info = false;
+    if (status == -2) {
+      return -2;
+    }
 
     if (status < 0) {
       settings.log.printf("Factorization failed.\n");
@@ -2776,6 +2821,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   }
 
   iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
+  if (settings.concurrent_halt != nullptr &&
+    settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+   settings.log.printf("Barrier solver halted\n");
+    return lp_status_t::CONCURRENT_LIMIT;
+  }
   data.cusparse_dual_residual_ = data.cusparse_view_.create_vector(d_dual_residual_);
   data.cusparse_r1_            = data.cusparse_view_.create_vector(d_r1_);
   data.cusparse_tmp4_          = data.cusparse_view_.create_vector(d_tmp4_);
@@ -2948,6 +2998,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                                     data.dv_aff,
                                                     data.dz_aff,
                                                     max_affine_residual);
+    if (settings.concurrent_halt != nullptr &&
+        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      settings.log.printf("Barrier solver halted\n");
+      return lp_status_t::CONCURRENT_LIMIT;
+    }
     // Sync to make sure all the async copies to host done inside are finished
     if (use_gpu) RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 
@@ -3106,6 +3161,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                          data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual)
                                          : compute_search_direction(
                          data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
+    if (settings.concurrent_halt != nullptr &&
+        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      settings.log.printf("Barrier solver halted\n");
+      return lp_status_t::CONCURRENT_LIMIT;
+    }
     // Sync to make sure all the async copies to host done inside are finished
     if (use_gpu) RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 

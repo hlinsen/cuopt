@@ -60,7 +60,7 @@ struct simplex_solver_settings_t {
       use_cudss(false),
       barrier(false),
       eliminate_dense_columns(true),
-      folding(true),
+      folding(false),
       crossover(false),
       refactor_frequency(100),
       iteration_log_frequency(1000),

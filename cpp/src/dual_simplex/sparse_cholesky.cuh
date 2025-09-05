@@ -226,6 +226,10 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
         "cudssExecute for analysis");
       f_t reordering_time = toc(start_symbolic);
       settings_.log.printf("Reordering time: %.2fs\n");
+      if (settings_.concurrent_halt != nullptr &&
+        settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        return -2;
+      }
       start_symbolic_factor = tic();
 
       CUDSS_CALL_AND_CHECK(
@@ -233,6 +237,10 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
         status,
         "cudssExecute for analysis");
 
+    }
+    if (settings_.concurrent_halt != nullptr &&
+        settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      return -2;
     }
 
     f_t symbolic_factorization_time = toc(start_symbolic_factor);
@@ -273,6 +281,10 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssExecute for factorization");
 
     f_t numeric_time = toc(start_numeric);
+    if (settings_.concurrent_halt != nullptr &&
+      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      return -2;
+    }
 
     int info;
     size_t sizeWritten = 0;
@@ -363,15 +375,24 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssMatrixCreateCsr");
 
     // Perform symbolic analysis
+    if (settings_.concurrent_halt != nullptr &&
+      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      return -2;
+    }
     f_t start_analysis = tic();
-
+    printf("Barrier Thread: Reordering started\n");
     CUDSS_CALL_AND_CHECK(
       cudssExecute(handle, CUDSS_PHASE_REORDERING, solverConfig, solverData, A, cudss_x, cudss_b),
       status,
       "cudssExecute for reordering");
 
     f_t reorder_time = toc(start_analysis);
-    settings_.log.printf("Reordering time %.2fs\n", reorder_time);
+    //settings_.log.printf("Reordering time %.2fs\n", reorder_time);
+    printf("Barrier Thread: Reordering time %.2fs\n", reorder_time);
+    if (settings_.concurrent_halt != nullptr &&
+      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      return -2;
+    }
 
     f_t start_symbolic = tic();
 
@@ -384,7 +405,12 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     f_t symbolic_time = toc(start_symbolic);
     f_t analysis_time = toc(start_analysis);
     settings_.log.printf("Symbolic factorization time %.2fs\n", symbolic_time);
-    settings_.log.printf("Symbolic time %.2fs\n", analysis_time);
+    //settings_.log.printf("Symbolic time %.2fs\n", analysis_time);
+    printf("Symbolic time %.2fs\n", analysis_time);
+    if (settings_.concurrent_halt != nullptr &&
+      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      return -2;
+    }
     int64_t lu_nz       = 0;
     size_t size_written = 0;
     CUDSS_CALL_AND_CHECK(
@@ -430,6 +456,10 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssExecute for factorization");
 
     f_t numeric_time = toc(start_numeric);
+    if (settings_.concurrent_halt != nullptr &&
+      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      return -2;
+    }
 
     int info;
     size_t sizeWritten = 0;

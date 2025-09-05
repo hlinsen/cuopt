@@ -50,7 +50,7 @@
 #define CUOPT_LOG_FILE                    "log_file"
 #define CUOPT_LOG_TO_CONSOLE              "log_to_console"
 #define CUOPT_CROSSOVER                   "crossover"
-#define CUOPT_USE_CUDSS                   "use_cudss"
+#define CUOPT_FOLDING                     "folding"
 #define CUOPT_ELIMINATE_DENSE_COLUMNS     "eliminate_dense_columns"
 #define CUOPT_PRESOLVE                    "presolve"
 #define CUOPT_MIP_ABSOLUTE_TOLERANCE      "mip_absolute_tolerance"
