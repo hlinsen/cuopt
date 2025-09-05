@@ -60,6 +60,7 @@ struct simplex_solver_settings_t {
       use_cudss(false),
       barrier(false),
       eliminate_dense_columns(true),
+      folding(true),
       crossover(false),
       refactor_frequency(100),
       iteration_log_frequency(1000),
@@ -110,12 +111,13 @@ struct simplex_solver_settings_t {
   bool use_cudss;  // true to use cuDSS for sparse Cholesky factorization, false to use cholmod
   bool barrier;    // true to use barrier method, false to use dual simplex method
   bool eliminate_dense_columns;  // true to eliminate dense columns from A*D*A^T
-  bool crossover;                // true to do crossover, false to not
-  i_t refactor_frequency;        // number of basis updates before refactorization
-  i_t iteration_log_frequency;   // number of iterations between log updates
-  i_t first_iteration_log;       // number of iterations to log at beginning of solve
-  i_t num_threads;               // number of threads to use
-  i_t random_seed;               // random seed
+  bool folding;  // true to fold the problem, false to not
+  bool crossover;  // true to do crossover, false to not
+  i_t refactor_frequency;       // number of basis updates before refactorization
+  i_t iteration_log_frequency;  // number of iterations between log updates
+  i_t first_iteration_log;      // number of iterations to log at beginning of solve
+  i_t num_threads;              // number of threads to use
+  i_t random_seed;              // random seed
   i_t inside_mip;  // 0 if outside MIP, 1 if inside MIP at root node, 2 if inside MIP at leaf node
   std::function<void(std::vector<f_t>&, f_t)> solution_callback;
   std::function<void()> heuristic_preemption_callback;
