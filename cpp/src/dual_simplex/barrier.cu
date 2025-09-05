@@ -2083,6 +2083,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 
     i_t status;
     if (use_augmented) {
+      RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
       data.form_augmented();
       status = data.chol->factorize(data.augmented);
     } else {
@@ -2153,6 +2154,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     // ./ w)
     dense_vector_t<i_t, f_t> r1(lp.num_cols);
     raft::copy(r1.data(), d_r1_.data(), d_r1_.size(), stream_view_);
+    RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 
     dense_vector_t<i_t, f_t> augmented_rhs(lp.num_cols + lp.num_rows);
     for (i_t k = 0; k < lp.num_cols; k++)
@@ -2184,6 +2186,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 
     raft::copy(d_dx_.data(), dx.data(), d_dx_.size(), stream_view_);
     raft::copy(d_dy_.data(), dy.data(), d_dy_.size(), stream_view_);
+    RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 
      // TMP should only be init once
      data.cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
