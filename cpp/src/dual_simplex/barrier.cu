@@ -264,13 +264,14 @@ class iteration_data_t {
     i_t m = A.m;
     i_t nnzA = A.col_start[n];
     i_t factorization_size = n + m;
+    const f_t perturb = 0.0;
     if (first_call) {
       augmented.reallocate(2 * nnzA + n + m);
       i_t q = 0;
       for (i_t j = 0; j < n; j++) {
         augmented.col_start[j] = q;
         augmented.i[q]         = j;
-        augmented.x[q++]       = -diag[j] - 1e-8;
+        augmented.x[q++]       = -diag[j] - perturb;
         const i_t col_beg      = A.col_start[j];
         const i_t col_end      = A.col_start[j + 1];
         for (i_t p = col_beg; p < col_end; ++p) {
@@ -310,7 +311,7 @@ class iteration_data_t {
       for (i_t j = 0; j < n; ++j)
       {
         const i_t q = augmented.col_start[j];
-        augmented.x[q] = -diag[j] - 1e-8;
+        augmented.x[q] = -diag[j] - perturb;
       }
     }
   }
@@ -2167,7 +2168,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     dense_vector_t<i_t, f_t> augmented_residual = augmented_rhs;
     matrix_vector_multiply(data.augmented, 1.0, augmented_soln, -1.0, augmented_residual);
     f_t solve_err = vector_norm_inf<i_t, f_t>(augmented_residual);
-    if (solve_err > 1e-2)
+    if (solve_err > 1e-6)
     {
       settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e\n", solve_err);
     }
@@ -2180,17 +2181,24 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     {
       dy[k] = augmented_soln[k + lp.num_cols];
     }
+
+    raft::copy(d_dx_.data(), dx.data(), d_dx_.size(), stream_view_);
+    raft::copy(d_dy_.data(), dy.data(), d_dy_.size(), stream_view_);
+
+     // TMP should only be init once
+     data.cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
+
     dense_vector_t<i_t, f_t> res = data.primal_rhs;
     matrix_vector_multiply(lp.A, 1.0, dx, -1.0, res);
     f_t prim_err = vector_norm_inf<i_t, f_t>(res);
-    if (prim_err > 1e-2) { settings.log.printf("|| A * dx - r_p || %e\n", prim_err); }
+    if (prim_err > 1e-6) { settings.log.printf("|| A * dx - r_p || %e\n", prim_err); }
 
     dense_vector_t<i_t, f_t> res1(lp.num_cols);
     data.diag.pairwise_product(dx, res1);
     res1.axpy(-1.0, r1, -1.0);
     matrix_transpose_vector_multiply(lp.A, 1.0, dy, 1.0, res1);
     f_t res1_err = vector_norm_inf<i_t, f_t>(res1);
-    if (res1_err > 1e-2) {
+    if (res1_err > 1e-6) {
       settings.log.printf("|| A'*dy - r_1 - D dx || %e", vector_norm_inf<i_t, f_t>(res1));
     }
 
@@ -2214,12 +2222,10 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     }
     data.augmented_multiply(1.0, dxdy, -1.0, res2);
     f_t res2_err = vector_norm_inf<i_t, f_t>(res2);
-    if (res2_err > 1e-2)
+    if (res2_err > 1e-6)
     {
       settings.log.printf("|| Aug_0 (dx, dy) - aug_rhs || %e\n", res2_err);
     }
-
-
   } else {
     {
       raft::common::nvtx::range fun_scope("Barrier: Solve A D^{-1} A^T dy = h");
@@ -2264,69 +2270,69 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       }
       if (y_residual_norm > 10) { return -1; }
     }
-  }
 
-  // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
-  // v
-  // .* bound_rhs) ./ w))
-  {
-    raft::common::nvtx::range fun_scope("Barrier: dx formation GPU");
+    // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
+    // v
+    // .* bound_rhs) ./ w))
+    {
+      raft::common::nvtx::range fun_scope("Barrier: dx formation GPU");
 
-    // TMP should only be init once
-    data.cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
+      // TMP should only be init once
+      data.cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
 
-    // r1 <- A'*dy - r1
-    data.cusparse_view_.transpose_spmv(1.0, data.cusparse_dy_, -1.0, data.cusparse_r1_);
+      // r1 <- A'*dy - r1
+      data.cusparse_view_.transpose_spmv(1.0, data.cusparse_dy_, -1.0, data.cusparse_r1_);
 
-    cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data(), d_diag_.data()),
-      thrust::make_zip_iterator(d_dx_.data(), d_dx_residual_.data()),
-      data.d_inv_diag.size(),
-      [] HD(f_t inv_diag, f_t r1, f_t diag) -> thrust::tuple<f_t, f_t> {
-        const f_t dx = inv_diag * r1;
-        return {dx, dx * diag};
-      },
-      stream_view_);
+      cub::DeviceTransform::Transform(
+        cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data(), d_diag_.data()),
+        thrust::make_zip_iterator(d_dx_.data(), d_dx_residual_.data()),
+        data.d_inv_diag.size(),
+        [] HD(f_t inv_diag, f_t r1, f_t diag) -> thrust::tuple<f_t, f_t> {
+          const f_t dx = inv_diag * r1;
+          return {dx, dx * diag};
+        },
+        stream_view_);
 
-    raft::copy(dx.data(), d_dx_.data(), d_dx_.size(), stream_view_);
+      raft::copy(dx.data(), d_dx_.data(), d_dx_.size(), stream_view_);
 
-    data.cusparse_view_.transpose_spmv(-1.0, data.cusparse_dy_, 1.0, data.cusparse_dx_residual_);
-    cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(d_dx_residual_.data(), d_r1_prime_.data()),
-      d_dx_residual_.data(),
-      d_dx_residual_.size(),
-      [] HD(f_t dx_residual, f_t r1_prime) { return dx_residual + r1_prime; },
-      stream_view_);
-  }
-
-  // Not put on the GPU since debug only
-  if (debug) {
-    const f_t dx_residual_norm = device_vector_norm_inf<i_t, f_t>(d_dx_residual_, stream_view_);
-    max_residual               = std::max(max_residual, dx_residual_norm);
-    if (dx_residual_norm > 1e-2) {
-      settings.log.printf("|| D * dx - A'*y + r1 || = %.2e\n", dx_residual_norm);
+      data.cusparse_view_.transpose_spmv(-1.0, data.cusparse_dy_, 1.0, data.cusparse_dx_residual_);
+      cub::DeviceTransform::Transform(
+        cuda::std::make_tuple(d_dx_residual_.data(), d_r1_prime_.data()),
+        d_dx_residual_.data(),
+        d_dx_residual_.size(),
+        [] HD(f_t dx_residual, f_t r1_prime) { return dx_residual + r1_prime; },
+        stream_view_);
     }
-  }
 
-  if (debug) {
-    raft::common::nvtx::range fun_scope("Barrier: dx_residual_2 GPU");
+    // Not put on the GPU since debug only
+    if (debug) {
+      const f_t dx_residual_norm = device_vector_norm_inf<i_t, f_t>(d_dx_residual_, stream_view_);
+      max_residual               = std::max(max_residual, dx_residual_norm);
+      if (dx_residual_norm > 1e-2) {
+        settings.log.printf("|| D * dx - A'*y + r1 || = %.2e\n", dx_residual_norm);
+      }
+    }
 
-    // norm_inf(D^-1 * (A'*dy - r1) - dx)
-    const f_t dx_residual_2_norm = device_custom_vector_norm_inf<i_t, f_t>(
-      thrust::make_transform_iterator(
-        thrust::make_zip_iterator(data.d_inv_diag.data(), d_r1_.data(), d_dx_.data()),
-        [] HD(thrust::tuple<f_t, f_t, f_t> t) -> f_t {
-          f_t inv_diag = thrust::get<0>(t);
-          f_t r1       = thrust::get<1>(t);
-          f_t dx       = thrust::get<2>(t);
-          return inv_diag * r1 - dx;
-        }),
-      d_dx_.size(),
-      stream_view_);
-    max_residual = std::max(max_residual, dx_residual_2_norm);
-    if (dx_residual_2_norm > 1e-2)
-      settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
-  }
+    if (debug) {
+      raft::common::nvtx::range fun_scope("Barrier: dx_residual_2 GPU");
+
+      // norm_inf(D^-1 * (A'*dy - r1) - dx)
+      const f_t dx_residual_2_norm = device_custom_vector_norm_inf<i_t, f_t>(
+        thrust::make_transform_iterator(
+          thrust::make_zip_iterator(data.d_inv_diag.data(), d_r1_.data(), d_dx_.data()),
+          [] HD(thrust::tuple<f_t, f_t, f_t> t) -> f_t {
+            f_t inv_diag = thrust::get<0>(t);
+            f_t r1       = thrust::get<1>(t);
+            f_t dx       = thrust::get<2>(t);
+            return inv_diag * r1 - dx;
+          }),
+        d_dx_.size(),
+        stream_view_);
+      max_residual = std::max(max_residual, dx_residual_2_norm);
+      if (dx_residual_2_norm > 1e-2)
+        settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
+    }
+
 
   if (debug) {
     raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_5_6");
@@ -2356,6 +2362,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
     }
   }
+
 
   if (debug) {
     raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_3_4");
@@ -2430,6 +2437,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
     }
   }
+}
 
   // Only debug so not ported to the GPU
   if (debug) {
