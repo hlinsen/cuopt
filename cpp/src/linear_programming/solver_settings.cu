@@ -46,6 +46,7 @@ pdlp_solver_settings_t<i_t, f_t>::pdlp_solver_settings_t(const pdlp_solver_setti
     per_constraint_residual(other.per_constraint_residual),
     crossover(other.crossover),
     folding(other.folding),
+    augmented(other.augmented),
     save_best_primal_so_far(other.save_best_primal_so_far),
     first_primal_feasible(other.first_primal_feasible),
     pdlp_warm_start_data_(other.pdlp_warm_start_data_, stream_view),

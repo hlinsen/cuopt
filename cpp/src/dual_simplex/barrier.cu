@@ -49,7 +49,6 @@
 namespace cuopt::linear_programming::dual_simplex {
 
 auto constexpr use_gpu = true;
-bool use_augmented = false;
 
 
 template <typename i_t, typename f_t>
@@ -163,7 +162,7 @@ class iteration_data_t {
       }
     }
     inv_diag.set_scalar(1.0);
-    if (use_augmented)
+    if (settings.augmented)
     {
       diag.multiply_scalar(-1.0);
     }
@@ -181,7 +180,7 @@ class iteration_data_t {
     }
     n_dense_columns = 0;
     std::vector<i_t> dense_columns_unordered;
-    if (!use_augmented && settings.eliminate_dense_columns) {
+    if (!settings.augmented && settings.eliminate_dense_columns) {
       f_t start_column_density = tic();
       find_dense_columns(lp.A, settings, dense_columns_unordered);
       if (settings.concurrent_halt != nullptr &&
@@ -250,7 +249,7 @@ class iteration_data_t {
       settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
         return;
     }
-    i_t factorization_size = use_augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
+    i_t factorization_size = settings.augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
     chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(
       settings, factorization_size, handle_ptr->get_stream());
     chol->set_positive_definite(false);
@@ -259,7 +258,7 @@ class iteration_data_t {
         return;
     }
     // Perform symbolic analysis
-    if (use_augmented) {
+    if (settings.augmented) {
       // Build the sparsity pattern of the augmented system
       form_augmented(true);
       if (settings.concurrent_halt != nullptr &&
@@ -369,7 +368,7 @@ class iteration_data_t {
         raft::copy(d_inv_diag_prime.data(), d_inv_diag.data(), inv_diag.size(), stream_view_);
       }
 
-      if (d_inv_diag_prime.size() != AD.n) {
+      if (static_cast<i_t>(d_inv_diag_prime.size()) != AD.n) {
         settings_.log.printf(
           "inv_diag_prime.size() = %ld, AD.n = %d\n", d_inv_diag_prime.size(), AD.n);
         exit(1);
@@ -1136,12 +1135,12 @@ class iteration_data_t {
     const i_t m = A.m;
     const i_t n = A.n;
 
-    if (y.size() != m) {
+    if (static_cast<i_t>(y.size()) != m) {
       printf("adat_multiply: y.size() %d != m %d\n", static_cast<i_t>(y.size()), m);
       exit(1);
     }
 
-    if (v.size() != m) {
+    if (static_cast<i_t>(v.size()) != m) {
       printf("adat_multiply: v.size() %d != m %d\n", static_cast<i_t>(v.size()), m);
       exit(1);
     }
@@ -1525,7 +1524,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 
   // Perform a numerical factorization
   i_t status;
-  if (use_augmented) {
+  if (settings.augmented) {
     settings.log.printf("Factorizing augmented\n");
     status = data.chol->factorize(data.augmented);
   } else {
@@ -1554,7 +1553,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   dense_vector_t<i_t, f_t> DinvFu(lp.num_cols);  // DinvFu = Dinv * Fu
   data.inv_diag.pairwise_product(Fu, DinvFu);
   dense_vector_t<i_t, f_t> q(lp.num_rows);
-  if (use_augmented) {
+  if (settings.augmented) {
     dense_vector_t<i_t, f_t> rhs(lp.num_cols + lp.num_rows);
     for (i_t k = 0; k < lp.num_cols; k++) {
       rhs[k] = -Fu[k];
@@ -1692,7 +1691,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
       }
     }
   }
-  else if (use_augmented) {
+  else if (settings.augmented) {
     dense_vector_t<i_t, f_t> dual_rhs(lp.num_cols + lp.num_rows);
     dual_rhs.set_scalar(0.0);
     for (i_t k = 0; k < lp.num_cols; k++) {
@@ -2124,7 +2123,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::common::nvtx::range fun_scope("Barrier: ADAT");
 
     i_t status;
-    if (use_augmented) {
+    if (settings.augmented) {
       RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
       data.form_augmented();
       status = data.chol->factorize(data.augmented);
@@ -2194,7 +2193,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     data.cusparse_view_.spmv(1, data.cusparse_tmp4_, 1, data.cusparse_h_);
   }
 
-  if (use_augmented) {
+  if (settings.augmented) {
      // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
     // ./ w)
     dense_vector_t<i_t, f_t> r1(lp.num_cols);

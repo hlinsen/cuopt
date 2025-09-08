@@ -135,10 +135,16 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssConfigSet for reordering alg");
 #endif
 
-#if 1
+#if USE_ITERATIVE_REFINEMENT
         int32_t ir_n_steps = 2;
         CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig, CUDSS_CONFIG_IR_N_STEPS,
                                           &ir_n_steps, sizeof(int32_t)), status, "cudssConfigSet for ir n steps");
+#endif
+
+#if USE_MATCHING
+    int32_t use_matching = 1;
+    CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig, CUDSS_CONFIG_USE_MATCHING,
+  &use_matching, sizeof(int32_t)), status, "cudssConfigSet for use matching");
 #endif
 
     // Device pointers

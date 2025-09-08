@@ -310,6 +310,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   dual_simplex_settings.iteration_limit         = settings.iteration_limit;
   dual_simplex_settings.concurrent_halt         = settings.concurrent_halt;
   dual_simplex_settings.folding                 = settings.folding;
+  dual_simplex_settings.augmented               = settings.augmented;
   dual_simplex_settings.barrier                 = true;
   dual_simplex_settings.crossover               = settings.crossover;
   dual_simplex_settings.eliminate_dense_columns = settings.eliminate_dense_columns;
