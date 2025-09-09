@@ -216,7 +216,7 @@ class pdlp_solver_settings_t {
   bool presolve{false};
   method_t method{method_t::Concurrent};
   // For concurrent termination
-  std::atomic<i_t>* concurrent_halt;
+  volatile int* concurrent_halt;
   static constexpr f_t minimal_absolute_tolerance = 1.0e-12;
 
  private:

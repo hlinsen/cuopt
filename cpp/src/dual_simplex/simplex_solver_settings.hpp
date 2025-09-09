@@ -125,7 +125,7 @@ struct simplex_solver_settings_t {
   std::function<void()> heuristic_preemption_callback;
   std::function<void(std::vector<f_t>&, f_t)> set_simplex_solution_callback;
   mutable logger_t log;
-  std::atomic<i_t>* concurrent_halt;  // if nullptr ignored, if !nullptr, 0 if solver should
+  volatile int* concurrent_halt;  // if nullptr ignored, if !nullptr, 0 if solver should
                                       // continue, 1 if solver should halt
 };
 

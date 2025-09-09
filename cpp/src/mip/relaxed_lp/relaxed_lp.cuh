@@ -33,7 +33,7 @@ struct relaxed_lp_settings_t {
   bool return_first_feasible        = false;
   bool save_state                   = true;
   bool per_constraint_residual      = false;
-  std::atomic<int>* concurrent_halt = nullptr;
+  volatile int* concurrent_halt = nullptr;
 };
 
 template <typename i_t, typename f_t>

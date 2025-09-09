@@ -221,7 +221,7 @@ void setup_device_symbols(rmm::cuda_stream_view stream_view)
   detail::set_pdlp_hyper_parameters(stream_view);
 }
 
-std::atomic<int> global_concurrent_halt;
+volatile int global_concurrent_halt;
 
 template <typename i_t, typename f_t>
 optimization_problem_solution_t<i_t, f_t> convert_dual_simplex_sol(
@@ -332,7 +332,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
                                               status == dual_simplex::lp_status_t::UNBOUNDED ||
                                               status == dual_simplex::lp_status_t::INFEASIBLE)) {
     // We finished. Tell PDLP to stop if it is still running.
-    settings.concurrent_halt->store(1, std::memory_order_release);
+    *settings.concurrent_halt = 1;
   }
 
   return {std::move(solution), status, duration.count() / 1000.0, norm_user_objective, norm_rhs};
@@ -400,7 +400,7 @@ run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
                                               status == dual_simplex::lp_status_t::UNBOUNDED ||
                                               status == dual_simplex::lp_status_t::INFEASIBLE)) {
     // We finished. Tell PDLP to stop if it is still running.
-    settings.concurrent_halt->store(1, std::memory_order_release);
+    *settings.concurrent_halt = 1;
   }
 
   return {std::move(solution), status, duration.count() / 1000.0, norm_user_objective, norm_rhs};
@@ -523,7 +523,7 @@ optimization_problem_solution_t<i_t, f_t> run_pdlp(detail::problem_t<i_t, f_t>& 
       sol.get_termination_status() == pdlp_termination_status_t::Optimal) {
     // We finished. Tell dual simplex to stop if it is still running.
     CUOPT_LOG_INFO("PDLP finished. Telling others to stop");
-    settings.concurrent_halt->store(1, std::memory_order_release);
+    *settings.concurrent_halt = 1;
   }
   return sol;
 }
@@ -557,7 +557,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
                                                  op_problem.get_handle_ptr()->get_stream());
 
   // Set the concurrent halt pointer
-  global_concurrent_halt.store(0, std::memory_order_release);
+  global_concurrent_halt = 0;
   settings_pdlp.concurrent_halt = &global_concurrent_halt;
 
   // Initialize the dual simplex structures before we run PDLP.

@@ -233,7 +233,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       f_t reordering_time = toc(start_symbolic);
       settings_.log.printf("Reordering time: %.2fs\n");
       if (settings_.concurrent_halt != nullptr &&
-        settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings_.concurrent_halt == 1) {
         return -2;
       }
       start_symbolic_factor = tic();
@@ -245,7 +245,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     }
     if (settings_.concurrent_halt != nullptr &&
-        settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings_.concurrent_halt == 1) {
       return -2;
     }
 
@@ -288,7 +288,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     f_t numeric_time = toc(start_numeric);
     if (settings_.concurrent_halt != nullptr &&
-      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings_.concurrent_halt == 1) {
       return -2;
     }
 
@@ -382,7 +382,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     // Perform symbolic analysis
     if (settings_.concurrent_halt != nullptr &&
-      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings_.concurrent_halt == 1) {
       return -2;
     }
     f_t start_analysis = tic();
@@ -396,7 +396,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     //settings_.log.printf("Reordering time %.2fs\n", reorder_time);
     printf("Barrier Thread: Reordering time %.2fs\n", reorder_time);
     if (settings_.concurrent_halt != nullptr &&
-      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings_.concurrent_halt == 1) {
       return -2;
     }
 
@@ -414,7 +414,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     //settings_.log.printf("Symbolic time %.2fs\n", analysis_time);
     printf("Symbolic time %.2fs\n", analysis_time);
     if (settings_.concurrent_halt != nullptr &&
-      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings_.concurrent_halt == 1) {
       return -2;
     }
     int64_t lu_nz       = 0;
@@ -463,7 +463,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     f_t numeric_time = toc(start_numeric);
     if (settings_.concurrent_halt != nullptr &&
-      settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings_.concurrent_halt == 1) {
       return -2;
     }
 

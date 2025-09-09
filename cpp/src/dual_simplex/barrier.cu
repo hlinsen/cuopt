@@ -175,7 +175,7 @@ class iteration_data_t {
     if (n_upper_bounds > 0) { inv_diag.sqrt(inv_sqrt_diag); }
 
     if (settings.concurrent_halt != nullptr &&
-      settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings.concurrent_halt == 1) {
         return;
     }
     n_dense_columns = 0;
@@ -184,7 +184,7 @@ class iteration_data_t {
       f_t start_column_density = tic();
       find_dense_columns(lp.A, settings, dense_columns_unordered);
       if (settings.concurrent_halt != nullptr &&
-        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings.concurrent_halt == 1) {
           return;
       }
       for (i_t j : dense_columns_unordered) {
@@ -246,7 +246,7 @@ class iteration_data_t {
     }
 
     if (settings.concurrent_halt != nullptr &&
-      settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings.concurrent_halt == 1) {
         return;
     }
     i_t factorization_size = settings.augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
@@ -254,7 +254,7 @@ class iteration_data_t {
       settings, factorization_size, handle_ptr->get_stream());
     chol->set_positive_definite(false);
     if (settings.concurrent_halt != nullptr &&
-      settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings.concurrent_halt == 1) {
         return;
     }
     // Perform symbolic analysis
@@ -262,14 +262,14 @@ class iteration_data_t {
       // Build the sparsity pattern of the augmented system
       form_augmented(true);
       if (settings.concurrent_halt != nullptr &&
-        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings.concurrent_halt == 1) {
           return;
       }
       chol->analyze(augmented);
     } else {
       form_adat(true);
       if (settings.concurrent_halt != nullptr &&
-        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings.concurrent_halt == 1) {
           return;
       }
       if (use_gpu) {
@@ -383,7 +383,7 @@ class iteration_data_t {
                            span_x[i] *= span_scale[span_col_ind[i]];
                          });
       if (settings_.concurrent_halt != nullptr &&
-          settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          *settings_.concurrent_halt == 1) {
         return;
       }
       if (first_call) {
@@ -391,7 +391,7 @@ class iteration_data_t {
           handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
       }
       if (settings_.concurrent_halt != nullptr &&
-        settings_.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings_.concurrent_halt == 1) {
           return;
       }
 
@@ -524,6 +524,10 @@ class iteration_data_t {
           dense_vector_t<i_t, f_t> M_col(AD.m);
           solve_status = chol->solve(U_col, M_col);
           if (solve_status != 0) { return solve_status; }
+          if (settings_.concurrent_halt != nullptr &&
+            *settings_.concurrent_halt == 1) {
+              return -2;
+          }
           M.set_column(k, M_col);
 
           if (debug) {
@@ -994,7 +998,7 @@ class iteration_data_t {
           fill;  // Capture contributions from A(:, j). j will be encountered multiple times
       }
       if (settings.concurrent_halt != nullptr &&
-        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings.concurrent_halt == 1) {
           return;
       }
     }
@@ -1035,7 +1039,7 @@ class iteration_data_t {
                           fill_estimate));  // Capture the estimated fill associated with column j
       }
       if (settings.concurrent_halt != nullptr &&
-        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings.concurrent_halt == 1) {
           return;
       }
     }
@@ -2282,6 +2286,10 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       // TODO Chris, we need to write to cpu because dx is used outside
       // Can't we also GPUify what's usinng this dx?
       raft::copy(dy.data(), d_dy_.data(), dy.size(), stream_view_);
+      if (solve_status == -2)
+      {
+        return -2;
+      }
       if (solve_status < 0) {
         settings.log.printf("Linear solve failed\n");
         return -1;
@@ -2821,7 +2829,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
 
   iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
   if (settings.concurrent_halt != nullptr &&
-    settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+    *settings.concurrent_halt == 1) {
    settings.log.printf("Barrier solver halted\n");
     return lp_status_t::CONCURRENT_LIMIT;
   }
@@ -2846,7 +2854,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     return lp_status_t::TIME_LIMIT;
   }
   if (settings.concurrent_halt != nullptr &&
-      settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+      *settings.concurrent_halt == 1) {
     settings.log.printf("Barrier solver halted\n");
     return lp_status_t::CONCURRENT_LIMIT;
   }
@@ -2936,7 +2944,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         return lp_status_t::TIME_LIMIT;
       }
       if (settings.concurrent_halt != nullptr &&
-          settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          *settings.concurrent_halt == 1) {
         settings.log.printf("Barrier solver halted\n");
         return lp_status_t::CONCURRENT_LIMIT;
       }
@@ -2998,7 +3006,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                                     data.dz_aff,
                                                     max_affine_residual);
     if (settings.concurrent_halt != nullptr &&
-        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings.concurrent_halt == 1) {
       settings.log.printf("Barrier solver halted\n");
       return lp_status_t::CONCURRENT_LIMIT;
     }
@@ -3023,7 +3031,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       return lp_status_t::TIME_LIMIT;
     }
     if (settings.concurrent_halt != nullptr &&
-        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings.concurrent_halt == 1) {
       settings.log.printf("Barrier solver halted\n");
       return lp_status_t::CONCURRENT_LIMIT;
     }
@@ -3161,7 +3169,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                          : compute_search_direction(
                          data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
     if (settings.concurrent_halt != nullptr &&
-        settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+        *settings.concurrent_halt == 1) {
       settings.log.printf("Barrier solver halted\n");
       return lp_status_t::CONCURRENT_LIMIT;
     }
@@ -3191,7 +3199,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         return lp_status_t::TIME_LIMIT;
       }
       if (settings.concurrent_halt != nullptr &&
-          settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          *settings.concurrent_halt == 1) {
         settings.log.printf("Barrier solver halted\n");
         return lp_status_t::CONCURRENT_LIMIT;
       }
