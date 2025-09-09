@@ -540,7 +540,15 @@ class iteration_data_t {
         }
         // A_sparse * D_sparse * A_sparse^T * M = U = AD_dense
         // H = AD_dense^T * M
-        AD_dense.transpose_matrix_multiply(1.0, M, 0.0, H);
+	//AD_dense.transpose_matrix_multiply(1.0, M, 0.0, H);
+	for (i_t k = 0; k < n_dense_columns; k++) {
+	  AD_dense.transpose_multiply(1.0, M.values.data() + k * M.m, 0.0, H.values.data() + k * H.m);
+	  if (settings_.concurrent_halt != nullptr &&
+            *settings_.concurrent_halt == 1) {
+              return -2;
+          }
+	}
+        
         dense_vector_t<i_t, f_t> e(n_dense_columns);
         e.set_scalar(1.0);
         // H = AD_dense^T * M + I
@@ -548,8 +556,8 @@ class iteration_data_t {
 
         // H = L*L^T
         Hchol.resize(n_dense_columns, n_dense_columns);  // Hcol = L
-        H.chol(Hchol);
-        has_solve_info = true;
+	H.chol(Hchol);
+	has_solve_info = true;
       }
 
       dense_vector_t<i_t, f_t> g(n_dense_columns);
@@ -1522,7 +1530,7 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
 }
 
 template <typename i_t, typename f_t>
-void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
+int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 {
   raft::common::nvtx::range fun_scope("Barrier: initial_point");
 
@@ -1539,11 +1547,11 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     }
   }
   if (status == -2) {
-    return;
+    return -2;
   }
   if (status != 0) {
     settings.log.printf("Initial factorization failed\n");
-    return;
+    return -1;
   }
   data.num_factorizations++;
   data.has_solve_info = false;
@@ -1586,6 +1594,9 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     settings.log.printf("||rhs_x|| = %e\n", vector_norm2<i_t, f_t>(rhs_x));
     // i_t solve_status = data.chol->solve(rhs_x, q);
     i_t solve_status = data.solve_adat(rhs_x, q);
+    if (solve_status != 0) {
+      return status;
+    }
     settings.log.printf("Initial solve status %d\n", solve_status);
     settings.log.printf("||q|| = %e\n", vector_norm2<i_t, f_t>(q));
 
@@ -1736,7 +1747,10 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 
     // Solve A*Dinv*A'*q = A*Dinv*c
     // data.chol->solve(rhs, data.y);
-    data.solve_adat(rhs, data.y);
+    i_t solve_status = data.solve_adat(rhs, data.y);
+    if (solve_status != 0) {
+      return solve_status;
+    }
 
     // z = Dinv*(c - A'*y)
     dense_vector_t<i_t, f_t> cmATy = data.c;
@@ -1777,6 +1791,8 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   //data.v.ensure_positive(epsilon_adjust);
   //data.z.ensure_positive(epsilon_adjust);
   settings.log.printf("min v %e min z %e\n", data.v.minimum(), data.z.minimum());
+
+  return 0;
 }
 
 template <typename i_t, typename f_t>
@@ -2848,7 +2864,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   }
   settings.log.printf("%d finite upper bounds\n", num_upper_bounds);
 
-  initial_point(data);
+  i_t initial_status = initial_point(data);
   if (toc(start_time) > settings.time_limit) {
     settings.log.printf("Barrier time limit exceeded\n");
     return lp_status_t::TIME_LIMIT;
@@ -2857,6 +2873,10 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       *settings.concurrent_halt == 1) {
     settings.log.printf("Barrier solver halted\n");
     return lp_status_t::CONCURRENT_LIMIT;
+  }
+  if (initial_status != 0) {
+    settings.log.printf("Unable to compute initial point\n");
+    return lp_status_t::NUMERICAL_ISSUES;
   }
   compute_residuals<PinnedHostAllocator<f_t>>(data.w, data.x, data.y, data.v, data.z, data);
 

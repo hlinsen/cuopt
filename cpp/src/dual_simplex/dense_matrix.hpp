@@ -113,6 +113,21 @@ class dense_matrix_t {
     }
   }
 
+    void transpose_multiply(f_t alpha,
+                            f_t* x,
+			    f_t beta,
+			    f_t* y) const
+  {
+    for (i_t j = 0; j < n; j++) {
+      f_t sum = 0.0;
+      for (i_t i = 0; i < m; i++) {
+        sum += x[i] * this->operator()(i, j);
+      }
+      y[j] = alpha * sum + beta * y[j];
+    }
+  }
+
+
   // Y <- alpha * A' * X + beta * Y
   void transpose_matrix_multiply(f_t alpha,
                                  const dense_matrix_t<i_t, f_t>& X,

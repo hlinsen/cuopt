@@ -117,14 +117,20 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(cudssCreate(&handle), status, "cudssCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssSetStream(handle, stream), status, "cudaStreamCreate");
 
+#ifdef USE_THREADING_LAYER
     CUDSS_CALL_AND_CHECK_EXIT(cudssSetThreadingLayer(handle, NULL), status, "cudssSetThreadingLayer");
-
+#endif
 
 
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigCreate(&solverConfig), status, "cudssConfigCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
 
+    if (settings_.concurrent_halt != nullptr) {
+	printf("Trying to set user host interupt to %p\n", settings_.concurrent_halt);
+	CUDSS_CALL_AND_CHECK_EXIT(cudssDataSet(handle, solverData, CUDSS_DATA_USER_HOST_INTERRUPT, (void*) settings_.concurrent_halt, sizeof(int)), status, "cudssDataSet for interrupt");
+    }
 
+  
 #ifdef USE_AMD
     // Tell cuDSS to use AMD
     cudssAlgType_t reorder_alg = CUDSS_ALG_3;
@@ -191,8 +197,19 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   i_t analyze(device_csr_matrix_t<i_t, f_t>& Arow) override
   {
     raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze");
-    // csr_matrix_t<i_t, f_t> Arow;
-    // A_in.to_compressed_row(Arow);
+ #ifdef WRITE_MATRIX_MARKET
+    {
+    csr_matrix_t<i_t, f_t> Arow_host = Arow.to_host(Arow.row_start.stream());
+    csc_matrix_t<i_t, f_t> A_col(Arow_host.m, Arow_host.n, 1);
+    Arow_host.to_compressed_col(A_col);
+    FILE *fid = fopen("A_to_factorize.mtx", "w");
+    settings_.log.printf("writing matrix matrix\n");
+    A_col.write_matrix_market(fid);
+    settings_.log.printf("finished\n");
+    fclose(fid);
+    }
+ #endif
+    
     nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
 
     if (!first_factor) {
@@ -226,29 +243,27 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     {
       raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : CUDSS_PHASE_ANALYSIS");
-      CUDSS_CALL_AND_CHECK(
-        cudssExecute(handle, CUDSS_PHASE_REORDERING, solverConfig, solverData, A, cudss_x, cudss_b),
-        status,
-        "cudssExecute for analysis");
-      f_t reordering_time = toc(start_symbolic);
-      settings_.log.printf("Reordering time: %.2fs\n");
+      status = cudssExecute(handle, CUDSS_PHASE_REORDERING, solverConfig, solverData, A, cudss_x, cudss_b);
       if (settings_.concurrent_halt != nullptr &&
         *settings_.concurrent_halt == 1) {
         return -2;
       }
+      if (status != CUDSS_STATUS_SUCCESS) {                            
+	printf("FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for reordering\n", status);
+      }
+      f_t reordering_time = toc(start_symbolic);
+      settings_.log.printf("Reordering time: %.2fs\n", reordering_time);
       start_symbolic_factor = tic();
 
-      CUDSS_CALL_AND_CHECK(
-        cudssExecute(handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b),
-        status,
-        "cudssExecute for analysis");
-
+      status = cudssExecute(handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b);
+      if (settings_.concurrent_halt != nullptr &&
+	  *settings_.concurrent_halt == 1) {
+	return -2;
+      }
+      if (status != CUDSS_STATUS_SUCCESS) {
+	printf("FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for symbolic factorization\n", status);
+      }
     }
-    if (settings_.concurrent_halt != nullptr &&
-        *settings_.concurrent_halt == 1) {
-      return -2;
-    }
-
     f_t symbolic_factorization_time = toc(start_symbolic_factor);
     settings_.log.printf("Symbolic factorization time: %.2fs\n", symbolic_factorization_time);
     settings_.log.printf("Total symbolic time: %.2fs\n", toc(start_symbolic));
