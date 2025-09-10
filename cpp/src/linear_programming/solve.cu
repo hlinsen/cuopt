@@ -300,6 +300,7 @@ run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
                  pdlp_solver_settings_t<i_t, f_t> const& settings,
                  const timer_t& timer)
 {
+  timer_t timer_dual_simplex(timer.remaining_time());
   f_t norm_user_objective = dual_simplex::vector_norm2<i_t, f_t>(user_problem.objective);
   f_t norm_rhs            = dual_simplex::vector_norm2<i_t, f_t>(user_problem.rhs);
 
@@ -316,7 +317,9 @@ run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   auto status =
     dual_simplex::solve_linear_program<i_t, f_t>(user_problem, dual_simplex_settings, solution);
 
-  CUOPT_LOG_INFO("Dual simplex finished in %.2f seconds", timer.elapsed_time());
+  CUOPT_LOG_INFO("Dual simplex finished in %.2f seconds, total time %.2f",
+                 timer_dual_simplex.elapsed_time(),
+                 timer.elapsed_time());
 
   if (settings.concurrent_halt != nullptr && (status == dual_simplex::lp_status_t::OPTIMAL ||
                                               status == dual_simplex::lp_status_t::UNBOUNDED ||
@@ -370,14 +373,17 @@ optimization_problem_solution_t<i_t, f_t> run_pdlp(detail::problem_t<i_t, f_t>& 
 {
   auto start_solver = std::chrono::high_resolution_clock::now();
   f_t start_time    = dual_simplex::tic();
-  auto sol          = run_pdlp_solver(problem, settings, timer, is_batch_mode);
+  timer_t timer_pdlp(timer.remaining_time());
+  auto sol             = run_pdlp_solver(problem, settings, timer, is_batch_mode);
+  auto pdlp_solve_time = timer_pdlp.elapsed_time();
   sol.set_solve_time(timer.elapsed_time());
   CUOPT_LOG_INFO("PDLP finished");
   if (sol.get_termination_status() != pdlp_termination_status_t::ConcurrentLimit) {
-    CUOPT_LOG_INFO("Status: %s   Objective: %.8e  Iterations: %d  Time: %.3fs",
+    CUOPT_LOG_INFO("Status: %s   Objective: %.8e  Iterations: %d  Time: %.3fs, Total time %.3fs",
                    sol.get_termination_status_string().c_str(),
                    sol.get_objective_value(),
                    sol.get_additional_termination_information().number_of_steps_taken,
+                   pdlp_solve_time,
                    sol.get_solve_time());
   }
 
@@ -474,6 +480,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   bool is_batch_mode)
 {
   CUOPT_LOG_INFO("Running concurrent\n");
+  timer_t timer_concurrent(timer.remaining_time());
 
   // Copy the settings so that we can set the concurrent halt pointer
   pdlp_solver_settings_t<i_t, f_t> settings_pdlp(settings,
@@ -513,7 +520,8 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
                                                    std::get<4>(*sol_dual_simplex_ptr));
 
   f_t end_time = timer.elapsed_time();
-  CUOPT_LOG_INFO("Concurrent time:  %.3fs", end_time);
+  CUOPT_LOG_INFO(
+    "Concurrent time:  %.3fs, total time %.3fs", timer_concurrent.elapsed_time(), end_time);
   // Check status to see if we should return the pdlp solution or the dual simplex solution
   if (sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::Optimal ||
       sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible ||

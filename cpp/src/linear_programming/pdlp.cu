@@ -253,17 +253,14 @@ void pdlp_solver_t<i_t, f_t>::set_initial_dual_solution(
     initial_dual_.data(), initial_dual_solution.data(), initial_dual_solution.size(), stream_view_);
 }
 
-static bool time_limit_reached(const timer_t& timer, double seconds)
-{
-  return timer.check_time_limit();
-}
+static bool time_limit_reached(const timer_t& timer) { return timer.check_time_limit(); }
 
 template <typename i_t, typename f_t>
 std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>::check_limits(
   const timer_t& timer)
 {
   // Check for time limit
-  if (time_limit_reached(timer, settings_.time_limit)) {
+  if (time_limit_reached(timer)) {
     if (settings_.save_best_primal_so_far) {
 #ifdef PDLP_VERBOSE_MODE
       RAFT_CUDA_TRY(cudaDeviceSynchronize());
