@@ -120,9 +120,9 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     char* env_value = std::getenv("CUDSS_THREADING_LIB");
     if (env_value != nullptr) {
       printf("Setting CUDSS threading layer to %s\n", env_value);
-      CUDSS_CALL_AND_CHECK_EXIT(cudssSetThreadingLayer(handle, NULL), status, "cudssSetThreadingLayer");
+      CUDSS_CALL_AND_CHECK_EXIT(
+        cudssSetThreadingLayer(handle, NULL), status, "cudssSetThreadingLayer");
     }
-
 
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigCreate(&solverConfig), status, "cudssConfigCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
@@ -151,15 +151,19 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 #endif
 
 #if USE_ITERATIVE_REFINEMENT
-        int32_t ir_n_steps = 2;
-        CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig, CUDSS_CONFIG_IR_N_STEPS,
-                                          &ir_n_steps, sizeof(int32_t)), status, "cudssConfigSet for ir n steps");
+    int32_t ir_n_steps = 2;
+    CUDSS_CALL_AND_CHECK_EXIT(
+      cudssConfigSet(solverConfig, CUDSS_CONFIG_IR_N_STEPS, &ir_n_steps, sizeof(int32_t)),
+      status,
+      "cudssConfigSet for ir n steps");
 #endif
 
 #if USE_MATCHING
     int32_t use_matching = 1;
-    CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig, CUDSS_CONFIG_USE_MATCHING,
-  &use_matching, sizeof(int32_t)), status, "cudssConfigSet for use matching");
+    CUDSS_CALL_AND_CHECK_EXIT(
+      cudssConfigSet(solverConfig, CUDSS_CONFIG_USE_MATCHING, &use_matching, sizeof(int32_t)),
+      status,
+      "cudssConfigSet for use matching");
 #endif
 
     // Device pointers
@@ -168,8 +172,10 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     csr_values_d  = nullptr;
     x_values_d    = nullptr;
     b_values_d    = nullptr;
-    CUDA_CALL_AND_CHECK_EXIT(cudaMallocAsync(&x_values_d, n * sizeof(f_t), stream), "cudaMalloc for x_values");
-    CUDA_CALL_AND_CHECK_EXIT(cudaMallocAsync(&b_values_d, n * sizeof(f_t), stream), "cudaMalloc for b_values");
+    CUDA_CALL_AND_CHECK_EXIT(cudaMallocAsync(&x_values_d, n * sizeof(f_t), stream),
+                             "cudaMalloc for x_values");
+    CUDA_CALL_AND_CHECK_EXIT(cudaMallocAsync(&b_values_d, n * sizeof(f_t), stream),
+                             "cudaMalloc for b_values");
 
     i_t ldb = n;
     i_t ldx = n;
@@ -253,11 +259,9 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     {
       raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : CUDSS_PHASE_ANALYSIS");
-      status = cudssExecute(handle, CUDSS_PHASE_REORDERING, solverConfig, solverData, A, cudss_x, cudss_b);
-      if (settings_.concurrent_halt != nullptr &&
-        *settings_.concurrent_halt == 1) {
-        return -2;
-      }
+      status =
+        cudssExecute(handle, CUDSS_PHASE_REORDERING, solverConfig, solverData, A, cudss_x, cudss_b);
+      if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
       if (status != CUDSS_STATUS_SUCCESS) {
         printf(
           "FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for "
@@ -268,7 +272,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       settings_.log.printf("Reordering time: %.2fs\n", reordering_time);
       start_symbolic_factor = tic();
 
-      status = cudssExecute(handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b);
+      status = cudssExecute(
+        handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b);
       if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
       if (status != CUDSS_STATUS_SUCCESS) {
         printf(
@@ -315,10 +320,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssExecute for factorization");
 
     f_t numeric_time = toc(start_numeric);
-    if (settings_.concurrent_halt != nullptr &&
-      *settings_.concurrent_halt == 1) {
-      return -2;
-    }
+    if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
 
     int info;
     size_t sizeWritten = 0;
@@ -360,8 +362,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     Arow.check_matrix();
     settings_.log.printf("Finished checking matrices\n");
 #endif
-    if (A_in.n != n)
-    {
+    if (A_in.n != n) {
       printf("Analyze input does not match size %d != %d\n", A_in.n, n);
       exit(1);
     }
@@ -372,17 +373,20 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                         "cudaMalloc for csr_offset");
     CUDA_CALL_AND_CHECK(cudaMallocAsync(&csr_columns_d, nnz * sizeof(i_t), stream),
                         "cudaMalloc for csr_columns");
-    CUDA_CALL_AND_CHECK(cudaMallocAsync(&csr_values_d, nnz * sizeof(f_t), stream), "cudaMalloc for csr_values");
+    CUDA_CALL_AND_CHECK(cudaMallocAsync(&csr_values_d, nnz * sizeof(f_t), stream),
+                        "cudaMalloc for csr_values");
 
     CUDA_CALL_AND_CHECK(
       cudaMemcpyAsync(
         csr_offset_d, Arow.row_start.data(), (n + 1) * sizeof(i_t), cudaMemcpyHostToDevice, stream),
       "cudaMemcpy for csr_offset");
     CUDA_CALL_AND_CHECK(
-      cudaMemcpyAsync(csr_columns_d, Arow.j.data(), nnz * sizeof(i_t), cudaMemcpyHostToDevice, stream),
+      cudaMemcpyAsync(
+        csr_columns_d, Arow.j.data(), nnz * sizeof(i_t), cudaMemcpyHostToDevice, stream),
       "cudaMemcpy for csr_columns");
     CUDA_CALL_AND_CHECK(
-      cudaMemcpyAsync(csr_values_d, Arow.x.data(), nnz * sizeof(f_t), cudaMemcpyHostToDevice, stream),
+      cudaMemcpyAsync(
+        csr_values_d, Arow.x.data(), nnz * sizeof(f_t), cudaMemcpyHostToDevice, stream),
       "cudaMemcpy for csr_values");
 
     CUDA_CALL_AND_CHECK(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
@@ -409,10 +413,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssMatrixCreateCsr");
 
     // Perform symbolic analysis
-    if (settings_.concurrent_halt != nullptr &&
-      *settings_.concurrent_halt == 1) {
-      return -2;
-    }
+    if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
     f_t start_analysis = tic();
     printf("Barrier Thread: Reordering started\n");
     CUDSS_CALL_AND_CHECK(
@@ -421,12 +422,9 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssExecute for reordering");
 
     f_t reorder_time = toc(start_analysis);
-    //settings_.log.printf("Reordering time %.2fs\n", reorder_time);
+    // settings_.log.printf("Reordering time %.2fs\n", reorder_time);
     printf("Barrier Thread: Reordering time %.2fs\n", reorder_time);
-    if (settings_.concurrent_halt != nullptr &&
-      *settings_.concurrent_halt == 1) {
-      return -2;
-    }
+    if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
 
     f_t start_symbolic = tic();
 
@@ -439,12 +437,9 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     f_t symbolic_time = toc(start_symbolic);
     f_t analysis_time = toc(start_analysis);
     settings_.log.printf("Symbolic factorization time %.2fs\n", symbolic_time);
-    //settings_.log.printf("Symbolic time %.2fs\n", analysis_time);
+    // settings_.log.printf("Symbolic time %.2fs\n", analysis_time);
     printf("Symbolic time %.2fs\n", analysis_time);
-    if (settings_.concurrent_halt != nullptr &&
-      *settings_.concurrent_halt == 1) {
-      return -2;
-    }
+    if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
     int64_t lu_nz       = 0;
     size_t size_written = 0;
     CUDSS_CALL_AND_CHECK(
@@ -462,10 +457,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     csr_matrix_t<i_t, f_t> Arow(A_in.n, A_in.m, A_in.col_start[A_in.n]);
     A_in.to_compressed_row(Arow);
 
-    if (A_in.n != n)
-    {
-      settings_.log.printf("Error A in n %d != size %d\n", A_in.n, n);
-    }
+    if (A_in.n != n) { settings_.log.printf("Error A in n %d != size %d\n", A_in.n, n); }
 
     if (nnz != A_in.col_start[A_in.n]) {
       settings_.log.printf(
@@ -474,7 +466,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     }
 
     CUDA_CALL_AND_CHECK(
-      cudaMemcpyAsync(csr_values_d, Arow.x.data(), nnz * sizeof(f_t), cudaMemcpyHostToDevice, stream),
+      cudaMemcpyAsync(
+        csr_values_d, Arow.x.data(), nnz * sizeof(f_t), cudaMemcpyHostToDevice, stream),
       "cudaMemcpy for csr_values");
 
     CUDA_CALL_AND_CHECK(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
@@ -490,10 +483,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       "cudssExecute for factorization");
 
     f_t numeric_time = toc(start_numeric);
-    if (settings_.concurrent_halt != nullptr &&
-      *settings_.concurrent_halt == 1) {
-      return -2;
-    }
+    if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
 
     int info;
     size_t sizeWritten = 0;
@@ -527,6 +517,10 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     raft::copy(x.data(), d_x.data(), d_x.size(), stream);
     // Sync so that data is on the host
     RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
+
+    for (i_t i = 0; i < n; i++) {
+      if (x[i] != x[i]) { return -1; }
+    }
 
     return out;
   }
@@ -562,6 +556,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       cudssExecute(handle, CUDSS_PHASE_SOLVE, solverConfig, solverData, A, cudss_x, cudss_b),
       status,
       "cudssExecute for solve");
+
+    CUDA_CALL_AND_CHECK(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
 
     return 0;
   }

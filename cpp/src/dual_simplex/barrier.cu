@@ -50,7 +50,6 @@ namespace cuopt::linear_programming::dual_simplex {
 
 auto constexpr use_gpu = true;
 
-
 template <typename i_t, typename f_t>
 class iteration_data_t {
  public:
@@ -162,10 +161,7 @@ class iteration_data_t {
       }
     }
     inv_diag.set_scalar(1.0);
-    if (settings.augmented)
-    {
-      diag.multiply_scalar(-1.0);
-    }
+    if (settings.augmented) { diag.multiply_scalar(-1.0); }
     if (n_upper_bounds > 0) { diag.inverse(inv_diag); }
     if (use_gpu) {
       // TMP diag and inv_diag should directly created and filled on the GPU
@@ -174,19 +170,13 @@ class iteration_data_t {
     inv_sqrt_diag.set_scalar(1.0);
     if (n_upper_bounds > 0) { inv_diag.sqrt(inv_sqrt_diag); }
 
-    if (settings.concurrent_halt != nullptr &&
-      *settings.concurrent_halt == 1) {
-        return;
-    }
+    if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     n_dense_columns = 0;
     std::vector<i_t> dense_columns_unordered;
     if (!settings.augmented && settings.eliminate_dense_columns) {
       f_t start_column_density = tic();
       find_dense_columns(lp.A, settings, dense_columns_unordered);
-      if (settings.concurrent_halt != nullptr &&
-        *settings.concurrent_halt == 1) {
-          return;
-      }
+      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
       for (i_t j : dense_columns_unordered) {
         settings.log.printf("Dense column %6d\n", j);
       }
@@ -195,7 +185,6 @@ class iteration_data_t {
       settings.log.printf(
         "Found %d dense columns in %.2fs\n", n_dense_columns, column_density_time);
     }
-
 
     // Copy A into AD
     AD = lp.A;
@@ -245,33 +234,21 @@ class iteration_data_t {
       RAFT_CHECK_CUDA(handle_ptr->get_stream());
     }
 
-    if (settings.concurrent_halt != nullptr &&
-      *settings.concurrent_halt == 1) {
-        return;
-    }
+    if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     i_t factorization_size = settings.augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
-    chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(
+    chol                   = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(
       settings, factorization_size, handle_ptr->get_stream());
     chol->set_positive_definite(false);
-    if (settings.concurrent_halt != nullptr &&
-      *settings.concurrent_halt == 1) {
-        return;
-    }
+    if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     // Perform symbolic analysis
     if (settings.augmented) {
       // Build the sparsity pattern of the augmented system
       form_augmented(true);
-      if (settings.concurrent_halt != nullptr &&
-        *settings.concurrent_halt == 1) {
-          return;
-      }
+      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
       chol->analyze(augmented);
     } else {
       form_adat(true);
-      if (settings.concurrent_halt != nullptr &&
-        *settings.concurrent_halt == 1) {
-          return;
-      }
+      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
       if (use_gpu) {
         chol->analyze(device_ADAT);
       } else {
@@ -280,13 +257,13 @@ class iteration_data_t {
     }
   }
 
-  void form_augmented(bool first_call=false)
+  void form_augmented(bool first_call = false)
   {
-    i_t n = A.n;
-    i_t m = A.m;
-    i_t nnzA = A.col_start[n];
+    i_t n                  = A.n;
+    i_t m                  = A.m;
+    i_t nnzA               = A.col_start[n];
     i_t factorization_size = n + m;
-    const f_t perturb = 0.0;
+    const f_t perturb      = 0.0;
     if (first_call) {
       augmented.reallocate(2 * nnzA + n + m);
       i_t q = 0;
@@ -311,7 +288,7 @@ class iteration_data_t {
           augmented.i[q]   = AT.i[p];
           augmented.x[q++] = AT.x[p];
         }
-        augmented.i[q] = k;
+        augmented.i[q]   = k;
         augmented.x[q++] = 1e-6;
       }
       augmented.col_start[n + m] = q;
@@ -330,9 +307,8 @@ class iteration_data_t {
       settings_.log.printf("|| Aug - Aug^T ||_1 %e\n", error.norm1());
 #endif
     } else {
-      for (i_t j = 0; j < n; ++j)
-      {
-        const i_t q = augmented.col_start[j];
+      for (i_t j = 0; j < n; ++j) {
+        const i_t q    = augmented.col_start[j];
         augmented.x[q] = -diag[j] - perturb;
       }
     }
@@ -382,19 +358,12 @@ class iteration_data_t {
                           span_col_ind = cuopt::make_span(device_AD.col_index)] __device__(i_t i) {
                            span_x[i] *= span_scale[span_col_ind[i]];
                          });
-      if (settings_.concurrent_halt != nullptr &&
-          *settings_.concurrent_halt == 1) {
-        return;
-      }
+      if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return; }
       if (first_call) {
         initialize_cusparse_data<i_t, f_t>(
           handle_ptr, device_A, device_AD, device_ADAT, cusparse_info);
       }
-      if (settings_.concurrent_halt != nullptr &&
-        *settings_.concurrent_halt == 1) {
-          return;
-      }
-
+      if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return; }
 
       // float64_t start_multiply = tic();
       // handle_ptr->sync_stream();
@@ -524,9 +493,8 @@ class iteration_data_t {
           dense_vector_t<i_t, f_t> M_col(AD.m);
           solve_status = chol->solve(U_col, M_col);
           if (solve_status != 0) { return solve_status; }
-          if (settings_.concurrent_halt != nullptr &&
-            *settings_.concurrent_halt == 1) {
-              return -2;
+          if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) {
+            return -2;
           }
           M.set_column(k, M_col);
 
@@ -540,15 +508,15 @@ class iteration_data_t {
         }
         // A_sparse * D_sparse * A_sparse^T * M = U = AD_dense
         // H = AD_dense^T * M
-	//AD_dense.transpose_matrix_multiply(1.0, M, 0.0, H);
-	for (i_t k = 0; k < n_dense_columns; k++) {
-	  AD_dense.transpose_multiply(1.0, M.values.data() + k * M.m, 0.0, H.values.data() + k * H.m);
-	  if (settings_.concurrent_halt != nullptr &&
-            *settings_.concurrent_halt == 1) {
-              return -2;
+        // AD_dense.transpose_matrix_multiply(1.0, M, 0.0, H);
+        for (i_t k = 0; k < n_dense_columns; k++) {
+          AD_dense.transpose_multiply(
+            1.0, M.values.data() + k * M.m, 0.0, H.values.data() + k * H.m);
+          if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) {
+            return -2;
           }
-	}
-        
+        }
+
         dense_vector_t<i_t, f_t> e(n_dense_columns);
         e.set_scalar(1.0);
         // H = AD_dense^T * M + I
@@ -556,8 +524,8 @@ class iteration_data_t {
 
         // H = L*L^T
         Hchol.resize(n_dense_columns, n_dense_columns);  // Hcol = L
-	H.chol(Hchol);
-	has_solve_info = true;
+        H.chol(Hchol);
+        has_solve_info = true;
       }
 
       dense_vector_t<i_t, f_t> g(n_dense_columns);
@@ -822,9 +790,10 @@ class iteration_data_t {
       i_t out = solve_adat(b, x);
 
       d_b.resize(b.size(), stream_view_);
-      d_x.resize(x.size(), stream_view_);
       raft::copy(d_b.data(), b.data(), b.size(), stream_view_);
+      d_x.resize(x.size(), stream_view_);
       raft::copy(d_x.data(), x.data(), x.size(), stream_view_);
+      stream_view_.synchronize();  // host x can go out of scope before copy finishes
 
       return out;
     }
@@ -1005,10 +974,7 @@ class iteration_data_t {
         delta_nz[j] +=
           fill;  // Capture contributions from A(:, j). j will be encountered multiple times
       }
-      if (settings.concurrent_halt != nullptr &&
-        *settings.concurrent_halt == 1) {
-          return;
-      }
+      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     }
 
     int64_t sparse_nz_C = 0;
@@ -1046,10 +1012,7 @@ class iteration_data_t {
           delta_nz[j] + static_cast<int64_t>(
                           fill_estimate));  // Capture the estimated fill associated with column j
       }
-      if (settings.concurrent_halt != nullptr &&
-        *settings.concurrent_halt == 1) {
-          return;
-      }
+      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     }
 
     int64_t estimated_nz_C = 0;
@@ -1308,10 +1271,13 @@ class iteration_data_t {
   }
 
   // y <- alpha * Augmented * x + beta * y
-  void augmented_multiply(f_t alpha, const dense_vector_t<i_t, f_t>&x, f_t beta, dense_vector_t<i_t, f_t>& y) const
+  void augmented_multiply(f_t alpha,
+                          const dense_vector_t<i_t, f_t>& x,
+                          f_t beta,
+                          dense_vector_t<i_t, f_t>& y) const
   {
-    const i_t m = A.m;
-    const i_t n = A.n;
+    const i_t m                 = A.m;
+    const i_t n                 = A.n;
     dense_vector_t<i_t, f_t> x1 = x.head(n);
     dense_vector_t<i_t, f_t> x2 = x.tail(m);
     dense_vector_t<i_t, f_t> y1 = y.head(n);
@@ -1326,31 +1292,30 @@ class iteration_data_t {
     // y2 <- alpha ( A*x) + beta * y2
     matrix_vector_multiply(A, alpha, x1, beta, y2);
 
-    for (i_t i = 0; i < n; ++i)
-    {
+    for (i_t i = 0; i < n; ++i) {
       y[i] = y1[i];
     }
-    for (i_t i = n; i < n + m; ++i)
-    {
+    for (i_t i = n; i < n + m; ++i) {
       y[i] = y2[i - n];
     }
   }
 
-  void iterative_refinement_augmented(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x)
+  void iterative_refinement_augmented(const dense_vector_t<i_t, f_t>& b,
+                                      dense_vector_t<i_t, f_t>& x)
   {
-    const i_t m = A.m;
-    const i_t n = A.n;
+    const i_t m                    = A.m;
+    const i_t n                    = A.n;
     dense_vector_t<i_t, f_t> x_sav = x;
-    dense_vector_t<i_t, f_t> r = b;
+    dense_vector_t<i_t, f_t> r     = b;
 
     augmented_multiply(-1.0, x, 1.0, r);
 
     f_t error = vector_norm_inf<i_t, f_t>(r);
-    //printf("Iterative refinement. Initial error %e || x || %.16e\n", error, vector_norm2<i_t, f_t>(x));
+    // printf("Iterative refinement. Initial error %e || x || %.16e\n", error, vector_norm2<i_t,
+    // f_t>(x));
     dense_vector_t<i_t, f_t> delta_x(n + m);
     i_t iter = 0;
-    while (error > 1e-8 && iter < 30)
-    {
+    while (error > 1e-8 && iter < 30) {
       delta_x.set_scalar(0.0);
       chol->solve(r, delta_x);
 
@@ -1360,16 +1325,17 @@ class iteration_data_t {
       augmented_multiply(-1.0, x, 1.0, r);
 
       f_t new_error = vector_norm_inf<i_t, f_t>(r);
-      if (new_error > error)
-      {
+      if (new_error > error) {
         x = x_sav;
-        //printf("%d Iterative refinement error increased %e %e. Stopping\n", iter, error, new_error);
+        // printf("%d Iterative refinement error increased %e %e. Stopping\n", iter, error,
+        // new_error);
         break;
       }
       error = new_error;
       x_sav = x;
       iter++;
-      //printf("%d Iterative refinement error %e. || x || %.16e || dx || %.16e Continuing\n", iter, error, vector_norm2<i_t, f_t>(x), vector_norm2<i_t, f_t>(delta_x));
+      // printf("%d Iterative refinement error %e. || x || %.16e || dx || %.16e Continuing\n", iter,
+      // error, vector_norm2<i_t, f_t>(x), vector_norm2<i_t, f_t>(delta_x));
     }
   }
 
@@ -1546,9 +1512,7 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
       status = data.chol->factorize(data.ADAT);
     }
   }
-  if (status == -2) {
-    return -2;
-  }
+  if (status == -2) { return -2; }
   if (status != 0) {
     settings.log.printf("Initial factorization failed\n");
     return -1;
@@ -1594,9 +1558,7 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     settings.log.printf("||rhs_x|| = %e\n", vector_norm2<i_t, f_t>(rhs_x));
     // i_t solve_status = data.chol->solve(rhs_x, q);
     i_t solve_status = data.solve_adat(rhs_x, q);
-    if (solve_status != 0) {
-      return status;
-    }
+    if (solve_status != 0) { return status; }
     settings.log.printf("Initial solve status %d\n", solve_status);
     settings.log.printf("||q|| = %e\n", vector_norm2<i_t, f_t>(q));
 
@@ -1645,7 +1607,6 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 
   dense_vector_t<i_t, f_t> dual_res(lp.num_cols);
   if (1) {
-
     // Use the dual starting point suggested by the paper
     // On Implementing Mehrotra’s Predictor–Corrector Interior-Point Method for Linear Programming
     // Irvin J. Lustig, Roy E. Marsten, and David F. Shanno
@@ -1659,8 +1620,7 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     // when y = 0, z - E^T v = c
 
     // First handle the upper bounds case
-    for (i_t k = 0; k < data.n_upper_bounds; k++)
-    {
+    for (i_t k = 0; k < data.n_upper_bounds; k++) {
       i_t j = data.upper_bounds[k];
       if (data.c[j] > epsilon) {
         data.z[j] = data.c[j] + epsilon;
@@ -1676,37 +1636,25 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
         data.v[k] = -data.c[j] + epsilon;
       }
 
-      if (data.v[k] < 1.0)
-      {
-        settings.log.printf("v[%d] = %e < 1.0\n", k, data.v[k]);
-      }
-      if (data.z[j] < 1.0)
-      {
-        settings.log.printf("z[%d] = %e < 1.0 with uppper\n", j, data.z[j]);
-      }
+      if (data.v[k] < 1.0) { settings.log.printf("v[%d] = %e < 1.0\n", k, data.v[k]); }
+      if (data.z[j] < 1.0) { settings.log.printf("z[%d] = %e < 1.0 with uppper\n", j, data.z[j]); }
     }
 
     // Now hande the case with no upper bounds
-    for (i_t j = 0; j < lp.num_cols; j++)
-    {
-      if (lp.upper[j] == inf)
-      {
+    for (i_t j = 0; j < lp.num_cols; j++) {
+      if (lp.upper[j] == inf) {
         if (data.c[j] > 10.0) {
           data.z[j] = data.c[j];
-        }
-        else
-        {
+        } else {
           data.z[j] = 10.0;
         }
       }
 
-      if (data.z[j] < 1.0)
-      {
+      if (data.z[j] < 1.0) {
         settings.log.printf("z[%d] = %e < 1.0 upper %e\n", j, data.z[j], lp.upper[j]);
       }
     }
-  }
-  else if (settings.augmented) {
+  } else if (settings.augmented) {
     dense_vector_t<i_t, f_t> dual_rhs(lp.num_cols + lp.num_rows);
     dual_rhs.set_scalar(0.0);
     for (i_t k = 0; k < lp.num_cols; k++) {
@@ -1744,13 +1692,10 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
       matrix_vector_multiply(lp.A, 1.0, Dinvc, 0.0, rhs);
     }
 
-
     // Solve A*Dinv*A'*q = A*Dinv*c
     // data.chol->solve(rhs, data.y);
     i_t solve_status = data.solve_adat(rhs, data.y);
-    if (solve_status != 0) {
-      return solve_status;
-    }
+    if (solve_status != 0) { return solve_status; }
 
     // z = Dinv*(c - A'*y)
     dense_vector_t<i_t, f_t> cmATy = data.c;
@@ -1765,7 +1710,6 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     // v = -E'*z
     data.gather_upper_bounds(data.z, data.v);
     data.v.multiply_scalar(-1.0);
-
   }
 
   // Verify A'*y + z - E*v = c
@@ -1781,15 +1725,17 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
       data.dual_residual[j] -= data.v[k];
     }
   }
-  settings.log.printf("|| dual res || %e || dual residual || %e\n", vector_norm2<i_t, f_t>(dual_res), vector_norm2<i_t, f_t>(data.dual_residual));
+  settings.log.printf("|| dual res || %e || dual residual || %e\n",
+                      vector_norm2<i_t, f_t>(dual_res),
+                      vector_norm2<i_t, f_t>(data.dual_residual));
   settings.log.printf("||A^T y + z - E*v - c ||: %e\n", vector_norm2<i_t, f_t>(data.dual_residual));
 
   // Make sure (w, x, v, z) > 0
   float64_t epsilon_adjust = 10.0;
   data.w.ensure_positive(epsilon_adjust);
   data.x.ensure_positive(epsilon_adjust);
-  //data.v.ensure_positive(epsilon_adjust);
-  //data.z.ensure_positive(epsilon_adjust);
+  // data.v.ensure_positive(epsilon_adjust);
+  // data.z.ensure_positive(epsilon_adjust);
   settings.log.printf("min v %e min z %e\n", data.v.minimum(), data.z.minimum());
 
   return 0;
@@ -2137,7 +2083,6 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::copy(data.inv_diag.data(), data.d_inv_diag.data(), data.d_inv_diag.size(), stream_view_);
   }
 
-
   // Form A*D*A' or the augmented system and factorize it
   if (!data.has_factorization) {
     raft::common::nvtx::range fun_scope("Barrier: ADAT");
@@ -2161,9 +2106,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     data.num_factorizations++;
 
     data.has_solve_info = false;
-    if (status == -2) {
-      return -2;
-    }
+    if (status == -2) { return -2; }
 
     if (status < 0) {
       settings.log.printf("Factorization failed.\n");
@@ -2214,19 +2157,17 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
   }
 
   if (settings.augmented) {
-     // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
+    // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
     // ./ w)
     dense_vector_t<i_t, f_t> r1(lp.num_cols);
     raft::copy(r1.data(), d_r1_.data(), d_r1_.size(), stream_view_);
     RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 
     dense_vector_t<i_t, f_t> augmented_rhs(lp.num_cols + lp.num_rows);
-    for (i_t k = 0; k < lp.num_cols; k++)
-    {
+    for (i_t k = 0; k < lp.num_cols; k++) {
       augmented_rhs[k] = r1[k];
     }
-    for (i_t k = 0; k < lp.num_rows; k++)
-    {
+    for (i_t k = 0; k < lp.num_rows; k++) {
       augmented_rhs[k + lp.num_cols] = data.primal_rhs[k];
     }
     dense_vector_t<i_t, f_t> augmented_soln(lp.num_cols + lp.num_rows);
@@ -2234,17 +2175,12 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     dense_vector_t<i_t, f_t> augmented_residual = augmented_rhs;
     matrix_vector_multiply(data.augmented, 1.0, augmented_soln, -1.0, augmented_residual);
     f_t solve_err = vector_norm_inf<i_t, f_t>(augmented_residual);
-    if (solve_err > 1e-6)
-    {
-      settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e\n", solve_err);
-    }
+    if (solve_err > 1e-6) { settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e\n", solve_err); }
     data.iterative_refinement_augmented(augmented_rhs, augmented_soln);
-    for (i_t k = 0; k < lp.num_cols; k++)
-    {
+    for (i_t k = 0; k < lp.num_cols; k++) {
       dx[k] = augmented_soln[k];
     }
-    for (i_t k = 0; k < lp.num_rows; k++)
-    {
+    for (i_t k = 0; k < lp.num_rows; k++) {
       dy[k] = augmented_soln[k + lp.num_cols];
     }
 
@@ -2252,8 +2188,8 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::copy(d_dy_.data(), dy.data(), d_dy_.size(), stream_view_);
     RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 
-     // TMP should only be init once
-     data.cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
+    // TMP should only be init once
+    data.cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
 
     dense_vector_t<i_t, f_t> res = data.primal_rhs;
     matrix_vector_multiply(lp.A, 1.0, dx, -1.0, res);
@@ -2270,29 +2206,22 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     }
 
     dense_vector_t<i_t, f_t> res2(lp.num_cols + lp.num_rows);
-    for (i_t k = 0; k < lp.num_cols; k++)
-    {
+    for (i_t k = 0; k < lp.num_cols; k++) {
       res2[k] = r1[k];
     }
-    for (i_t k = 0; k < lp.num_rows; k++)
-    {
+    for (i_t k = 0; k < lp.num_rows; k++) {
       res2[k + lp.num_cols] = data.primal_rhs[k];
     }
     dense_vector_t<i_t, f_t> dxdy(lp.num_cols + lp.num_rows);
-    for (i_t k = 0; k < lp.num_cols; k++)
-    {
+    for (i_t k = 0; k < lp.num_cols; k++) {
       dxdy[k] = dx[k];
     }
-    for (i_t k = 0; k < lp.num_rows; k++)
-    {
+    for (i_t k = 0; k < lp.num_rows; k++) {
       dxdy[k + lp.num_cols] = dy[k];
     }
     data.augmented_multiply(1.0, dxdy, -1.0, res2);
     f_t res2_err = vector_norm_inf<i_t, f_t>(res2);
-    if (res2_err > 1e-6)
-    {
-      settings.log.printf("|| Aug_0 (dx, dy) - aug_rhs || %e\n", res2_err);
-    }
+    if (res2_err > 1e-6) { settings.log.printf("|| Aug_0 (dx, dy) - aug_rhs || %e\n", res2_err); }
   } else {
     {
       raft::common::nvtx::range fun_scope("Barrier: Solve A D^{-1} A^T dy = h");
@@ -2302,10 +2231,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       // TODO Chris, we need to write to cpu because dx is used outside
       // Can't we also GPUify what's usinng this dx?
       raft::copy(dy.data(), d_dy_.data(), dy.size(), stream_view_);
-      if (solve_status == -2)
-      {
-        return -2;
-      }
+      if (solve_status == -2) { return -2; }
       if (solve_status < 0) {
         settings.log.printf("Linear solve failed\n");
         return -1;
@@ -2404,111 +2330,113 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
         settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
     }
 
+    if (debug) {
+      raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_5_6");
 
-  if (debug) {
-    raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_5_6");
+      // TMP data should already be on the GPU (not fixed for now since debug only)
+      rmm::device_uvector<f_t> d_dx_residual_5(lp.num_cols, stream_view_);
+      rmm::device_uvector<f_t> d_dx_residual_6(lp.num_rows, stream_view_);
 
-    // TMP data should already be on the GPU (not fixed for now since debug only)
-    rmm::device_uvector<f_t> d_dx_residual_5(lp.num_cols, stream_view_);
-    rmm::device_uvector<f_t> d_dx_residual_6(lp.num_rows, stream_view_);
+      cub::DeviceTransform::Transform(
+        cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data()),
+        d_dx_residual_5.data(),
+        d_dx_residual_5.size(),
+        [] HD(f_t ind_diag, f_t r1) { return ind_diag * r1; },
+        stream_view_);
 
-    cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data()),
-      d_dx_residual_5.data(),
-      d_dx_residual_5.size(),
-      [] HD(f_t ind_diag, f_t r1) { return ind_diag * r1; },
-      stream_view_);
+      // TMP should be done just one in the constructor
+      data.cusparse_dx_residual_5_ = data.cusparse_view_.create_vector(d_dx_residual_5);
+      data.cusparse_dx_residual_6_ = data.cusparse_view_.create_vector(d_dx_residual_6);
+      data.cusparse_dx_            = data.cusparse_view_.create_vector(d_dx_);
 
-    // TMP should be done just one in the constructor
-    data.cusparse_dx_residual_5_ = data.cusparse_view_.create_vector(d_dx_residual_5);
-    data.cusparse_dx_residual_6_ = data.cusparse_view_.create_vector(d_dx_residual_6);
-    data.cusparse_dx_            = data.cusparse_view_.create_vector(d_dx_);
+      data.cusparse_view_.spmv(
+        1.0, data.cusparse_dx_residual_5_, 0.0, data.cusparse_dx_residual_6_);
+      data.cusparse_view_.spmv(-1.0, data.cusparse_dx_, 1.0, data.cusparse_dx_residual_6_);
 
-    data.cusparse_view_.spmv(1.0, data.cusparse_dx_residual_5_, 0.0, data.cusparse_dx_residual_6_);
-    data.cusparse_view_.spmv(-1.0, data.cusparse_dx_, 1.0, data.cusparse_dx_residual_6_);
-
-    const f_t dx_residual_6_norm = device_vector_norm_inf<i_t, f_t>(d_dx_residual_6, stream_view_);
-    max_residual                 = std::max(max_residual, dx_residual_6_norm);
-    if (dx_residual_6_norm > 1e-2) {
-      settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
+      const f_t dx_residual_6_norm =
+        device_vector_norm_inf<i_t, f_t>(d_dx_residual_6, stream_view_);
+      max_residual = std::max(max_residual, dx_residual_6_norm);
+      if (dx_residual_6_norm > 1e-2) {
+        settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
+      }
     }
-  }
 
+    if (debug) {
+      raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_3_4");
 
-  if (debug) {
-    raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_3_4");
+      // TMP data should already be on the GPU
+      rmm::device_uvector<f_t> d_dx_residual_3(lp.num_cols, stream_view_);
+      rmm::device_uvector<f_t> d_dx_residual_4(lp.num_rows, stream_view_);
 
-    // TMP data should already be on the GPU
-    rmm::device_uvector<f_t> d_dx_residual_3(lp.num_cols, stream_view_);
-    rmm::device_uvector<f_t> d_dx_residual_4(lp.num_rows, stream_view_);
+      cub::DeviceTransform::Transform(
+        cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_prime_.data()),
+        d_dx_residual_3.data(),
+        d_dx_residual_3.size(),
+        [] HD(f_t ind_diag, f_t r1_prime) { return ind_diag * r1_prime; },
+        stream_view_);
 
-    cub::DeviceTransform::Transform(
-      cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_prime_.data()),
-      d_dx_residual_3.data(),
-      d_dx_residual_3.size(),
-      [] HD(f_t ind_diag, f_t r1_prime) { return ind_diag * r1_prime; },
-      stream_view_);
+      // TMP vector creation should only be done once
+      data.cusparse_dx_residual_3_ = data.cusparse_view_.create_vector(d_dx_residual_3);
+      data.cusparse_dx_residual_4_ = data.cusparse_view_.create_vector(d_dx_residual_4);
+      data.cusparse_dx_            = data.cusparse_view_.create_vector(d_dx_);
 
-    // TMP vector creation should only be done once
-    data.cusparse_dx_residual_3_ = data.cusparse_view_.create_vector(d_dx_residual_3);
-    data.cusparse_dx_residual_4_ = data.cusparse_view_.create_vector(d_dx_residual_4);
-    data.cusparse_dx_            = data.cusparse_view_.create_vector(d_dx_);
-
-    data.cusparse_view_.spmv(1.0, data.cusparse_dx_residual_3_, 0.0, data.cusparse_dx_residual_4_);
-    data.cusparse_view_.spmv(1.0, data.cusparse_dx_, 1.0, data.cusparse_dx_residual_4_);
-  }
+      data.cusparse_view_.spmv(
+        1.0, data.cusparse_dx_residual_3_, 0.0, data.cusparse_dx_residual_4_);
+      data.cusparse_view_.spmv(1.0, data.cusparse_dx_, 1.0, data.cusparse_dx_residual_4_);
+    }
 
 #if CHECK_FORM_ADAT
-  csc_matrix_t<i_t, f_t> ADinv = lp.A;
-  ADinv.scale_columns(data.inv_diag);
-  csc_matrix_t<i_t, f_t> ADinvAT(lp.num_rows, lp.num_rows, 1);
-  csc_matrix_t<i_t, f_t> Atranspose(1, 1, 0);
-  lp.A.transpose(Atranspose);
-  multiply(ADinv, Atranspose, ADinvAT);
-  matrix_vector_multiply(ADinvAT, 1.0, dy, -1.0, dx_residual_4);
-  const f_t dx_residual_4_norm = vector_norm_inf<i_t, f_t>(dx_residual_4, stream_view_);
-  max_residual                 = std::max(max_residual, dx_residual_4_norm);
-  if (dx_residual_4_norm > 1e-2) {
-    settings.log.printf("|| ADAT * dy - A * D^-1 * r1 - A * dx || = %.2e\n", dx_residual_4_norm);
-  }
+    csc_matrix_t<i_t, f_t> ADinv = lp.A;
+    ADinv.scale_columns(data.inv_diag);
+    csc_matrix_t<i_t, f_t> ADinvAT(lp.num_rows, lp.num_rows, 1);
+    csc_matrix_t<i_t, f_t> Atranspose(1, 1, 0);
+    lp.A.transpose(Atranspose);
+    multiply(ADinv, Atranspose, ADinvAT);
+    matrix_vector_multiply(ADinvAT, 1.0, dy, -1.0, dx_residual_4);
+    const f_t dx_residual_4_norm = vector_norm_inf<i_t, f_t>(dx_residual_4, stream_view_);
+    max_residual                 = std::max(max_residual, dx_residual_4_norm);
+    if (dx_residual_4_norm > 1e-2) {
+      settings.log.printf("|| ADAT * dy - A * D^-1 * r1 - A * dx || = %.2e\n", dx_residual_4_norm);
+    }
 
-  csc_matrix_t<i_t, f_t> C(lp.num_rows, lp.num_rows, 1);
-  add(ADinvAT, data.ADAT, 1.0, -1.0, C);
-  const f_t matrix_residual = C.norm1();
-  max_residual              = std::max(max_residual, matrix_residual);
-  if (matrix_residual > 1e-2) {
-    settings.log.printf("|| AD^{-1/2} D^{-1} A^T + E - A D^{-1} A^T|| = %.2e\n", matrix_residual);
-  }
+    csc_matrix_t<i_t, f_t> C(lp.num_rows, lp.num_rows, 1);
+    add(ADinvAT, data.ADAT, 1.0, -1.0, C);
+    const f_t matrix_residual = C.norm1();
+    max_residual              = std::max(max_residual, matrix_residual);
+    if (matrix_residual > 1e-2) {
+      settings.log.printf("|| AD^{-1/2} D^{-1} A^T + E - A D^{-1} A^T|| = %.2e\n", matrix_residual);
+    }
 #endif
 
-  if (debug) {
-    raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_7");
+    if (debug) {
+      raft::common::nvtx::range fun_scope("Barrier: GPU dx_residual_7");
 
-    // TMP data should already be on the GPU
-    rmm::device_uvector<f_t> d_dx_residual_7(d_h_, stream_view_);
-    cusparseDnVecDescr_t cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
-    cusparseDnVecDescr_t cusparse_dx_residual_7 =
-      data.cusparse_view_.create_vector(d_dx_residual_7);
+      // TMP data should already be on the GPU
+      rmm::device_uvector<f_t> d_dx_residual_7(d_h_, stream_view_);
+      cusparseDnVecDescr_t cusparse_dy_ = data.cusparse_view_.create_vector(d_dy_);
+      cusparseDnVecDescr_t cusparse_dx_residual_7 =
+        data.cusparse_view_.create_vector(d_dx_residual_7);
 
-    // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
-    data.gpu_adat_multiply(1.0,
-                           d_dy_,
-                           cusparse_dy_,
-                           -1.0,
-                           d_dx_residual_7,
-                           cusparse_dx_residual_7,
-                           d_u_,
-                           data.cusparse_u_,
-                           data.cusparse_view_,
-                           data.d_inv_diag);
+      // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
+      data.gpu_adat_multiply(1.0,
+                             d_dy_,
+                             cusparse_dy_,
+                             -1.0,
+                             d_dx_residual_7,
+                             cusparse_dx_residual_7,
+                             d_u_,
+                             data.cusparse_u_,
+                             data.cusparse_view_,
+                             data.d_inv_diag);
 
-    const f_t dx_residual_7_norm = device_vector_norm_inf<i_t, f_t>(d_dx_residual_7, stream_view_);
-    max_residual                 = std::max(max_residual, dx_residual_7_norm);
-    if (dx_residual_7_norm > 1e-2) {
-      settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
+      const f_t dx_residual_7_norm =
+        device_vector_norm_inf<i_t, f_t>(d_dx_residual_7, stream_view_);
+      max_residual = std::max(max_residual, dx_residual_7_norm);
+      if (dx_residual_7_norm > 1e-2) {
+        settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
+      }
     }
   }
-}
 
   // Only debug so not ported to the GPU
   if (debug) {
@@ -2844,9 +2772,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   }
 
   iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
-  if (settings.concurrent_halt != nullptr &&
-    *settings.concurrent_halt == 1) {
-   settings.log.printf("Barrier solver halted\n");
+  if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
+    settings.log.printf("Barrier solver halted\n");
     return lp_status_t::CONCURRENT_LIMIT;
   }
   data.cusparse_dual_residual_ = data.cusparse_view_.create_vector(d_dual_residual_);
@@ -2869,8 +2796,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     settings.log.printf("Barrier time limit exceeded\n");
     return lp_status_t::TIME_LIMIT;
   }
-  if (settings.concurrent_halt != nullptr &&
-      *settings.concurrent_halt == 1) {
+  if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
     settings.log.printf("Barrier solver halted\n");
     return lp_status_t::CONCURRENT_LIMIT;
   }
@@ -2963,8 +2889,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         settings.log.printf("Barrier time limit exceeded\n");
         return lp_status_t::TIME_LIMIT;
       }
-      if (settings.concurrent_halt != nullptr &&
-          *settings.concurrent_halt == 1) {
+      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
         settings.log.printf("Barrier solver halted\n");
         return lp_status_t::CONCURRENT_LIMIT;
       }
@@ -3025,8 +2950,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                                                     data.dv_aff,
                                                     data.dz_aff,
                                                     max_affine_residual);
-    if (settings.concurrent_halt != nullptr &&
-        *settings.concurrent_halt == 1) {
+    if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
       settings.log.printf("Barrier solver halted\n");
       return lp_status_t::CONCURRENT_LIMIT;
     }
@@ -3050,8 +2974,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       settings.log.printf("Barrier time limit exceeded\n");
       return lp_status_t::TIME_LIMIT;
     }
-    if (settings.concurrent_halt != nullptr &&
-        *settings.concurrent_halt == 1) {
+    if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
       settings.log.printf("Barrier solver halted\n");
       return lp_status_t::CONCURRENT_LIMIT;
     }
@@ -3188,8 +3111,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                          data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual)
                                          : compute_search_direction(
                          data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
-    if (settings.concurrent_halt != nullptr &&
-        *settings.concurrent_halt == 1) {
+    if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
       settings.log.printf("Barrier solver halted\n");
       return lp_status_t::CONCURRENT_LIMIT;
     }
@@ -3218,8 +3140,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         settings.log.printf("Barrier time limit exceeded\n");
         return lp_status_t::TIME_LIMIT;
       }
-      if (settings.concurrent_halt != nullptr &&
-          *settings.concurrent_halt == 1) {
+      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
         settings.log.printf("Barrier solver halted\n");
         return lp_status_t::CONCURRENT_LIMIT;
       }
