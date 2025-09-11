@@ -103,6 +103,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       nnz(-1),
       first_factor(true),
       positive_definite(true),
+      A_created(false),
       settings_(settings),
       stream(stream_view)
   {
@@ -141,6 +142,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 #endif
 
 #ifdef USE_AMD
+     settings_.log.printf("Using AMD\n");
     // Tell cuDSS to use AMD
     cudssAlgType_t reorder_alg = CUDSS_ALG_3;
     CUDSS_CALL_AND_CHECK_EXIT(
@@ -159,6 +161,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 #endif
 
 #if USE_MATCHING
+    settings_.log.printf("Using matching\n");
     int32_t use_matching = 1;
     CUDSS_CALL_AND_CHECK_EXIT(
       cudssConfigSet(solverConfig, CUDSS_CONFIG_USE_MATCHING, &use_matching, sizeof(int32_t)),
@@ -197,8 +200,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     cudaFreeAsync(x_values_d, stream);
     cudaFreeAsync(b_values_d, stream);
-
-    CUDSS_CALL_AND_CHECK_EXIT(cudssMatrixDestroy(A), status, "cudssMatrixDestroy for A");
+    printf("cudssMatrixA created %d\n", A_created);
+    printf("cudsMatrixDestroy %p \n", (void *) A);
+    if (A_created) {
+      CUDSS_CALL_AND_CHECK_EXIT(cudssMatrixDestroy(A), status, "cudssMatrixDestroy for A");
+    }
 
     CUDSS_CALL_AND_CHECK_EXIT(
       cudssMatrixDestroy(cudss_x), status, "cudssMatrixDestroy for cudss_x");
@@ -213,6 +219,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   i_t analyze(device_csr_matrix_t<i_t, f_t>& Arow) override
   {
     raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze");
+
 #ifdef WRITE_MATRIX_MARKET
     {
       csr_matrix_t<i_t, f_t> Arow_host = Arow.to_host(Arow.row_start.stream());
@@ -235,6 +242,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     {
       raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : cudssMatrixCreateCsr");
+      printf("creating cudss CSR\n");
       CUDSS_CALL_AND_CHECK(
         cudssMatrixCreateCsr(&A,
                              n,
@@ -251,6 +259,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                              CUDSS_BASE_ZERO),
         status,
         "cudssMatrixCreateCsr");
+      A_created = true;
     }
 
     // Perform symbolic analysis
@@ -318,6 +327,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
         handle, CUDSS_PHASE_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b),
       status,
       "cudssExecute for factorization");
+
+
+#ifdef TIME_FACTORIZATION
+     RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
+#endif
 
     f_t numeric_time = toc(start_numeric);
     if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
@@ -393,6 +407,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     if (!first_factor) {
       CUDSS_CALL_AND_CHECK(cudssMatrixDestroy(A), status, "cudssMatrixDestroy for A");
+      A_created = false;
     }
 
     CUDSS_CALL_AND_CHECK(
@@ -411,6 +426,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                            CUDSS_BASE_ZERO),
       status,
       "cudssMatrixCreateCsr");
+    A_created = true;
 
     // Perform symbolic analysis
     if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
@@ -578,6 +594,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   cudssHandle_t handle;
   cudssConfig_t solverConfig;
   cudssData_t solverData;
+  bool A_created;
   cudssMatrix_t A;
   cudssMatrix_t cudss_x;
   cudssMatrix_t cudss_b;
