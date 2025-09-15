@@ -185,12 +185,17 @@ class device_csc_matrix_t {
     // Inclusive cumulative sum to have the corresponding column for each entry
     rmm::device_buffer d_temp_storage;
     size_t temp_storage_bytes;
-    cub::DeviceScan::InclusiveSum(nullptr, temp_storage_bytes, col_index.data(), col_index.size());
-    d_temp_storage.resize(temp_storage_bytes, stream);
     cub::DeviceScan::InclusiveSum(
-      d_temp_storage.data(), temp_storage_bytes, col_index.data(), col_index.size());
+      nullptr, temp_storage_bytes, col_index.data(), col_index.data(), col_index.size(), stream);
+    d_temp_storage.resize(temp_storage_bytes, stream);
+    cub::DeviceScan::InclusiveSum(d_temp_storage.data(),
+                                  temp_storage_bytes,
+                                  col_index.data(),
+                                  col_index.data(),
+                                  col_index.size(),
+                                  stream);
     // Have to sync since InclusiveSum is being run on local data (d_temp_storage)
-    RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
+    stream.synchronize();
   }
 
   csc_view_t<i_t, f_t> view()
