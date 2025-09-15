@@ -142,7 +142,8 @@ class iteration_data_t {
         thrust::make_transform_iterator(d_cols_to_remove.data(), cuda::std::logical_not<i_t>{}),
         d_inv_diag_prime.data(),
         d_num_flag.data(),
-        inv_diag.size());
+        inv_diag.size(),
+        stream_view_);
 
       d_flag_buffer.resize(flag_buffer_size, stream_view_);
     }
