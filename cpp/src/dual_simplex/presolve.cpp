@@ -1289,16 +1289,17 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
   vertices_to_refine.reserve(max_vertices);
   std::vector<i_t> marked_vertices(max_vertices, 0);
 
-  std::vector<i_t> color_in_stack(max_vertices, 0);
+  i_t max_colors = m + n;
+  std::vector<i_t> color_in_stack(max_colors, 0);
   color_in_stack[0] = 1;
   color_in_stack[1] = 1;
 
   std::unordered_map<f_t, std::vector<i_t>> color_sums;
   std::unordered_map<f_t, i_t> sum_to_sizes;
 
-  std::vector<std::vector<i_t>> vertices_to_refine_by_color(max_vertices);
-  std::vector<f_t> max_sum_by_color(max_vertices, std::numeric_limits<f_t>::quiet_NaN());
-  std::vector<f_t> min_sum_by_color(max_vertices, std::numeric_limits<f_t>::quiet_NaN());
+  std::vector<std::vector<i_t>> vertices_to_refine_by_color(max_colors);
+  std::vector<f_t> max_sum_by_color(max_colors, std::numeric_limits<f_t>::quiet_NaN());
+  std::vector<f_t> min_sum_by_color(max_colors, std::numeric_limits<f_t>::quiet_NaN());
 
 
   std::vector<i_t> colors_to_split;
@@ -1341,7 +1342,6 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
     if (refining_color.row_or_column == kRow) {
       // Refining color is a row color.
       // See if we need to split the column colors
-
       for (i_t color : colors_to_split) {
         split_colors(color,
                      refining_color.color,
@@ -1389,6 +1389,15 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
       vertex_to_sum[v] = 0.0;
     }
 
+    if (total_colors_seen >= max_colors - 10) {
+      printf("Increase max colors from %d to %d\n", max_colors, max_colors * 2);
+      max_colors *= 2;
+      color_in_stack.resize(max_colors, 0);
+      vertices_to_refine_by_color.resize(max_colors);
+      max_sum_by_color.resize(max_colors);
+      min_sum_by_color.resize(max_colors);
+    }
+
 #ifdef DEBUG
     for (i_t k = 0; k < max_vertices; k++) {
       if (vertex_to_sum[k] != 0.0) {
@@ -1404,7 +1413,14 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
       min_sum_by_color[color] = std::numeric_limits<f_t>::quiet_NaN();
     }
 
-
+#ifdef DEBUG
+    for (i_t k = 0; k < total_colors_seen; k++) {
+      if (vertices_to_refine_by_color[k].size() != 0) {
+        printf("Color %d has %ld vertices to refine. Not cleared\n", k, vertices_to_refine_by_color[k].size());
+        exit(1);
+      }
+    }
+#endif
 
 #ifdef DEBUG
     for (i_t i = 0; i < m; i++) {
@@ -1640,6 +1656,15 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     printf("Augmented matrix has %d infs, expected 1\n", num_inf);
     exit(1);
   }
+
+#ifdef WRITE_AUGMENTED
+  {
+    FILE* fid;
+    fid = fopen("augmented.mtx", "w");
+    augmented.write_matrix_market(fid);
+    fclose(fid);
+  }
+#endif
 
   std::vector<color_t<i_t>> colors;
   i_t num_row_colors;
@@ -2027,10 +2052,13 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   A_tilde.m--;
   A_tilde.remove_column(n + nz_ub);
   A_tilde.n--;
-#ifdef DEBUG
-  fid = fopen("A_tilde.txt", "w");
-  A_tilde.write_matrix_market(fid);
-  fclose(fid);
+#ifdef WRITE_A_TILDE
+  {
+    FILE* fid;
+    fid = fopen("A_tilde.txt", "w");
+    A_tilde.write_matrix_market(fid);
+    fclose(fid);
+  }
 #endif
 
   csr_matrix_t<i_t, f_t> A_tilde_row(A_tilde.m, A_tilde.n, A_tilde.col_start[A_tilde.n]);
