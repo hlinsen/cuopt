@@ -431,11 +431,18 @@ class iteration_data_t {
     }
   }
 
-  i_t solve_adat(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x)
+  i_t solve_adat(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x, bool debug=false)
   {
     if (n_dense_columns == 0) {
       // Solve ADAT * x = b
-      return chol->solve(b, x);
+      if (debug) {
+        settings_.log.printf("||b|| = %.16e\n", vector_norm2<i_t, f_t>(b));
+      }
+      i_t solve_status = chol->solve(b, x);
+      if (debug) {
+        settings_.log.printf("||x|| = %.16e\n", vector_norm2<i_t, f_t>(x));
+      }
+      return solve_status;
     } else {
       // Use Sherman Morrison followed by PCG
 
@@ -467,10 +474,16 @@ class iteration_data_t {
       //
       // We can use a dense cholesky factorization of H to solve for y
 
-      const bool debug = false;
 
       dense_vector_t<i_t, f_t> w(AD.m);
+      if (debug) {
+        settings_.log.printf("||b|| = %.16e\n", vector_norm2<i_t, f_t>(b));
+      }
       i_t solve_status = chol->solve(b, w);
+      if (debug) {
+        settings_.log.printf("||w|| = %.16e\n", vector_norm2<i_t, f_t>(w));
+      }
+      const bool debug = false;
       if (solve_status != 0) { return solve_status; }
 
       if (!has_solve_info) {
@@ -1143,7 +1156,7 @@ class iteration_data_t {
   void adat_multiply(f_t alpha,
                      const dense_vector_t<i_t, f_t>& y,
                      f_t beta,
-                     dense_vector_t<i_t, f_t>& v) const
+                     dense_vector_t<i_t, f_t>& v, bool debug=false) const
   {
     const i_t m = A.m;
     const i_t n = A.n;
@@ -1163,13 +1176,24 @@ class iteration_data_t {
     // u = A^T * y
     dense_vector_t<i_t, f_t> u(n);
     matrix_transpose_vector_multiply(A, 1.0, y, 0.0, u);
+    if (debug) {
+      printf("||u|| = %.16e\n", vector_norm2<i_t, f_t>(u));
+    }
 
     // w = Dinv * u
     dense_vector_t<i_t, f_t> w(n);
     inv_diag.pairwise_product(u, w);
+    if (debug) {
+      printf("||inv_diag|| = %.16e\n", vector_norm2<i_t, f_t>(inv_diag));
+    }
 
     // v = alpha * A * w + beta * v = alpha * A * Dinv * A^T * y + beta * v
     matrix_vector_multiply(A, alpha, w, beta, v);
+    if (debug) {
+      printf("||A|| = %.16e\n", vector_norm2<i_t, f_t>(A.x));
+      printf("||w|| = %.16e\n", vector_norm2<i_t, f_t>(w));
+      printf("||v|| = %.16e\n", vector_norm2<i_t, f_t>(v));
+    }
   }
 
   void preconditioned_conjugate_gradient(const simplex_solver_settings_t<i_t, f_t>& settings,
@@ -1555,17 +1579,18 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     } else {
       matrix_vector_multiply(lp.A, 1.0, DinvFu, -1.0, rhs_x);
     }
+    settings.log.printf("||DinvFu|| = %e\n", vector_norm2<i_t, f_t>(DinvFu));
 
     // Solve A*Dinv*A'*q = A*Dinv*F*u - b
-    settings.log.printf("||rhs_x|| = %e\n", vector_norm2<i_t, f_t>(rhs_x));
+    settings.log.printf("||rhs_x|| = %.16e\n", vector_norm2<i_t, f_t>(rhs_x));
     // i_t solve_status = data.chol->solve(rhs_x, q);
-    i_t solve_status = data.solve_adat(rhs_x, q);
+    i_t solve_status = data.solve_adat(rhs_x, q, true);
     if (solve_status != 0) { return status; }
     settings.log.printf("Initial solve status %d\n", solve_status);
-    settings.log.printf("||q|| = %e\n", vector_norm2<i_t, f_t>(q));
+    settings.log.printf("||q|| = %.16e\n", vector_norm2<i_t, f_t>(q));
 
     // rhs_x <- A*Dinv*A'*q - rhs_x
-    data.adat_multiply(1.0, q, -1.0, rhs_x);
+    data.adat_multiply(1.0, q, -1.0, rhs_x, true);
     // matrix_vector_multiply(data.ADAT, 1.0, q, -1.0, rhs_x);
     settings.log.printf("|| A*Dinv*A'*q - (A*Dinv*F*u - b) || = %e\n",
                         vector_norm2<i_t, f_t>(rhs_x));
