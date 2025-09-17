@@ -120,6 +120,7 @@ class iteration_data_t {
       d_num_flag(lp.handle_ptr->get_stream()),
       d_inv_diag(lp.num_cols, lp.handle_ptr->get_stream()),
       d_cols_to_remove(0, lp.handle_ptr->get_stream()),
+      use_augmented(false),
       has_factorization(false),
       num_factorizations(0),
       has_solve_info(false),
@@ -154,6 +155,34 @@ class iteration_data_t {
     }
     settings.log.printf("n_upper_bounds %d\n", n_upper_bounds);
 
+    // Decide if we are going to use the augmented system or not
+    n_dense_columns = 0;
+    i_t n_dense_rows = 0;
+    i_t max_row_nz = 0;
+    f_t estimated_nz_AAT = 0.0;
+    std::vector<i_t> dense_columns_unordered;
+    {
+      f_t start_column_density = tic();
+      find_dense_columns(lp.A, settings, dense_columns_unordered, n_dense_rows, max_row_nz, estimated_nz_AAT);
+      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
+      for (i_t j : dense_columns_unordered) {
+        settings.log.printf("Dense column %6d\n", j);
+      }
+      float64_t column_density_time = toc(start_column_density);
+      n_dense_columns               = static_cast<i_t>(dense_columns_unordered.size());
+      settings.log.printf(
+        "Found %d dense columns and %d dense rows in %.2fs\n", n_dense_columns, n_dense_rows, column_density_time);
+    }
+    if ((settings.augmented != 0) && (n_dense_columns > 50 || n_dense_rows > 10 || (max_row_nz > 5000 && estimated_nz_AAT > 1e10) || settings.augmented == 1)) {
+      use_augmented = true;
+      n_dense_columns = 0;
+    }
+    if (use_augmented) {
+      settings.log.printf("Using augmented system\n");
+    } else {
+      settings.log.printf("Using ADAT system\n");
+    }
+
     diag.set_scalar(1.0);
     if (n_upper_bounds > 0) {
       for (i_t k = 0; k < n_upper_bounds; k++) {
@@ -162,7 +191,7 @@ class iteration_data_t {
       }
     }
     inv_diag.set_scalar(1.0);
-    if (settings.augmented) { diag.multiply_scalar(-1.0); }
+    if (use_augmented) { diag.multiply_scalar(-1.0); }
     if (n_upper_bounds > 0) { diag.inverse(inv_diag); }
     if (use_gpu) {
       // TMP diag and inv_diag should directly created and filled on the GPU
@@ -172,24 +201,10 @@ class iteration_data_t {
     if (n_upper_bounds > 0) { inv_diag.sqrt(inv_sqrt_diag); }
 
     if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
-    n_dense_columns = 0;
-    std::vector<i_t> dense_columns_unordered;
-    if (!settings.augmented && settings.eliminate_dense_columns) {
-      f_t start_column_density = tic();
-      find_dense_columns(lp.A, settings, dense_columns_unordered);
-      if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
-      for (i_t j : dense_columns_unordered) {
-        settings.log.printf("Dense column %6d\n", j);
-      }
-      float64_t column_density_time = toc(start_column_density);
-      n_dense_columns               = static_cast<i_t>(dense_columns_unordered.size());
-      settings.log.printf(
-        "Found %d dense columns in %.2fs\n", n_dense_columns, column_density_time);
-    }
 
     // Copy A into AD
     AD = lp.A;
-    if (n_dense_columns > 0) {
+    if (!use_augmented && n_dense_columns > 0) {
       cols_to_remove.resize(lp.num_cols, 0);
       for (i_t k : dense_columns_unordered) {
         cols_to_remove[k] = 1;
@@ -236,13 +251,13 @@ class iteration_data_t {
     }
 
     if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
-    i_t factorization_size = settings.augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
+    i_t factorization_size = use_augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
     chol                   = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(
       settings, factorization_size, handle_ptr->get_stream());
     chol->set_positive_definite(false);
     if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     // Perform symbolic analysis
-    if (settings.augmented) {
+    if (use_augmented) {
       // Build the sparsity pattern of the augmented system
       form_augmented(true);
       if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
@@ -264,14 +279,15 @@ class iteration_data_t {
     i_t m                  = A.m;
     i_t nnzA               = A.col_start[n];
     i_t factorization_size = n + m;
-    const f_t perturb      = 0.0;
+    const f_t dual_perturb      = 0.0;
+    const f_t primal_perturb      = 1e-6;
     if (first_call) {
       augmented.reallocate(2 * nnzA + n + m);
       i_t q = 0;
       for (i_t j = 0; j < n; j++) {
         augmented.col_start[j] = q;
         augmented.i[q]         = j;
-        augmented.x[q++]       = -diag[j] - perturb;
+        augmented.x[q++]       = -diag[j] - dual_perturb;
         const i_t col_beg      = A.col_start[j];
         const i_t col_end      = A.col_start[j + 1];
         for (i_t p = col_beg; p < col_end; ++p) {
@@ -290,10 +306,17 @@ class iteration_data_t {
           augmented.x[q++] = AT.x[p];
         }
         augmented.i[q]   = k;
-        augmented.x[q++] = 1e-6;
+        augmented.x[q++] = primal_perturb;
       }
       augmented.col_start[n + m] = q;
-      settings_.log.printf("augmented nnz %d predicted %d\n", q, 2 * nnzA + n + m);
+      if (q != 2 * nnzA + n + m) {
+        settings_.log.printf("augmented nnz %d predicted %d\n", q, 2 * nnzA + n + m);
+        exit(1);
+      }
+      if (A.col_start[n] != AT.col_start[m]) {
+        settings_.log.printf("A nz %d AT nz %d\n", A.col_start[n], AT.col_start[m]);
+        exit(1);
+      }
 
 #ifdef CHECK_SYMMETRY
       csc_matrix_t<i_t, f_t> augmented_transpose(1, 1, 1);
@@ -306,11 +329,14 @@ class iteration_data_t {
       csc_matrix_t<i_t, f_t> error(m + n, m + n, 1);
       add(augmented, augmented_transpose, 1.0, -1.0, error);
       settings_.log.printf("|| Aug - Aug^T ||_1 %e\n", error.norm1());
+      if (error.norm1() > 1e-2) {
+        exit(1);
+      }
 #endif
     } else {
       for (i_t j = 0; j < n; ++j) {
         const i_t q    = augmented.col_start[j];
-        augmented.x[q] = -diag[j] - perturb;
+        augmented.x[q] = -diag[j] - dual_perturb;
       }
     }
   }
@@ -476,6 +502,7 @@ class iteration_data_t {
 
 
       dense_vector_t<i_t, f_t> w(AD.m);
+      const bool debug = false;
       if (debug) {
         settings_.log.printf("||b|| = %.16e\n", vector_norm2<i_t, f_t>(b));
       }
@@ -483,8 +510,10 @@ class iteration_data_t {
       if (debug) {
         settings_.log.printf("||w|| = %.16e\n", vector_norm2<i_t, f_t>(w));
       }
-      const bool debug = false;
-      if (solve_status != 0) { return solve_status; }
+      if (solve_status != 0) {
+        settings_.log.printf("Linear solve failed in Sherman Morrison after ADAT solve\n");
+        return solve_status;
+      }
 
       if (!has_solve_info) {
         AD_dense = A_dense;
@@ -850,7 +879,10 @@ class iteration_data_t {
 
   void find_dense_columns(const csc_matrix_t<i_t, f_t>& A,
                           const simplex_solver_settings_t<i_t, f_t>& settings,
-                          std::vector<i_t>& columns_to_remove)
+                          std::vector<i_t>& columns_to_remove,
+                          i_t& n_dense_rows,
+                          i_t& max_row_nz,
+                          f_t& estimated_nz_AAT)
   {
     f_t start_column_density = tic();
     const i_t m              = A.m;
@@ -953,12 +985,20 @@ class iteration_data_t {
     }
 
     std::vector<i_t> histogram_row(m, 0);
+    max_row_nz = 0;
     for (i_t k = 0; k < m; k++) {
       histogram_row[row_nz[k]]++;
+      max_row_nz  = std::max(max_row_nz, row_nz[k]);
     }
     settings.log.printf("Row Nz  # rows\n");
     for (i_t k = 0; k < m; k++) {
       if (histogram_row[k] > 0) { settings.log.printf("%6d %6d\n", k, histogram_row[k]); }
+    }
+
+
+    n_dense_rows = 0;
+    for (i_t k = 0; k < m; k++) {
+      if (histogram_row[k] > .1 * n) { n_dense_rows++; }
     }
 
     for (i_t k = 0; k < m; k++) {
@@ -1035,6 +1075,7 @@ class iteration_data_t {
       estimated_nz_C += static_cast<int64_t>(column_count[i]);
     }
     settings.log.printf("Estimated nz AAT %e\n", static_cast<f_t>(estimated_nz_C));
+    estimated_nz_AAT = static_cast<f_t>(estimated_nz_C);
 
     // Sort the columns of A according to their additional fill
     std::vector<i_t> permutation(n);
@@ -1052,7 +1093,7 @@ class iteration_data_t {
       // settings.log.printf("Column %6d delta nz %d\n", j, delta_nz[j]);
       nnz_C += delta_nz[j];
       cumulative_nonzeros[k] = static_cast<f_t>(nnz_C);
-      if (n - k < 10) {
+      if (0 && n - k < 10) {
         settings.log.printf("Cumulative nonzeros %ld %6.2e k %6d delta nz %ld col %6d\n",
                             nnz_C,
                             cumulative_nonzeros[k],
@@ -1073,6 +1114,7 @@ class iteration_data_t {
                                 cumulative_nonzeros[k] - cumulative_nonzeros[k - 1]);
       const f_t ratio = delta_nz_j / total_nz_estimate;
       if (ratio > .01) {
+#ifdef DEBUG
         settings.log.printf(
           "Column: nz %10d cumulative nz %6.2e estimated delta nz %6.2e percent %.2f col %6d\n",
           col_nz,
@@ -1080,6 +1122,7 @@ class iteration_data_t {
           delta_nz_j,
           ratio,
           j);
+#endif
         columns_to_remove.push_back(j);
       }
     }
@@ -1416,6 +1459,8 @@ class iteration_data_t {
   dense_matrix_t<i_t, f_t> Hchol;
   const csc_matrix_t<i_t, f_t>& A;
 
+  bool use_augmented;
+
   std::unique_ptr<sparse_cholesky_base_t<i_t, f_t>> chol;
 
   bool has_factorization;
@@ -1525,10 +1570,11 @@ template <typename i_t, typename f_t>
 int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 {
   raft::common::nvtx::range fun_scope("Barrier: initial_point");
+  const bool use_augmented = data.use_augmented;
 
   // Perform a numerical factorization
   i_t status;
-  if (settings.augmented) {
+  if (use_augmented) {
     settings.log.printf("Factorizing augmented\n");
     status = data.chol->factorize(data.augmented);
   } else {
@@ -1555,7 +1601,7 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   dense_vector_t<i_t, f_t> DinvFu(lp.num_cols);  // DinvFu = Dinv * Fu
   data.inv_diag.pairwise_product(Fu, DinvFu);
   dense_vector_t<i_t, f_t> q(lp.num_rows);
-  if (settings.augmented) {
+  if (use_augmented) {
     dense_vector_t<i_t, f_t> rhs(lp.num_cols + lp.num_rows);
     for (i_t k = 0; k < lp.num_cols; k++) {
       rhs[k] = -Fu[k];
@@ -1681,7 +1727,7 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
         settings.log.printf("z[%d] = %e < 1.0 upper %e\n", j, data.z[j], lp.upper[j]);
       }
     }
-  } else if (settings.augmented) {
+  } else if (use_augmented) {
     dense_vector_t<i_t, f_t> dual_rhs(lp.num_cols + lp.num_rows);
     dual_rhs.set_scalar(0.0);
     for (i_t k = 0; k < lp.num_cols; k++) {
@@ -2026,6 +2072,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
   raft::common::nvtx::range fun_scope("Barrier: compute_search_direction");
 
   const bool debug = false;
+  const bool use_augmented = data.use_augmented;
 
   {
     raft::common::nvtx::range fun_scope("Barrier: GPU allocation and copies");
@@ -2115,7 +2162,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::common::nvtx::range fun_scope("Barrier: ADAT");
 
     i_t status;
-    if (settings.augmented) {
+    if (use_augmented) {
       RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
       data.form_augmented();
       status = data.chol->factorize(data.augmented);
@@ -2183,7 +2230,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     data.cusparse_view_.spmv(1, data.cusparse_tmp4_, 1, data.cusparse_h_);
   }
 
-  if (settings.augmented) {
+  if (use_augmented) {
     // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .* bound_rhs)
     // ./ w)
     dense_vector_t<i_t, f_t> r1(lp.num_cols);
@@ -2199,11 +2246,11 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     }
     dense_vector_t<i_t, f_t> augmented_soln(lp.num_cols + lp.num_rows);
     data.chol->solve(augmented_rhs, augmented_soln);
+    data.iterative_refinement_augmented(augmented_rhs, augmented_soln);
     dense_vector_t<i_t, f_t> augmented_residual = augmented_rhs;
     matrix_vector_multiply(data.augmented, 1.0, augmented_soln, -1.0, augmented_residual);
     f_t solve_err = vector_norm_inf<i_t, f_t>(augmented_residual);
-    if (solve_err > 1e-6) { settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e\n", solve_err); }
-    data.iterative_refinement_augmented(augmented_rhs, augmented_soln);
+    if (solve_err > 1e-6) { settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e after IR\n", solve_err); }
     for (i_t k = 0; k < lp.num_cols; k++) {
       dx[k] = augmented_soln[k];
     }
@@ -2285,14 +2332,14 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
                              data.cusparse_view_,
                              data.d_inv_diag);
 
-      f_t const y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
+      f_t y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
       max_residual              = std::max(max_residual, y_residual_norm);
       if (y_residual_norm > 1e-2) {
         settings.log.printf("|| h || = %.2e\n",
                             device_vector_norm_inf<i_t, f_t>(d_h_, stream_view_));
         settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
       }
-      if (y_residual_norm > 10) { return -1; }
+      if (y_residual_norm > 1e4) { return -1; }
     }
 
     // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
