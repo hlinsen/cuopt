@@ -386,7 +386,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
         original_lp.lower[col]     = 0.0;
         original_lp.upper[col]     = 0.0;
         lp_solution.x[col]         = 0.0;
-        lp_solution.z[col]         = 0.0;
+        lp_solution.z[col]         = -lp_solution.y[i];
         nz++;
         col++;
         original_lp.A.col_start[col] = nz;
