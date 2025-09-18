@@ -234,6 +234,18 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 #endif
 
     nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
+    const f_t density = static_cast<f_t>(nnz) / (static_cast<f_t>(n) * static_cast<f_t>(n));
+
+    if (first_factor && density >= 0.01) {
+      settings_.log.printf("Using AMD\n");
+      // Tell cuDSS to use AMD
+      cudssAlgType_t reorder_alg = CUDSS_ALG_3;
+      CUDSS_CALL_AND_CHECK_EXIT(
+                               cudssConfigSet(
+                                              solverConfig, CUDSS_CONFIG_REORDERING_ALG, &reorder_alg, sizeof(cudssAlgType_t)),
+                               status,
+                               "cudssConfigSet for reordering alg");
+    }
 
     if (!first_factor) {
       raft::common::nvtx::range fun_scope("Barrier: cuDSS Analyze : Destroy");
