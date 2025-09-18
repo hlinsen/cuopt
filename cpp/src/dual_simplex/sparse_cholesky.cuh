@@ -272,10 +272,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
         cudssExecute(handle, CUDSS_PHASE_REORDERING, solverConfig, solverData, A, cudss_x, cudss_b);
       if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
       if (status != CUDSS_STATUS_SUCCESS) {
-        printf(
+        settings_.log.printf(
           "FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for "
           "reordering\n",
           status);
+          return -1;
       }
       f_t reordering_time = toc(start_symbolic);
       settings_.log.printf("Reordering time: %.2fs\n", reordering_time);
@@ -285,10 +286,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
         handle, CUDSS_PHASE_SYMBOLIC_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b);
       if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
       if (status != CUDSS_STATUS_SUCCESS) {
-        printf(
+        settings_.log.printf(
           "FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for "
           "symbolic factorization\n",
           status);
+          return -1;
       }
     }
     f_t symbolic_factorization_time = toc(start_symbolic_factor);
@@ -322,12 +324,17 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       cudssMatrixSetValues(A, Arow.x.data()), status, "cudssMatrixSetValues for A");
 
     f_t start_numeric = tic();
-    CUDSS_CALL_AND_CHECK(
+    status =
       cudssExecute(
-        handle, CUDSS_PHASE_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b),
-      status,
-      "cudssExecute for factorization");
-
+        handle, CUDSS_PHASE_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b);
+    if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
+    if (status != CUDSS_STATUS_SUCCESS) {
+      settings_.log.printf(
+        "FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for "
+        "factorization\n",
+        status);
+      return -1;
+    }
 
 #ifdef TIME_FACTORIZATION
      RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
@@ -568,10 +575,13 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       status,
       "cudssMatrixCreateDn for x");
 
-    CUDSS_CALL_AND_CHECK(
-      cudssExecute(handle, CUDSS_PHASE_SOLVE, solverConfig, solverData, A, cudss_x, cudss_b),
-      status,
-      "cudssExecute for solve");
+    status =
+      cudssExecute(handle, CUDSS_PHASE_SOLVE, solverConfig, solverData, A, cudss_x, cudss_b);
+    if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
+    if (status != CUDSS_STATUS_SUCCESS) {
+      settings_.log.printf("FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for solve\n", status);
+      return -1;
+    }
 
     CUDA_CALL_AND_CHECK(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
 
