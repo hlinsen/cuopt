@@ -17,6 +17,7 @@
 #include "initial_solution_reader.hpp"
 #include "mip_test_instances.hpp"
 
+#include <cstdio>
 #include <cuopt/linear_programming/mip/solver_settings.hpp>
 #include <cuopt/linear_programming/mip/solver_solution.hpp>
 #include <cuopt/linear_programming/optimization_problem.hpp>
@@ -24,11 +25,13 @@
 #include <cuopt/logger.hpp>
 #include <mps_parser/parser.hpp>
 
-#include <omp.h>
 #include <raft/core/handle.hpp>
 
 #include <rmm/mr/device/cuda_async_memory_resource.hpp>
+#include <rmm/mr/device/limiting_resource_adaptor.hpp>
+#include <rmm/mr/device/logging_resource_adaptor.hpp>
 #include <rmm/mr/device/pool_memory_resource.hpp>
+#include <rmm/mr/device/tracking_resource_adaptor.hpp>
 
 #include <rmm/mr/device/owning_wrapper.hpp>
 
@@ -207,6 +210,7 @@ int run_single_file(std::string file_path,
   settings.log_to_console                = log_to_console;
   settings.tolerances.relative_tolerance = 1e-12;
   settings.tolerances.absolute_tolerance = 1e-6;
+  settings.presolve                      = true;
   cuopt::linear_programming::benchmark_info_t benchmark_info;
   settings.benchmark_info_ptr = &benchmark_info;
   auto start_run_solver       = std::chrono::high_resolution_clock::now();
@@ -340,6 +344,15 @@ int main(int argc, char* argv[])
     .scan<'g', double>()
     .default_value(std::numeric_limits<double>::max());
 
+  program.add_argument("--memory-limit")
+    .help("memory limit in MB")
+    .scan<'g', double>()
+    .default_value(0.0);
+
+  program.add_argument("--track-allocations")
+    .help("track allocations (t/f)")
+    .default_value(std::string("f"));
+
   // Parse arguments
   try {
     program.parse_args(argc, argv);
@@ -362,10 +375,12 @@ int main(int argc, char* argv[])
   std::string result_file;
   int batch_num = -1;
 
-  bool heuristics_only = program.get<std::string>("--heuristics-only")[0] == 't';
-  int num_cpu_threads  = program.get<int>("--num-cpu-threads");
-  bool write_log_file  = program.get<std::string>("--write-log-file")[0] == 't';
-  bool log_to_console  = program.get<std::string>("--log-to-console")[0] == 't';
+  bool heuristics_only   = program.get<std::string>("--heuristics-only")[0] == 't';
+  int num_cpu_threads    = program.get<int>("--num-cpu-threads");
+  bool write_log_file    = program.get<std::string>("--write-log-file")[0] == 't';
+  bool log_to_console    = program.get<std::string>("--log-to-console")[0] == 't';
+  double memory_limit    = program.get<double>("--memory-limit");
+  bool track_allocations = program.get<std::string>("--track-allocations")[0] == 't';
 
   if (program.is_used("--out-dir")) {
     out_dir     = program.get<std::string>("--out-dir");
@@ -469,7 +484,17 @@ int main(int argc, char* argv[])
     merge_result_files(out_dir, result_file, n_gpus, batch_num);
   } else {
     auto memory_resource = make_async();
-    rmm::mr::set_current_device_resource(memory_resource.get());
+    if (memory_limit > 0) {
+      auto limiting_adaptor =
+        rmm::mr::limiting_resource_adaptor(memory_resource.get(), memory_limit * 1024ULL * 1024ULL);
+      rmm::mr::set_current_device_resource(&limiting_adaptor);
+    } else if (track_allocations) {
+      rmm::mr::tracking_resource_adaptor tracking_adaptor(memory_resource.get(),
+                                                          /*capture_stacks=*/true);
+      rmm::mr::set_current_device_resource(&tracking_adaptor);
+    } else {
+      rmm::mr::set_current_device_resource(memory_resource.get());
+    }
     run_single_file(path,
                     0,
                     0,

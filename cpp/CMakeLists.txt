@@ -84,6 +84,14 @@ if(CMAKE_COMPILER_IS_GNUCXX)
   list(APPEND CUOPT_CXX_FLAGS -Werror -Wno-error=deprecated-declarations)
 endif(CMAKE_COMPILER_IS_GNUCXX)
 
+# To use sanitizer with cuda runtime, one must follow a few steps:
+# 1. Run the binary with env var set: LD_PRELOAD="$(gcc -print-file-name=libasan.so)" ASAN_OPTIONS='protect_shadow_gap=0:replace_intrin=0'
+# 2. (Optional) To run with a debugger (gdb or cuda-gdb) use the additional ASAN option alloc_dealloc_mismatch=0
+if(BUILD_SANITIZER)
+  list(APPEND CUOPT_CXX_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer -g -Wno-error=maybe-uninitialized)
+  add_link_options(-fsanitize=address,undefined)
+endif(BUILD_SANITIZER)
+
 if(DEFINE_ASSERT)
   add_definitions(-DASSERT_MODE)
 endif(DEFINE_ASSERT)
@@ -108,11 +116,12 @@ message(VERBOSE "CUOPT: LIBCUOPT_LOGGING_LEVEL = '${LIBCUOPT_LOGGING_LEVEL}'.")
 
 message("-- Building with logging level = ${LIBCUOPT_LOGGING_LEVEL}")
 
-message("-- Building for GPU_ARCHS = ${CMAKE_CUDA_ARCHITECTURES}")
+message("-- Building for GPU_ARCHS = '${CMAKE_CUDA_ARCHITECTURES}'")
+message("-- Host target architecture = '${CMAKE_SYSTEM_PROCESSOR}'")
 
 # make the flags global in order to propagate flags to test cmake files
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr --expt-extended-lambda")
-if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.9 AND CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.9)
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -static-global-template-stub=false")
 endif()
 list(APPEND CUOPT_CUDA_FLAGS -Werror=cross-execution-space-call -Wno-deprecated-declarations -Xcompiler=-Werror)
@@ -176,8 +185,8 @@ FetchContent_Declare(
   SYSTEM
 )
 
+find_package(TBB REQUIRED)
 set(BUILD_TESTING OFF CACHE BOOL "Disable test build for papilo")
-set(TBB OFF CACHE BOOL "Disable TBB")
 set(PAPILO_NO_BINARIES ON)
 option(LUSOL "Disable LUSOL" OFF)
 
@@ -253,6 +262,7 @@ target_include_directories(cuopt
 set(CUOPT_PRIVATE_CUDA_LIBS
   CUDA::curand
   CUDA::cusolver
+  TBB::tbb
   OpenMP::OpenMP_CXX)
 
 list(PREPEND CUOPT_PRIVATE_CUDA_LIBS CUDA::cublasLt)
@@ -282,6 +292,21 @@ message(STATUS "Using cudss MT library: ${CUDSS_MT_LIB_FILE}")
 # Pass CUDSS_MT_LIB_FILE as a compile definition
 target_compile_definitions(cuopt PRIVATE CUDSS_MT_LIB_FILE="${CUDSS_MT_LIB_FILE}")
 
+
+execute_process(
+  COMMAND git rev-parse --short HEAD
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  OUTPUT_VARIABLE GIT_COMMIT_HASH
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+message("-- Building with GIT_COMMIT_HASH = '${GIT_COMMIT_HASH}'")
+
+
+list(JOIN CMAKE_CUDA_ARCHITECTURES "," JOINED_CUDA_ARCHITECTURES) # ';' breaks compile_definitions, replace it
+target_compile_definitions(cuopt PUBLIC
+  CUOPT_GIT_COMMIT_HASH="${GIT_COMMIT_HASH}"
+  CUOPT_CUDA_ARCHITECTURES="${JOINED_CUDA_ARCHITECTURES}"
+  CUOPT_CPU_ARCHITECTURE="${CMAKE_SYSTEM_PROCESSOR}")
 
 target_link_libraries(cuopt
   PUBLIC
