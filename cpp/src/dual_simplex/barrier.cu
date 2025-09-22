@@ -2750,9 +2750,9 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
                            dual_residual_norm,
                            complementarity_residual_norm);
   }
-  if (relative_primal_residual < 100 * options.feasibility_tol &&
-      relative_dual_residual < 100 * options.optimality_tol &&
-      relative_complementarity_residual < 100 * options.complementarity_tol) {
+  if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
+      relative_dual_residual < settings.barrier_relaxed_optimality_tol &&
+      relative_complementarity_residual < settings.barrier_relaxed_complementarity_tol) {
     data.to_solution(lp,
                      iter,
                      primal_objective,
@@ -2782,9 +2782,9 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
   relative_complementarity_residual =
     complementarity_residual_norm / (1.0 + std::abs(primal_objective));
 
-  if (relative_primal_residual < 100 * options.feasibility_tol &&
-      relative_dual_residual < 100 * options.optimality_tol &&
-      relative_complementarity_residual < 100 * options.complementarity_tol) {
+  if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
+      relative_dual_residual < settings.barrier_relaxed_optimality_tol &&
+      relative_complementarity_residual < settings.barrier_relaxed_complementarity_tol) {
     settings.log.printf("Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n",
                         relative_primal_residual,
                         relative_dual_residual,
@@ -2920,9 +2920,9 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
                       complementarity_residual_norm,
                       elapsed_time);
 
-  bool converged = primal_residual_norm < options.feasibility_tol &&
-                   dual_residual_norm < options.optimality_tol &&
-                   complementarity_residual_norm < options.complementarity_tol;
+  bool converged = primal_residual_norm < settings.barrier_relative_feasibility_tol &&
+                   dual_residual_norm < settings.barrier_relative_optimality_tol &&
+                   complementarity_residual_norm < settings.barrier_relative_complementarity_tol;
 
   d_complementarity_xz_residual_.resize(data.complementarity_xz_residual.size(), stream_view_);
   d_complementarity_wv_residual_.resize(data.complementarity_wv_residual.size(), stream_view_);
@@ -2951,7 +2951,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   data.v_save = data.v;
   data.z_save = data.z;
 
-  const i_t iteration_limit = std::min(options.iteration_limit, settings.iteration_limit);
+  const i_t iteration_limit = settings.iteration_limit;
 
   while (iter < iteration_limit) {
     raft::common::nvtx::range fun_scope("Barrier: iteration");
@@ -3452,9 +3452,9 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       relative_complementarity_residual =
         complementarity_residual_norm / (1.0 + std::abs(primal_objective));
 
-      if (relative_primal_residual < 100 * options.feasibility_tol &&
-          relative_dual_residual < 100 * options.optimality_tol &&
-          relative_complementarity_residual < 100 * options.complementarity_tol) {
+      if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
+          relative_dual_residual < settings.barrier_relaxed_optimality_tol &&
+          relative_complementarity_residual < settings.barrier_relaxed_complementarity_tol) {
         data.w_save = data.w;
         data.x_save = data.x;
         data.y_save = data.y;
@@ -3487,9 +3487,9 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
 
     }  // Close nvtx range
 
-    bool primal_feasible = relative_primal_residual < options.feasibility_tol;
-    bool dual_feasible   = relative_dual_residual < options.optimality_tol;
-    bool small_gap       = relative_complementarity_residual < options.complementarity_tol;
+    bool primal_feasible = relative_primal_residual < settings.barrier_relative_feasibility_tol;
+    bool dual_feasible   = relative_dual_residual < settings.barrier_relative_optimality_tol;
+    bool small_gap       = relative_complementarity_residual < settings.barrier_relative_complementarity_tol;
 
     converged = primal_feasible && dual_feasible && small_gap;
 

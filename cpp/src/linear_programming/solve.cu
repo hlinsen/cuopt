@@ -312,6 +312,9 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   dual_simplex_settings.barrier                 = true;
   dual_simplex_settings.crossover               = settings.crossover;
   dual_simplex_settings.eliminate_dense_columns = settings.eliminate_dense_columns;
+  dual_simplex_settings.barrier_relaxed_feasibility_tol = settings.tolerances.relative_primal_tolerance;
+  dual_simplex_settings.barrier_relaxed_optimality_tol = settings.tolerances.relative_dual_tolerance;
+  dual_simplex_settings.barrier_relaxed_complementarity_tol = settings.tolerances.relative_gap_tolerance;
   if (dual_simplex_settings.concurrent_halt != nullptr) {
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
     dual_simplex_settings.log.log = false;
