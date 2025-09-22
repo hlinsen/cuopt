@@ -704,7 +704,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
     std::unique_ptr<detail::third_party_presolve_t<i_t, f_t>> presolver;
     auto run_presolve = settings.presolve;
     run_presolve = run_presolve && settings.get_pdlp_warm_start_data().total_pdlp_iterations_ == -1;
-    if (!run_presolve) { CUOPT_LOG_INFO("Presolve is disabled, skipping"); }
+    if (!run_presolve) { CUOPT_LOG_INFO("Third-party presolve is disabled, skipping"); }
 
     if (run_presolve) {
       // allocate no more than 10% of the time limit to presolve.
@@ -723,7 +723,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
       }
       problem       = detail::problem_t<i_t, f_t>(reduced_problem);
       presolve_time = lp_timer.elapsed_time();
-      CUOPT_LOG_INFO("Third party presolve time: %f", presolve_time);
+      CUOPT_LOG_INFO("Third-party presolve time: %f", presolve_time);
     }
 
     CUOPT_LOG_INFO(

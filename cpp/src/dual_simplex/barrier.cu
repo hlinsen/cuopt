@@ -69,6 +69,9 @@ class iteration_data_t {
       y_save(lp.num_rows),
       v_save(num_upper_bounds),
       z_save(lp.num_cols),
+      feasibility_save(inf),
+      optimality_save(inf),
+      complementarity_save(inf),
       diag(lp.num_cols),
       inv_diag(lp.num_cols),
       inv_sqrt_diag(lp.num_cols),
@@ -1425,6 +1428,9 @@ class iteration_data_t {
   dense_vector_t<i_t, f_t> y_save;
   dense_vector_t<i_t, f_t> v_save;
   dense_vector_t<i_t, f_t> z_save;
+  f_t feasibility_save;
+  f_t optimality_save;
+  f_t complementarity_save;
 
   pinned_dense_vector_t<i_t, f_t> diag;
   pinned_dense_vector_t<i_t, f_t> inv_diag;
@@ -3455,11 +3461,18 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
           relative_dual_residual < settings.barrier_relaxed_optimality_tol &&
           relative_complementarity_residual < settings.barrier_relaxed_complementarity_tol) {
-        data.w_save = data.w;
-        data.x_save = data.x;
-        data.y_save = data.y;
-        data.v_save = data.v;
-        data.z_save = data.z;
+        if (relative_primal_residual < data.feasibility_save &&
+            relative_dual_residual < data.optimality_save &&
+            relative_complementarity_residual < data.complementarity_save) {
+          data.w_save          = data.w;
+          data.x_save          = data.x;
+          data.y_save          = data.y;
+          data.v_save          = data.v;
+          data.z_save          = data.z;
+          data.feasibility_save     = relative_primal_residual;
+          data.optimality_save      = relative_dual_residual;
+          data.complementarity_save = relative_complementarity_residual;
+        }
       }
 
       iter++;
