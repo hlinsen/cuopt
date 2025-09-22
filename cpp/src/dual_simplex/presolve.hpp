@@ -65,6 +65,10 @@ struct presolve_info_t {
   std::vector<i_t> free_variable_pairs;
   // Removed lower bounds
   std::vector<f_t> removed_lower_bounds;
+  // indices of the constraints in the original problem that remain in the presolved problem
+  std::vector<i_t> remaining_constraints;
+  // indices of the constraints in the original problem that have been removed in the presolved problem
+  std::vector<i_t> removed_constraints;
 };
 
 template <typename i_t, typename f_t>
@@ -133,8 +137,10 @@ void uncrush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
 template <typename i_t, typename f_t>
 void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
                       const std::vector<f_t>& crushed_x,
+                      const std::vector<f_t>& crushed_y,
                       const std::vector<f_t>& crushed_z,
                       std::vector<f_t>& uncrushed_x,
+                      std::vector<f_t>& uncrushed_y,
                       std::vector<f_t>& uncrushed_z);
 
 // For pure LP bounds strengthening, var_types should be defaulted (i.e. left empty)

@@ -208,8 +208,7 @@ lp_status_t solve_linear_program_advanced(const lp_problem_t<i_t, f_t>& original
       std::vector<f_t> unscaled_z(lp.num_cols);
       unscale_solution<i_t, f_t>(column_scales, solution.x, solution.z, unscaled_x, unscaled_z);
       uncrush_solution(
-        presolve_info, unscaled_x, unscaled_z, original_solution.x, original_solution.z);
-      original_solution.y                  = solution.y;
+        presolve_info, unscaled_x, solution.y, unscaled_z, original_solution.x, original_solution.y, original_solution.z);
       original_solution.objective          = solution.objective;
       original_solution.user_objective     = solution.user_objective;
       original_solution.l2_primal_residual = solution.l2_primal_residual;
@@ -311,8 +310,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
     settings.log.printf("Unscaled Dual residual: %e\n", unscaled_dual_residual_norm);
 
     // Undo presolve
-    lp_solution.y = barrier_solution.y;
-    uncrush_solution(presolve_info, unscaled_x, unscaled_z, lp_solution.x, lp_solution.z);
+    uncrush_solution(presolve_info, unscaled_x, barrier_solution.y, unscaled_z, lp_solution.x, lp_solution.y, lp_solution.z);
 
     std::vector<f_t> post_solve_residual = original_lp.rhs;
     matrix_vector_multiply(original_lp.A, 1.0, lp_solution.x, -1.0, post_solve_residual);
@@ -343,26 +341,10 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
 
   if (settings.crossover && barrier_status == lp_status_t::OPTIMAL) {
     // Check to see if we need to add artifical variables
-    csc_matrix_t<i_t, f_t> Atranspose(1, 1, 1);
-    original_lp.A.transpose(Atranspose);
     std::vector<i_t> artificial_variables;
     artificial_variables.reserve(original_lp.num_rows);
     for (i_t i = 0; i < original_lp.num_rows; ++i) {
-      const i_t row_start = Atranspose.col_start[i];
-      const i_t row_end   = Atranspose.col_start[i + 1];
-      bool found_slack    = false;
-      for (i_t p = row_start; p < row_end; ++p) {
-        const i_t j      = Atranspose.i[p];
-        const i_t nz_col = original_lp.A.col_start[j + 1] - original_lp.A.col_start[j];
-        if (nz_col == 1) {
-          found_slack = true;
-          break;
-        }
-      }
-      if (!found_slack) {
-        // settings.log.printf("No slack found for row %d\n", i);
-        artificial_variables.push_back(i);
-      }
+      artificial_variables.push_back(i);
     }
     if (artificial_variables.size() > 0) {
       settings.log.printf("Adding %ld artificial variables\n", artificial_variables.size());

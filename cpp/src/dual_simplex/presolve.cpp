@@ -407,21 +407,25 @@ i_t remove_rows(lp_problem_t<i_t, f_t>& problem,
 template <typename i_t, typename f_t>
 i_t remove_empty_rows(lp_problem_t<i_t, f_t>& problem,
                       std::vector<char>& row_sense,
-                      i_t& num_empty_rows)
+                      i_t& num_empty_rows,
+                      presolve_info_t<i_t, f_t>& presolve_info)
 {
   constexpr bool verbose = false;
   if (verbose) { printf("Problem has %d empty rows\n", num_empty_rows); }
   csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
   problem.A.to_compressed_row(Arow);
   std::vector<i_t> row_marker(problem.num_rows);
-
+  presolve_info.removed_constraints.reserve(num_empty_rows);
+  presolve_info.remaining_constraints.reserve(problem.num_rows - num_empty_rows);
   for (i_t i = 0; i < problem.num_rows; ++i) {
     if ((Arow.row_start[i + 1] - Arow.row_start[i]) == 0) {
       row_marker[i] = 1;
+      presolve_info.removed_constraints.push_back(i);
       if (verbose) {
         printf("Empty row %d start %d end %d\n", i, Arow.row_start[i], Arow.row_start[i + 1]);
       }
     } else {
+      presolve_info.remaining_constraints.push_back(i);
       row_marker[i] = 0;
     }
   }
@@ -2531,7 +2535,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   }
   if (num_empty_rows > 0) {
     settings.log.printf("Presolve removing %d empty rows\n", num_empty_rows);
-    i_t i = remove_empty_rows(problem, row_sense, num_empty_rows);
+    i_t i = remove_empty_rows(problem, row_sense, num_empty_rows, presolve_info);
     if (i != 0) { return -1; }
   }
 
@@ -2795,10 +2799,31 @@ void uncrush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
 template <typename i_t, typename f_t>
 void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
                       const std::vector<f_t>& crushed_x,
+                      const std::vector<f_t>& crushed_y,
                       const std::vector<f_t>& crushed_z,
                       std::vector<f_t>& uncrushed_x,
+                      std::vector<f_t>& uncrushed_y,
                       std::vector<f_t>& uncrushed_z)
 {
+  if (presolve_info.removed_constraints.size() == 0) {
+    uncrushed_y = crushed_y;
+  } else {
+    printf("Presolve info removed constraints %d\n", presolve_info.removed_constraints.size());
+    // We removed some constraints, so we need to map the crushed solution back to the original
+    // constraints
+    const i_t m = presolve_info.removed_constraints.size() + presolve_info.remaining_constraints.size();
+    uncrushed_y.resize(m);
+
+    i_t k = 0;
+    for (const i_t i : presolve_info.remaining_constraints) {
+      uncrushed_y[i] = crushed_y[k];
+      k++;
+    }
+    for (const i_t i : presolve_info.removed_constraints) {
+      uncrushed_y[i] = 0.0;
+    }
+  }
+
   if (presolve_info.removed_variables.size() == 0) {
     uncrushed_x = crushed_x;
     uncrushed_z = crushed_z;
@@ -2889,8 +2914,10 @@ template void uncrush_dual_solution<int, double>(const user_problem_t<int, doubl
 
 template void uncrush_solution<int, double>(const presolve_info_t<int, double>& presolve_info,
                                             const std::vector<double>& crushed_x,
+                                            const std::vector<double>& crushed_y,
                                             const std::vector<double>& crushed_z,
                                             std::vector<double>& uncrushed_x,
+                                            std::vector<double>& uncrushed_y,
                                             std::vector<double>& uncrushed_z);
 
 template bool bound_strengthening<int, double>(
