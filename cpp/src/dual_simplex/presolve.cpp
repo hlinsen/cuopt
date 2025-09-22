@@ -2419,8 +2419,9 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   for (i_t j = 0; j < problem.num_cols; j++) {
     if (problem.lower[j] == -inf && problem.upper[j] < inf) { no_lower_bound++; }
   }
+#ifdef PRINT_INFO
   settings.log.printf("%d variables with no lower bound\n", no_lower_bound);
-
+#endif
   // The original problem may have nonzero lower bounds
   // 0 != l_j <= x_j <= u_j
   i_t nonzero_lower_bounds = 0;
@@ -2466,7 +2467,9 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     if (problem.lower[j] == -inf && problem.upper[j] == inf) { free_variables++; }
   }
   if (free_variables > 0) {
+#ifdef PRINT_INFO
     settings.log.printf("%d free variables\n", free_variables);
+#endif
 
     // We have a variable x_j: with -inf < x_j < inf
     // we create new variables v and w with 0 <= v, w and x_j = v - w
@@ -2808,7 +2811,6 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   if (presolve_info.removed_constraints.size() == 0) {
     uncrushed_y = crushed_y;
   } else {
-    printf("Presolve info removed constraints %d\n", presolve_info.removed_constraints.size());
     // We removed some constraints, so we need to map the crushed solution back to the original
     // constraints
     const i_t m = presolve_info.removed_constraints.size() + presolve_info.remaining_constraints.size();
@@ -2828,7 +2830,6 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
     uncrushed_x = crushed_x;
     uncrushed_z = crushed_z;
   } else {
-    printf("Presolve info removed variables %d\n", presolve_info.removed_variables.size());
     // We removed some variables, so we need to map the crushed solution back to the original
     // variables
     const i_t n = presolve_info.removed_variables.size() + presolve_info.remaining_variables.size();
@@ -2852,7 +2853,6 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
 
   const i_t num_free_variables = presolve_info.free_variable_pairs.size() / 2;
   if (num_free_variables > 0) {
-    printf("Presolve info free variables %d\n", num_free_variables);
     // We added free variables so we need to map the crushed solution back to the original variables
     for (i_t k = 0; k < 2 * num_free_variables; k += 2) {
       const i_t u = presolve_info.free_variable_pairs[k];
@@ -2865,7 +2865,6 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   }
 
   if (presolve_info.removed_lower_bounds.size() > 0) {
-    printf("Presolve info removed lower bounds %d\n", presolve_info.removed_lower_bounds.size());
     // We removed some lower bounds so we need to map the crushed solution back to the original
     // variables
     for (i_t j = 0; j < uncrushed_x.size(); j++) {

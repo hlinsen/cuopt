@@ -275,6 +275,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
   barrier_solver_settings_t<i_t, f_t> barrier_solver_settings;
   lp_status_t barrier_status = barrier_solver.solve(barrier_solver_settings, barrier_solution);
   if (barrier_status == lp_status_t::OPTIMAL) {
+#ifdef COMPUTE_SCALED_RESIDUALS
     std::vector<f_t> scaled_residual = barrier_lp.rhs;
     matrix_vector_multiply(barrier_lp.A, 1.0, barrier_solution.x, -1.0, scaled_residual);
     f_t scaled_primal_residual = vector_norm_inf<i_t, f_t>(scaled_residual);
@@ -288,7 +289,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
       barrier_lp.A, 1.0, barrier_solution.y, 1.0, scaled_dual_residual);
     f_t scaled_dual_residual_norm = vector_norm_inf<i_t, f_t>(scaled_dual_residual);
     settings.log.printf("Scaled Dual residual: %e\n", scaled_dual_residual_norm);
-
+#endif
     // Unscale the solution
     std::vector<f_t> unscaled_x(barrier_lp.num_cols);
     std::vector<f_t> unscaled_z(barrier_lp.num_cols);
@@ -298,7 +299,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
     std::vector<f_t> residual = presolved_lp.rhs;
     matrix_vector_multiply(presolved_lp.A, 1.0, unscaled_x, -1.0, residual);
     f_t primal_residual = vector_norm_inf<i_t, f_t>(residual);
-    settings.log.printf("Unscaled Primal residual: %e\n", primal_residual);
+    settings.log.printf("Unscaled Primal infeasibility   (abs/rel): %.2e/%.2e\n", primal_residual, primal_residual / (1.0 + vector_norm_inf<i_t, f_t>(presolved_lp.rhs)));
 
     std::vector<f_t> unscaled_dual_residual = unscaled_z;
     for (i_t j = 0; j < unscaled_dual_residual.size(); ++j) {
@@ -307,7 +308,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
     matrix_transpose_vector_multiply(
       presolved_lp.A, 1.0, barrier_solution.y, 1.0, unscaled_dual_residual);
     f_t unscaled_dual_residual_norm = vector_norm_inf<i_t, f_t>(unscaled_dual_residual);
-    settings.log.printf("Unscaled Dual residual: %e\n", unscaled_dual_residual_norm);
+    settings.log.printf("Unscaled Dual infeasibility     (abs/rel): %.2e/%.2e\n", unscaled_dual_residual_norm, unscaled_dual_residual_norm / (1.0 + vector_norm_inf<i_t, f_t>(presolved_lp.objective)));
 
     // Undo presolve
     uncrush_solution(presolve_info, unscaled_x, barrier_solution.y, unscaled_z, lp_solution.x, lp_solution.y, lp_solution.z);
@@ -315,7 +316,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
     std::vector<f_t> post_solve_residual = original_lp.rhs;
     matrix_vector_multiply(original_lp.A, 1.0, lp_solution.x, -1.0, post_solve_residual);
     f_t post_solve_primal_residual = vector_norm_inf<i_t, f_t>(post_solve_residual);
-    settings.log.printf("Post-solve Primal residual: %e\n", post_solve_primal_residual);
+    settings.log.printf("Post-solve Primal infeasibility (abs/rel): %.2e/%.2e\n", post_solve_primal_residual, post_solve_primal_residual / (1.0 + vector_norm_inf<i_t, f_t>(original_lp.rhs)));
 
     std::vector<f_t> post_solve_dual_residual = lp_solution.z;
     for (i_t j = 0; j < post_solve_dual_residual.size(); ++j) {
@@ -324,7 +325,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
     matrix_transpose_vector_multiply(
       original_lp.A, 1.0, lp_solution.y, 1.0, post_solve_dual_residual);
     f_t post_solve_dual_residual_norm = vector_norm_inf<i_t, f_t>(post_solve_dual_residual);
-    settings.log.printf("Post-solve Dual residual: %e\n", post_solve_dual_residual_norm);
+    settings.log.printf("Post-solve Dual infeasibility   (abs/rel): %.2e/%.2e\n", post_solve_dual_residual_norm, post_solve_dual_residual_norm / (1.0 + vector_norm_inf<i_t, f_t>(original_lp.objective)));
 
     uncrush_primal_solution(user_problem, original_lp, lp_solution.x, solution.x);
     uncrush_dual_solution(
@@ -375,6 +376,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
       }
       original_lp.A.n      = new_cols;
       original_lp.num_cols = new_cols;
+#ifdef PRINT_INFO
       printf("nz %d =? new_nz %d =? Acol %d, num_cols %d =? new_cols %d x size %ld z size %ld\n",
              nz,
              new_nz,
@@ -383,6 +385,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
              new_cols,
              lp_solution.x.size(),
              lp_solution.z.size());
+#endif
     }
 
     // Run crossover

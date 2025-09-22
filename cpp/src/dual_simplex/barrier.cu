@@ -156,7 +156,9 @@ class iteration_data_t {
     for (i_t j = 0; j < lp.num_cols; j++) {
       if (lp.upper[j] < inf) { upper_bounds[n_upper_bounds++] = j; }
     }
-    settings.log.printf("n_upper_bounds %d\n", n_upper_bounds);
+    if (n_upper_bounds > 0) {
+      settings.log.printf("Upper bounds                : %d\n", n_upper_bounds);
+    }
 
     // Decide if we are going to use the augmented system or not
     n_dense_columns = 0;
@@ -168,22 +170,29 @@ class iteration_data_t {
       f_t start_column_density = tic();
       find_dense_columns(lp.A, settings, dense_columns_unordered, n_dense_rows, max_row_nz, estimated_nz_AAT);
       if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
+#ifdef PRINT_INFO
       for (i_t j : dense_columns_unordered) {
         settings.log.printf("Dense column %6d\n", j);
       }
+#endif
       float64_t column_density_time = toc(start_column_density);
       n_dense_columns               = static_cast<i_t>(dense_columns_unordered.size());
-      settings.log.printf(
-        "Found %d dense columns and %d dense rows in %.2fs\n", n_dense_columns, n_dense_rows, column_density_time);
+      if (n_dense_columns > 0) {
+        settings.log.printf("Dense columns               : %d\n", n_dense_columns);
+      }
+      if (n_dense_rows > 0) {
+        settings.log.printf("Dense rows                  : %d\n", n_dense_rows);
+      }
+      settings.log.printf("Density estimator time      : %.2fs\n", column_density_time);
     }
     if ((settings.augmented != 0) && (n_dense_columns > 50 || n_dense_rows > 10 || (max_row_nz > 5000 && estimated_nz_AAT > 1e10) || settings.augmented == 1)) {
       use_augmented = true;
       n_dense_columns = 0;
     }
     if (use_augmented) {
-      settings.log.printf("Using augmented system\n");
+      settings.log.printf("Linear system               : augmented\n");
     } else {
-      settings.log.printf("Using ADAT system\n");
+      settings.log.printf("Linear system               : ADAT\n");
     }
 
     diag.set_scalar(1.0);
@@ -416,10 +425,9 @@ class iteration_data_t {
       float64_t adat_time = toc(start_form_adat);
 
       if (num_factorizations == 0) {
-        settings_.log.printf("ADAT time %.2fs\n", adat_time);
-        settings_.log.printf(
-          "ADAT nonzeros %e density %.2f\n",
-          static_cast<float64_t>(adat_nnz),
+        settings_.log.printf("ADAT time                   : %.2fs\n", adat_time);
+        settings_.log.printf("ADAT nonzeros               : %.2e\n", static_cast<float64_t>(adat_nnz));
+        settings_.log.printf("ADAT density                : %.2f\n",
           static_cast<float64_t>(adat_nnz) /
             (static_cast<float64_t>(device_ADAT.m) * static_cast<float64_t>(device_ADAT.m)));
       }
@@ -871,13 +879,15 @@ class iteration_data_t {
       matrix_transpose_vector_multiply(lp.A, 1.0, solution.y, 1.0, dual_res);
     }
     f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_res, stream_view_);
+#ifdef PRINT_INFO
     settings_.log.printf("Solution Dual residual: %e\n", dual_residual_norm);
+#endif
 
     solution.iterations         = iterations;
     solution.objective          = objective;
     solution.user_objective     = user_objective;
     solution.l2_primal_residual = primal_residual;
-    solution.l2_dual_residual   = dual_residual;
+    solution.l2_dual_residual   = dual_residual_norm;
   }
 
   void find_dense_columns(const csc_matrix_t<i_t, f_t>& A,
@@ -972,11 +982,13 @@ class iteration_data_t {
       const i_t col_nz_j = A.col_start[j + 1] - A.col_start[j];
       histogram[col_nz_j]++;
     }
+#ifdef HISTOGRAM
     settings.log.printf("Col Nz  # cols\n");
     for (i_t k = 0; k < m; k++) {
       if (histogram[k] > 0) { settings.log.printf("%6d %6d\n", k, histogram[k]); }
     }
     settings.log.printf("\n");
+#endif
 
     std::vector<i_t> row_nz(m, 0);
     for (i_t j = 0; j < n; j++) {
@@ -993,10 +1005,12 @@ class iteration_data_t {
       histogram_row[row_nz[k]]++;
       max_row_nz  = std::max(max_row_nz, row_nz[k]);
     }
+#ifdef HISTOGRAM
     settings.log.printf("Row Nz  # rows\n");
     for (i_t k = 0; k < m; k++) {
       if (histogram_row[k] > 0) { settings.log.printf("%6d %6d\n", k, histogram_row[k]); }
     }
+#endif
 
 
     n_dense_rows = 0;
@@ -1039,7 +1053,9 @@ class iteration_data_t {
     for (i_t j = 0; j < n; j++) {
       sparse_nz_C += delta_nz[j];
     }
+#ifdef PRINT_INFO
     settings.log.printf("Sparse nz AAT %e\n", static_cast<f_t>(sparse_nz_C));
+#endif
 
     // Now we estimate the fill in C due to the dense columns
     i_t num_estimated_columns = 0;
@@ -1077,7 +1093,9 @@ class iteration_data_t {
     for (i_t i = 0; i < m; i++) {
       estimated_nz_C += static_cast<int64_t>(column_count[i]);
     }
+#ifdef PRINT_INFO
     settings.log.printf("Estimated nz AAT %e\n", static_cast<f_t>(estimated_nz_C));
+#endif
     estimated_nz_AAT = static_cast<f_t>(estimated_nz_C);
 
     // Sort the columns of A according to their additional fill
@@ -1096,7 +1114,8 @@ class iteration_data_t {
       // settings.log.printf("Column %6d delta nz %d\n", j, delta_nz[j]);
       nnz_C += delta_nz[j];
       cumulative_nonzeros[k] = static_cast<f_t>(nnz_C);
-      if (0 && n - k < 10) {
+#ifdef PRINT_INFO
+      if (n - k < 10) {
         settings.log.printf("Cumulative nonzeros %ld %6.2e k %6d delta nz %ld col %6d\n",
                             nnz_C,
                             cumulative_nonzeros[k],
@@ -1104,8 +1123,11 @@ class iteration_data_t {
                             delta_nz[j],
                             j);
       }
+#endif
     }
+#ifdef PRINT_INFO
     settings.log.printf("Cumulative nonzeros %ld %6.2e\n", nnz_C, cumulative_nonzeros[n - 1]);
+#endif
 
     // Forward pass again to pick up the dense columns
     columns_to_remove.reserve(n);
@@ -1631,21 +1653,29 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     } else {
       matrix_vector_multiply(lp.A, 1.0, DinvFu, -1.0, rhs_x);
     }
+#ifdef PRINT_INFO
     settings.log.printf("||DinvFu|| = %e\n", vector_norm2<i_t, f_t>(DinvFu));
+#endif
 
     // Solve A*Dinv*A'*q = A*Dinv*F*u - b
+#ifdef PRINT_INFO
     settings.log.printf("||rhs_x|| = %.16e\n", vector_norm2<i_t, f_t>(rhs_x));
+#endif
     // i_t solve_status = data.chol->solve(rhs_x, q);
-    i_t solve_status = data.solve_adat(rhs_x, q, true);
+    i_t solve_status = data.solve_adat(rhs_x, q);
     if (solve_status != 0) { return status; }
+#ifdef PRINT_INFO
     settings.log.printf("Initial solve status %d\n", solve_status);
     settings.log.printf("||q|| = %.16e\n", vector_norm2<i_t, f_t>(q));
+#endif
 
     // rhs_x <- A*Dinv*A'*q - rhs_x
-    data.adat_multiply(1.0, q, -1.0, rhs_x, true);
+    data.adat_multiply(1.0, q, -1.0, rhs_x);
     // matrix_vector_multiply(data.ADAT, 1.0, q, -1.0, rhs_x);
+#ifdef PRINT_INFO
     settings.log.printf("|| A*Dinv*A'*q - (A*Dinv*F*u - b) || = %e\n",
                         vector_norm2<i_t, f_t>(rhs_x));
+#endif
 
     // x = Dinv*(F*u - A'*q)
     data.inv_diag.pairwise_product(Fu, data.x);
@@ -1674,14 +1704,18 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   } else {
     matrix_vector_multiply(lp.A, 1.0, data.x, -1.0, data.primal_residual);
   }
+#ifdef PRINT_INFO
   settings.log.printf("||b - A * x||: %e\n", vector_norm2<i_t, f_t>(data.primal_residual));
+#endif
 
   if (data.n_upper_bounds > 0) {
     for (i_t k = 0; k < data.n_upper_bounds; k++) {
       i_t j                  = data.upper_bounds[k];
       data.bound_residual[k] = lp.upper[j] - data.w[k] - data.x[j];
     }
+#ifdef PRINT_INFO
     settings.log.printf("|| u - w - x||: %e\n", vector_norm2<i_t, f_t>(data.bound_residual));
+#endif
   }
 
   dense_vector_t<i_t, f_t> dual_res(lp.num_cols);
@@ -1714,9 +1748,6 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
         data.z[j] = epsilon;
         data.v[k] = -data.c[j] + epsilon;
       }
-
-      if (data.v[k] < 1.0) { settings.log.printf("v[%d] = %e < 1.0\n", k, data.v[k]); }
-      if (data.z[j] < 1.0) { settings.log.printf("z[%d] = %e < 1.0 with uppper\n", j, data.z[j]); }
     }
 
     // Now hande the case with no upper bounds
@@ -1727,10 +1758,6 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
         } else {
           data.z[j] = 10.0;
         }
-      }
-
-      if (data.z[j] < 1.0) {
-        settings.log.printf("z[%d] = %e < 1.0 upper %e\n", j, data.z[j], lp.upper[j]);
       }
     }
   } else if (use_augmented) {
@@ -1804,18 +1831,21 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
       data.dual_residual[j] -= data.v[k];
     }
   }
+#ifdef PRINT_INFO
   settings.log.printf("|| dual res || %e || dual residual || %e\n",
                       vector_norm2<i_t, f_t>(dual_res),
                       vector_norm2<i_t, f_t>(data.dual_residual));
   settings.log.printf("||A^T y + z - E*v - c ||: %e\n", vector_norm2<i_t, f_t>(data.dual_residual));
-
+#endif
   // Make sure (w, x, v, z) > 0
   float64_t epsilon_adjust = 10.0;
   data.w.ensure_positive(epsilon_adjust);
   data.x.ensure_positive(epsilon_adjust);
   // data.v.ensure_positive(epsilon_adjust);
   // data.z.ensure_positive(epsilon_adjust);
+#ifdef PRINT_INFO
   settings.log.printf("min v %e min z %e\n", data.v.minimum(), data.z.minimum());
+#endif
 
   return 0;
 }
@@ -2767,6 +2797,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
                      vector_norm2<i_t, f_t>(data.dual_residual),
                      data.cusparse_view_,
                      solution);
+    settings.log.printf("\n");
     settings.log.printf(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
     settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
@@ -2778,6 +2809,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
     settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
                         complementarity_residual_norm,
                         relative_complementarity_residual);
+    settings.log.printf("\n");
     return lp_status_t::OPTIMAL;  // TODO: Barrier should probably have a separate suboptimal
                                   // status
   }
@@ -2803,6 +2835,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
                      vector_norm2<i_t, f_t>(data.dual_residual),
                      data.cusparse_view_,
                      solution);
+    settings.log.printf("\n");
     settings.log.printf(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
     settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
@@ -2814,6 +2847,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
     settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
                         complementarity_residual_norm,
                         relative_complementarity_residual);
+    settings.log.printf("\n");
     return lp_status_t::OPTIMAL;  // TODO: Barrier should probably have a separate suboptimal
                                   // status
   } else {
@@ -2840,10 +2874,13 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   solution.resize(m, n);
   settings.log.printf(
     "Barrier solver: %d constraints, %d variables, %ld nonzeros\n", m, n, lp.A.col_start[n]);
+  settings.log.printf("\n");
 
   // Compute the number of free variables
   i_t num_free_variables = presolve_info.free_variable_pairs.size() / 2;
-  settings.log.printf("%d free variables\n", num_free_variables);
+  if (num_free_variables > 0) {
+    settings.log.printf("Free variables              : %d\n", num_free_variables);
+  }
 
   // Compute the number of upper bounds
   i_t num_upper_bounds = 0;
@@ -2869,7 +2906,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     settings.log.printf("Barrier time limit exceeded\n");
     return lp_status_t::TIME_LIMIT;
   }
-  settings.log.printf("%d finite upper bounds\n", num_upper_bounds);
 
   i_t initial_status = initial_point(data);
   if (toc(start_time) > settings.time_limit) {
@@ -2910,14 +2946,13 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
   f_t dual_objective = data.b.inner_product(data.y) - restrict_u_.inner_product(data.v);
 
   i_t iter = 0;
+  settings.log.printf("\n");
   settings.log.printf(
-    "         Objective                                  Residual             Step-Length     "
-    "Time\n");
+    "         Objective                                  Residual            Time\n");
   settings.log.printf(
-    "Iter    Primal               Dual            Primal   Dual    Compl.     Primal Dual     "
-    "Elapsed\n");
+    "Iter    Primal               Dual            Primal   Dual    Compl.    Elapsed\n");
   float64_t elapsed_time = toc(start_time);
-  settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e                   %.1f\n",
+  settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e %.1f\n",
                       iter,
                       primal_objective,
                       dual_objective,
@@ -3483,19 +3518,13 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         return lp_status_t::NUMERICAL_ISSUES;
       }
 
-      settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e %.2e %.2e %.2e %.2e %.2e %.1f\n",
+      settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e %.1f\n",
                           iter,
                           primal_objective + lp.obj_constant,
                           dual_objective + lp.obj_constant,
                           relative_primal_residual,
                           relative_dual_residual,
                           relative_complementarity_residual,
-                          step_primal,
-                          step_dual,
-                          std::min(data.complementarity_xz_residual.minimum(),
-                                   data.complementarity_wv_residual.minimum()),
-                          mu,
-                          std::max(max_affine_residual, max_corrector_residual),
                           elapsed_time);
 
     }  // Close nvtx range
@@ -3507,6 +3536,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
     converged = primal_feasible && dual_feasible && small_gap;
 
     if (converged) {
+      settings.log.printf("\n");
       settings.log.printf(
         "Optimal solution found in %d iterations and %.2fs\n", iter, toc(start_time));
       settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
@@ -3519,6 +3549,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
       settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
                           complementarity_residual_norm,
                           relative_complementarity_residual);
+      settings.log.printf("\n");
       data.to_solution(lp,
                        iter,
                        primal_objective,
