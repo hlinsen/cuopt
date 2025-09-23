@@ -1316,6 +1316,7 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
 
   //printf("Max vertices %d\n", max_vertices);
   i_t num_refinements = 0;
+  f_t colors_per_refinement = 0.0;
   while (!color_stack.empty()) {
     num_refinements++;
     i_t refining_color_index = color_stack.back();
@@ -1398,6 +1399,9 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
     for (i_t v: vertices_to_refine) {
       vertex_to_sum[v] = 0.0;
     }
+
+    colors_per_refinement = static_cast<f_t>(num_row_colors + num_col_colors) / static_cast<f_t>(num_refinements);
+    i_t projected_colors = num_row_colors + num_col_colors + static_cast<i_t>(colors_per_refinement * static_cast<f_t>(color_stack.size()));
 
     if (total_colors_seen >= max_colors - 10) {
       printf("Increase max colors from %d to %d\n", max_colors, max_colors * 2);
@@ -1494,7 +1498,17 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
     }
 #endif
     if (num_refinements % 100 == 0) {
-      printf("Number of refinements %8d (row colors %d, col colors %d) in %.2f seconds\n", num_refinements, num_row_colors, num_col_colors, toc(start_time));
+      printf(
+        "Number of refinements %8d. Number of colors %d (row colors %d, col colors %d) stack size %ld colors per "
+        "refinement %.2f projected colors %d in %.2f seconds\n",
+        num_refinements,
+        num_row_colors + num_col_colors,
+        num_row_colors,
+        num_col_colors,
+        color_stack.size(),
+        colors_per_refinement,
+        projected_colors,
+        toc(start_time));
     }
     if (num_row_colors >= max_vertices)
     {
@@ -1543,6 +1557,11 @@ void folding(lp_problem_t<i_t, f_t>& problem)
 
   i_t m = problem.num_rows;
   i_t n = problem.num_cols;
+
+  if (m > 1e6 || n > 1e6) {
+    printf("Folding: Problem has %d rows and %d columns, skipping\n", m, n);
+    return;
+  }
 
   i_t nz_obj = 0;
   for (i_t j = 0; j < n; j++)
@@ -1683,8 +1702,8 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   i_t num_colors;
   i_t total_colors_seen;
   f_t color_start_time = tic();
-  i_t row_threshold = static_cast<i_t>( .90 * static_cast<f_t>(m));
-  i_t col_threshold = static_cast<i_t>( .90 * static_cast<f_t>(n));
+  i_t row_threshold = static_cast<i_t>( .50 * static_cast<f_t>(m));
+  i_t col_threshold = static_cast<i_t>( .50 * static_cast<f_t>(n));
   i_t status = color_graph(augmented, colors, row_threshold, col_threshold, num_row_colors, num_col_colors, num_colors, total_colors_seen);
   if (status != 0) {
     printf("Folding: Coloring aborted\n");
