@@ -1673,7 +1673,7 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     data.adat_multiply(1.0, q, -1.0, rhs_x);
     // matrix_vector_multiply(data.ADAT, 1.0, q, -1.0, rhs_x);
 #ifdef PRINT_INFO
-    settings.log.printf("|| A*Dinv*A'*q - (A*Dinv*F*u - b) || = %e\n",
+    settings.log.printf("|| A*Dinv*A'*q - (A*Dinv*F*u - b) || = %.16e\n",
                         vector_norm2<i_t, f_t>(rhs_x));
 #endif
 
@@ -1682,6 +1682,7 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     // Fu <- -1.0 * A' * q + 1.0 * Fu
     if (use_gpu) {
       data.cusparse_view_.transpose_spmv(-1.0, q, 1.0, Fu);
+      data.handle_ptr->get_stream().synchronize();
     } else {
       matrix_transpose_vector_multiply(lp.A, -1.0, q, 1.0, Fu);
     }
@@ -1699,13 +1700,14 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 
   // Verify A*x = b
   data.primal_residual = lp.rhs;
-  if (use_gpu) {
+  if (0 && use_gpu) {
     data.cusparse_view_.spmv(1.0, data.x, -1.0, data.primal_residual);
+    data.handle_ptr->get_stream().synchronize();
   } else {
     matrix_vector_multiply(lp.A, 1.0, data.x, -1.0, data.primal_residual);
   }
 #ifdef PRINT_INFO
-  settings.log.printf("||b - A * x||: %e\n", vector_norm2<i_t, f_t>(data.primal_residual));
+  settings.log.printf("||b - A * x||: %.16e\n", vector_norm2<i_t, f_t>(data.primal_residual));
 #endif
 
   if (data.n_upper_bounds > 0) {

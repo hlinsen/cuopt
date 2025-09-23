@@ -139,6 +139,14 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                                 status,
                                 "cudssDataSet for interrupt");
     }
+
+#ifdef CUDSS_DETERMINISTIC
+    settings_.log.printf("cuDSS solve mode            : deterministic\n");
+    int32_t deterministic = 1;
+    CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig, CUDSS_CONFIG_DETERMINISTIC_MODE, &deterministic, sizeof(int32_t)),
+                              status,
+                              "cudssConfigSet for deterministic mode");
+#endif
 #endif
 
 #ifdef USE_AMD
@@ -320,6 +328,16 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   i_t factorize(device_csr_matrix_t<i_t, f_t>& Arow) override
   {
     raft::common::nvtx::range fun_scope("Factorize: cuDSS");
+
+
+#ifdef PRINT_MATRIX_NORM
+    cudaStreamSynchronize(stream);
+    csr_matrix_t<i_t, f_t> Arow_host = Arow.to_host(Arow.row_start.stream());
+    csc_matrix_t<i_t, f_t> A_col(Arow_host.m, Arow_host.n, 1);
+    Arow_host.to_compressed_col(A_col);
+    settings_.log.printf("before factorize||A|| = %.16e\n", A_col.norm1());
+    cudaStreamSynchronize(stream);
+#endif
     // csr_matrix_t<i_t, f_t> Arow;
     // A_in.to_compressed_row(Arow);
 
