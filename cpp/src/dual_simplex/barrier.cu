@@ -161,14 +161,15 @@ class iteration_data_t {
     }
 
     // Decide if we are going to use the augmented system or not
-    n_dense_columns = 0;
-    i_t n_dense_rows = 0;
-    i_t max_row_nz = 0;
+    n_dense_columns      = 0;
+    i_t n_dense_rows     = 0;
+    i_t max_row_nz       = 0;
     f_t estimated_nz_AAT = 0.0;
     std::vector<i_t> dense_columns_unordered;
     {
       f_t start_column_density = tic();
-      find_dense_columns(lp.A, settings, dense_columns_unordered, n_dense_rows, max_row_nz, estimated_nz_AAT);
+      find_dense_columns(
+        lp.A, settings, dense_columns_unordered, n_dense_rows, max_row_nz, estimated_nz_AAT);
       if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
 #ifdef PRINT_INFO
       for (i_t j : dense_columns_unordered) {
@@ -185,8 +186,10 @@ class iteration_data_t {
       }
       settings.log.printf("Density estimator time      : %.2fs\n", column_density_time);
     }
-    if ((settings.augmented != 0) && (n_dense_columns > 50 || n_dense_rows > 10 || (max_row_nz > 5000 && estimated_nz_AAT > 1e10) || settings.augmented == 1)) {
-      use_augmented = true;
+    if ((settings.augmented != 0) &&
+        (n_dense_columns > 50 || n_dense_rows > 10 ||
+         (max_row_nz > 5000 && estimated_nz_AAT > 1e10) || settings.augmented == 1)) {
+      use_augmented   = true;
       n_dense_columns = 0;
     }
     if (use_augmented) {
@@ -264,8 +267,8 @@ class iteration_data_t {
 
     if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     i_t factorization_size = use_augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
-    chol                   = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(
-      settings, factorization_size, handle_ptr->get_stream());
+    chol =
+      std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(handle_ptr, settings, factorization_size);
     chol->set_positive_definite(false);
     if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     // Perform symbolic analysis
@@ -287,12 +290,12 @@ class iteration_data_t {
 
   void form_augmented(bool first_call = false)
   {
-    i_t n                  = A.n;
-    i_t m                  = A.m;
-    i_t nnzA               = A.col_start[n];
-    i_t factorization_size = n + m;
-    const f_t dual_perturb      = 0.0;
-    const f_t primal_perturb      = 1e-6;
+    i_t n                    = A.n;
+    i_t m                    = A.m;
+    i_t nnzA                 = A.col_start[n];
+    i_t factorization_size   = n + m;
+    const f_t dual_perturb   = 0.0;
+    const f_t primal_perturb = 1e-6;
     if (first_call) {
       augmented.reallocate(2 * nnzA + n + m);
       i_t q = 0;
@@ -341,9 +344,7 @@ class iteration_data_t {
       csc_matrix_t<i_t, f_t> error(m + n, m + n, 1);
       add(augmented, augmented_transpose, 1.0, -1.0, error);
       settings_.log.printf("|| Aug - Aug^T ||_1 %e\n", error.norm1());
-      if (error.norm1() > 1e-2) {
-        exit(1);
-      }
+      if (error.norm1() > 1e-2) { exit(1); }
 #endif
     } else {
       for (i_t j = 0; j < n; ++j) {
@@ -426,8 +427,10 @@ class iteration_data_t {
 
       if (num_factorizations == 0) {
         settings_.log.printf("ADAT time                   : %.2fs\n", adat_time);
-        settings_.log.printf("ADAT nonzeros               : %.2e\n", static_cast<float64_t>(adat_nnz));
-        settings_.log.printf("ADAT density                : %.2f\n",
+        settings_.log.printf("ADAT nonzeros               : %.2e\n",
+                             static_cast<float64_t>(adat_nnz));
+        settings_.log.printf(
+          "ADAT density                : %.2f\n",
           static_cast<float64_t>(adat_nnz) /
             (static_cast<float64_t>(device_ADAT.m) * static_cast<float64_t>(device_ADAT.m)));
       }
@@ -468,17 +471,13 @@ class iteration_data_t {
     }
   }
 
-  i_t solve_adat(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x, bool debug=false)
+  i_t solve_adat(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x, bool debug = false)
   {
     if (n_dense_columns == 0) {
       // Solve ADAT * x = b
-      if (debug) {
-        settings_.log.printf("||b|| = %.16e\n", vector_norm2<i_t, f_t>(b));
-      }
+      if (debug) { settings_.log.printf("||b|| = %.16e\n", vector_norm2<i_t, f_t>(b)); }
       i_t solve_status = chol->solve(b, x);
-      if (debug) {
-        settings_.log.printf("||x|| = %.16e\n", vector_norm2<i_t, f_t>(x));
-      }
+      if (debug) { settings_.log.printf("||x|| = %.16e\n", vector_norm2<i_t, f_t>(x)); }
       return solve_status;
     } else {
       // Use Sherman Morrison followed by PCG
@@ -511,16 +510,11 @@ class iteration_data_t {
       //
       // We can use a dense cholesky factorization of H to solve for y
 
-
       dense_vector_t<i_t, f_t> w(AD.m);
       const bool debug = false;
-      if (debug) {
-        settings_.log.printf("||b|| = %.16e\n", vector_norm2<i_t, f_t>(b));
-      }
+      if (debug) { settings_.log.printf("||b|| = %.16e\n", vector_norm2<i_t, f_t>(b)); }
       i_t solve_status = chol->solve(b, w);
-      if (debug) {
-        settings_.log.printf("||w|| = %.16e\n", vector_norm2<i_t, f_t>(w));
-      }
+      if (debug) { settings_.log.printf("||w|| = %.16e\n", vector_norm2<i_t, f_t>(w)); }
       if (solve_status != 0) {
         settings_.log.printf("Linear solve failed in Sherman Morrison after ADAT solve\n");
         return solve_status;
@@ -1003,7 +997,7 @@ class iteration_data_t {
     max_row_nz = 0;
     for (i_t k = 0; k < m; k++) {
       histogram_row[row_nz[k]]++;
-      max_row_nz  = std::max(max_row_nz, row_nz[k]);
+      max_row_nz = std::max(max_row_nz, row_nz[k]);
     }
 #ifdef HISTOGRAM
     settings.log.printf("Row Nz  # rows\n");
@@ -1011,7 +1005,6 @@ class iteration_data_t {
       if (histogram_row[k] > 0) { settings.log.printf("%6d %6d\n", k, histogram_row[k]); }
     }
 #endif
-
 
     n_dense_rows = 0;
     for (i_t k = 0; k < m; k++) {
@@ -1224,7 +1217,8 @@ class iteration_data_t {
   void adat_multiply(f_t alpha,
                      const dense_vector_t<i_t, f_t>& y,
                      f_t beta,
-                     dense_vector_t<i_t, f_t>& v, bool debug=false) const
+                     dense_vector_t<i_t, f_t>& v,
+                     bool debug = false) const
   {
     const i_t m = A.m;
     const i_t n = A.n;
@@ -1244,16 +1238,12 @@ class iteration_data_t {
     // u = A^T * y
     dense_vector_t<i_t, f_t> u(n);
     matrix_transpose_vector_multiply(A, 1.0, y, 0.0, u);
-    if (debug) {
-      printf("||u|| = %.16e\n", vector_norm2<i_t, f_t>(u));
-    }
+    if (debug) { printf("||u|| = %.16e\n", vector_norm2<i_t, f_t>(u)); }
 
     // w = Dinv * u
     dense_vector_t<i_t, f_t> w(n);
     inv_diag.pairwise_product(u, w);
-    if (debug) {
-      printf("||inv_diag|| = %.16e\n", vector_norm2<i_t, f_t>(inv_diag));
-    }
+    if (debug) { printf("||inv_diag|| = %.16e\n", vector_norm2<i_t, f_t>(inv_diag)); }
 
     // v = alpha * A * w + beta * v = alpha * A * Dinv * A^T * y + beta * v
     matrix_vector_multiply(A, alpha, w, beta, v);
@@ -2107,7 +2097,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 {
   raft::common::nvtx::range fun_scope("Barrier: compute_search_direction");
 
-  const bool debug = false;
+  const bool debug         = false;
   const bool use_augmented = data.use_augmented;
 
   {
@@ -2286,7 +2276,9 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     dense_vector_t<i_t, f_t> augmented_residual = augmented_rhs;
     matrix_vector_multiply(data.augmented, 1.0, augmented_soln, -1.0, augmented_residual);
     f_t solve_err = vector_norm_inf<i_t, f_t>(augmented_residual);
-    if (solve_err > 1e-6) { settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e after IR\n", solve_err); }
+    if (solve_err > 1e-6) {
+      settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e after IR\n", solve_err);
+    }
     for (i_t k = 0; k < lp.num_cols; k++) {
       dx[k] = augmented_soln[k];
     }
@@ -2369,7 +2361,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
                              data.d_inv_diag);
 
       f_t y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
-      max_residual              = std::max(max_residual, y_residual_norm);
+      max_residual        = std::max(max_residual, y_residual_norm);
       if (y_residual_norm > 1e-2) {
         settings.log.printf("|| h || = %.2e\n",
                             device_vector_norm_inf<i_t, f_t>(d_h_, stream_view_));
@@ -3499,11 +3491,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
         if (relative_primal_residual < data.feasibility_save &&
             relative_dual_residual < data.optimality_save &&
             relative_complementarity_residual < data.complementarity_save) {
-          data.w_save          = data.w;
-          data.x_save          = data.x;
-          data.y_save          = data.y;
-          data.v_save          = data.v;
-          data.z_save          = data.z;
+          data.w_save               = data.w;
+          data.x_save               = data.x;
+          data.y_save               = data.y;
+          data.v_save               = data.v;
+          data.z_save               = data.z;
           data.feasibility_save     = relative_primal_residual;
           data.optimality_save      = relative_dual_residual;
           data.complementarity_save = relative_complementarity_residual;
@@ -3531,7 +3523,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_
 
     bool primal_feasible = relative_primal_residual < settings.barrier_relative_feasibility_tol;
     bool dual_feasible   = relative_dual_residual < settings.barrier_relative_optimality_tol;
-    bool small_gap       = relative_complementarity_residual < settings.barrier_relative_complementarity_tol;
+    bool small_gap =
+      relative_complementarity_residual < settings.barrier_relative_complementarity_tol;
 
     converged = primal_feasible && dual_feasible && small_gap;
 

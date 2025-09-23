@@ -93,19 +93,35 @@ class sparse_cholesky_base_t {
     }                                                                \
   } while (0);
 
+template <typename mem_pool_t>
+int cudss_device_alloc(void* ctx, void** ptr, size_t size, cudaStream_t stream)
+{
+  auto ret = reinterpret_cast<mem_pool_t*>(ctx)->allocate(size, stream);
+  *ptr     = ret;
+  return 0;
+}
+
+template <typename mem_pool_t>
+int cudss_device_dealloc(void* ctx, void* ptr, size_t size, cudaStream_t stream)
+{
+  reinterpret_cast<mem_pool_t*>(ctx)->deallocate(ptr, size, stream);
+  return 0;
+}
+
 template <typename i_t, typename f_t>
 class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
  public:
-  sparse_cholesky_cudss_t(const simplex_solver_settings_t<i_t, f_t>& settings,
-                          i_t size,
-                          rmm::cuda_stream_view stream_view)
-    : n(size),
+  sparse_cholesky_cudss_t(raft::handle_t const* handle_ptr,
+                          const simplex_solver_settings_t<i_t, f_t>& settings,
+                          i_t size)
+    : handle_ptr_(handle_ptr),
+      n(size),
       nnz(-1),
       first_factor(true),
       positive_definite(true),
       A_created(false),
       settings_(settings),
-      stream(stream_view)
+      stream(handle_ptr->get_stream())
   {
     int major, minor, patch;
     cudssGetProperty(MAJOR_VERSION, &major);
@@ -117,6 +133,13 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     status     = CUDSS_STATUS_SUCCESS;
     CUDSS_CALL_AND_CHECK_EXIT(cudssCreate(&handle), status, "cudssCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssSetStream(handle, stream), status, "cudaStreamCreate");
+
+    mem_handler.ctx          = reinterpret_cast<void*>(handle_ptr_->get_workspace_resource());
+    mem_handler.device_alloc = cudss_device_alloc<rmm::mr::device_memory_resource>;
+    mem_handler.device_free  = cudss_device_dealloc<rmm::mr::device_memory_resource>;
+
+    CUDSS_CALL_AND_CHECK_EXIT(
+      cudssSetDeviceMemHandler(handle, &mem_handler), status, "cudssSetDeviceMemHandler");
 
     char* env_value = std::getenv("CUDSS_THREADING_LIB");
     if (env_value != nullptr) {
@@ -142,7 +165,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 #endif
 
 #ifdef USE_AMD
-     settings_.log.printf("Using AMD\n");
+    settings_.log.printf("Using AMD\n");
     // Tell cuDSS to use AMD
     cudssAlgType_t reorder_alg = CUDSS_ALG_3;
     CUDSS_CALL_AND_CHECK_EXIT(
@@ -231,7 +254,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     }
 #endif
 
-    nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
+    nnz               = Arow.row_start.element(Arow.m, Arow.row_start.stream());
     const f_t density = static_cast<f_t>(nnz) / (static_cast<f_t>(n) * static_cast<f_t>(n));
 
     if (first_factor && density >= 0.01) {
@@ -239,10 +262,10 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       // Tell cuDSS to use AMD
       cudssAlgType_t reorder_alg = CUDSS_ALG_3;
       CUDSS_CALL_AND_CHECK_EXIT(
-                               cudssConfigSet(
-                                              solverConfig, CUDSS_CONFIG_REORDERING_ALG, &reorder_alg, sizeof(cudssAlgType_t)),
-                               status,
-                               "cudssConfigSet for reordering alg");
+        cudssConfigSet(
+          solverConfig, CUDSS_CONFIG_REORDERING_ALG, &reorder_alg, sizeof(cudssAlgType_t)),
+        status,
+        "cudssConfigSet for reordering alg");
     }
 
     if (!first_factor) {
@@ -285,7 +308,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
           "FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for "
           "reordering\n",
           status);
-          return -1;
+        return -1;
       }
       f_t reordering_time = toc(start_symbolic);
       settings_.log.printf("Reordering time             : %.2fs\n", reordering_time);
@@ -299,7 +322,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
           "FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for "
           "symbolic factorization\n",
           status);
-          return -1;
+        return -1;
       }
     }
     f_t symbolic_factorization_time = toc(start_symbolic_factor);
@@ -333,9 +356,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       cudssMatrixSetValues(A, Arow.x.data()), status, "cudssMatrixSetValues for A");
 
     f_t start_numeric = tic();
-    status =
-      cudssExecute(
-        handle, CUDSS_PHASE_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b);
+    status            = cudssExecute(
+      handle, CUDSS_PHASE_FACTORIZATION, solverConfig, solverData, A, cudss_x, cudss_b);
     if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
     if (status != CUDSS_STATUS_SUCCESS) {
       settings_.log.printf(
@@ -346,7 +368,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     }
 
 #ifdef TIME_FACTORIZATION
-     RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
+    RAFT_CUDA_TRY(cudaStreamSynchronize(stream));
 #endif
 
     f_t numeric_time = toc(start_numeric);
@@ -579,11 +601,13 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       status,
       "cudssMatrixCreateDn for x");
 
-    status =
-      cudssExecute(handle, CUDSS_PHASE_SOLVE, solverConfig, solverData, A, cudss_x, cudss_b);
+    status = cudssExecute(handle, CUDSS_PHASE_SOLVE, solverConfig, solverData, A, cudss_x, cudss_b);
     if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) { return -2; }
     if (status != CUDSS_STATUS_SUCCESS) {
-      settings_.log.printf("FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for solve\n", status);
+      settings_.log.printf(
+        "FAILED: CUDSS call ended unsuccessfully with status = %d, details: cuDSSExecute for "
+        "solve\n",
+        status);
       return -1;
     }
 
@@ -598,6 +622,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   }
 
  private:
+  raft::handle_t const* handle_ptr_;
   i_t n;
   i_t nnz;
   bool first_factor;
@@ -606,6 +631,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   cudssStatus_t status;
   rmm::cuda_stream_view stream;
   cudssHandle_t handle;
+  cudssDeviceMemHandler_t mem_handler;
   cudssConfig_t solverConfig;
   cudssData_t solverData;
   bool A_created;
