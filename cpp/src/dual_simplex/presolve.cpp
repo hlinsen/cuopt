@@ -829,6 +829,9 @@ void find_vertices_to_refine(const std::unordered_set<i_t>& refining_color_verti
   for (i_t v : vertices_to_refine) {
     marked_vertices[v] = 0;
   }
+  for (i_t color : colors_to_update) {
+    marked_colors[color] = 0;
+  }
 }
 
 template <typename i_t, typename f_t>
@@ -901,6 +904,7 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                   const std::vector<i_t>& col_color_map,
                   const color_t<i_t>& refining_color,
                   std::vector<i_t>& colors_to_update,
+                  std::vector<i_t>& marked_colors,
                   std::vector<i_t>& vertices_to_refine,
                   std::vector<i_t>& marked_vertices,
                   std::vector<std::vector<i_t>>& vertices_to_refine_by_color,
@@ -908,7 +912,6 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                   std::vector<f_t>& max_sum_by_color)
 {
   i_t num_colors = num_row_colors + num_col_colors;
-  std::vector<i_t> marked_colors(total_colors_seen, 0);
   colors_to_update.clear();
   vertices_to_refine.clear();
   if (refining_color.row_or_column == kRow) {
@@ -1304,10 +1307,12 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
   std::vector<std::vector<i_t>> vertices_to_refine_by_color(max_colors);
   std::vector<f_t> max_sum_by_color(max_colors, std::numeric_limits<f_t>::quiet_NaN());
   std::vector<f_t> min_sum_by_color(max_colors, std::numeric_limits<f_t>::quiet_NaN());
-
+  std::vector<i_t> marked_colors(max_colors, 0);
 
   std::vector<i_t> colors_to_split;
   colors_to_split.reserve(max_vertices);
+  std::vector<i_t> colors_to_update;
+  colors_to_update.reserve(max_vertices);
 
   //printf("Max vertices %d\n", max_vertices);
   i_t num_refinements = 0;
@@ -1318,7 +1323,7 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
     color_stack.pop_back(); // Can pop since refining color is no longer needed. New colors will be
                             // added to the stack.
     color_in_stack[refining_color_index] = 0;
-    std::vector<i_t> colors_to_update;
+    colors_to_update.clear();
     compute_sums(A,
                  A_row,
                  num_row_colors,
@@ -1328,6 +1333,7 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
                  col_color_map,
                  refining_color,
                  colors_to_update,
+                 marked_colors,
                  vertices_to_refine,
                  marked_vertices,
                  vertices_to_refine_by_color,
@@ -1400,6 +1406,7 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
       vertices_to_refine_by_color.resize(max_colors);
       max_sum_by_color.resize(max_colors);
       min_sum_by_color.resize(max_colors);
+      marked_colors.resize(max_colors, 0);
     }
 
 #ifdef DEBUG
@@ -1676,8 +1683,8 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   i_t num_colors;
   i_t total_colors_seen;
   f_t color_start_time = tic();
-  i_t row_threshold = static_cast<i_t>( .50 * static_cast<f_t>(m));
-  i_t col_threshold = static_cast<i_t>( .50 * static_cast<f_t>(n));
+  i_t row_threshold = static_cast<i_t>( .90 * static_cast<f_t>(m));
+  i_t col_threshold = static_cast<i_t>( .90 * static_cast<f_t>(n));
   i_t status = color_graph(augmented, colors, row_threshold, col_threshold, num_row_colors, num_col_colors, num_colors, total_colors_seen);
   if (status != 0) {
     printf("Folding: Coloring aborted\n");
