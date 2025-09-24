@@ -327,16 +327,6 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
     dual_simplex_settings.log.log = false;
   }
 
-  // Preload cudss kernels
-  auto chol = std::make_unique<dual_simplex::sparse_cholesky_cudss_t<i_t, f_t>>(
-    user_problem.handle_ptr, dual_simplex_settings, 1);
-  dual_simplex::csc_matrix_t<i_t, f_t> A(1, 1, 1);
-  A.i[0]         = 0;
-  A.col_start[0] = 0;
-  A.col_start[1] = 1;
-  A.x[0]         = 1.0;
-  chol->analyze(A);
-
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
   auto status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
     user_problem, dual_simplex_settings, solution);
