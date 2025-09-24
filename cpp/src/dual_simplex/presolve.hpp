@@ -52,6 +52,27 @@ struct lp_problem_t {
 };
 
 template <typename i_t, typename f_t>
+struct folding_info_t {
+  folding_info_t()
+    : D(0, 0, 0),
+      C_s(0, 0, 0),
+      D_s(0, 0, 0),
+      c_tilde(0),
+      A_tilde(0, 0, 0),
+      num_upper_bounds(0),
+      is_folded(false)
+  {
+  }
+  csc_matrix_t<i_t, f_t> D;
+  csc_matrix_t<i_t, f_t> C_s;
+  csc_matrix_t<i_t, f_t> D_s;
+  std::vector<f_t> c_tilde;
+  csc_matrix_t<i_t, f_t> A_tilde;
+  i_t num_upper_bounds;
+  bool is_folded;
+};
+
+template <typename i_t, typename f_t>
 struct presolve_info_t {
   // indices of variables in the original problem that remain in the presolved problem
   std::vector<i_t> remaining_variables;
@@ -69,6 +90,8 @@ struct presolve_info_t {
   std::vector<i_t> remaining_constraints;
   // indices of the constraints in the original problem that have been removed in the presolved problem
   std::vector<i_t> removed_constraints;
+
+  folding_info_t<i_t, f_t> folding_info;
 };
 
 template <typename i_t, typename f_t>

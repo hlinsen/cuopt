@@ -1532,7 +1532,7 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
 }
 
 template <typename i_t, typename f_t>
-void folding(lp_problem_t<i_t, f_t>& problem)
+void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolve_info)
 {
 
   // Handle linear programs in the form
@@ -1845,8 +1845,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   // Construct the matrix Pi_P
   // Pi_vP = { 1 if v in P
   //         { 0 otherwise
-#ifdef DEBUG
+#ifdef PRINT_INFO
   printf("Constructing Pi_P\n");
+#endif
   csc_matrix_t<i_t, f_t> Pi_P(previous_rows, reduced_rows, previous_rows);
   nnz = 0;
   for (i_t k = 0; k < reduced_rows; k++) {
@@ -1864,6 +1865,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   if (nnz != previous_rows) {
     exit(1);
   }
+#ifdef WRITE_PI_P
   FILE* fid = fopen("Pi_P.txt", "w");
   Pi_P.write_matrix_market(fid);
   fclose(fid);
@@ -1878,7 +1880,7 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   // C^s_tv = { 1/|T| if v in color T
   //         { 0
   printf("Constructing C^s row\n");
- csr_matrix_t<i_t, f_t> C_s_row(reduced_rows, previous_rows, previous_rows);
+  csr_matrix_t<i_t, f_t> C_s_row(reduced_rows, previous_rows, previous_rows);
   nnz = 0;
   printf("row_colors size %ld reduced_rows %d\n", row_colors.size(), reduced_rows);
   if (row_colors.size() != reduced_rows)
@@ -1906,7 +1908,10 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   C_s_row.row_start[reduced_rows] = nnz;
   printf("C_s nz %d predicted %d\n", nnz, previous_rows);
   printf("Converting C^s row to compressed column\n");
-  csc_matrix_t<i_t, f_t> C_s(reduced_rows, previous_rows, 1);
+
+  //csc_matrix_t<i_t, f_t> C_s(reduced_rows, previous_rows, 1);
+  presolve_info.folding_info.C_s.resize(reduced_rows, previous_rows, 1);
+  csc_matrix_t<i_t, f_t>& C_s = presolve_info.folding_info.C_s;
   C_s_row.to_compressed_col(C_s);
   printf("Completed C^s\n");
 #ifdef DEBUG
@@ -1940,7 +1945,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   i_t previous_cols = n + nz_ub;
   i_t reduced_cols = num_col_colors - 1;
   printf("previous_cols %d reduced_cols %d\n", previous_cols, reduced_cols);
-  csc_matrix_t<i_t, f_t> D(previous_cols, reduced_cols, previous_cols);
+  //csc_matrix_t<i_t, f_t> D(previous_cols, reduced_cols, previous_cols);
+  presolve_info.folding_info.D.resize(previous_cols, reduced_cols, previous_cols);
+  csc_matrix_t<i_t, f_t>& D = presolve_info.folding_info.D;
   nnz = 0;
   for (i_t k = 0; k < reduced_cols; k++) {
     D.col_start[k] = nnz;
@@ -1959,10 +1966,11 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   }
   D.col_start[reduced_cols] = nnz;
   printf("D nz %d predicted %d\n", nnz, previous_cols);
-#ifdef DEBUG
+#ifdef WRITE_D
   fid = fopen("D.txt", "w");
   D.write_matrix_market(fid);
   fclose(fid);
+#endif
 
   // Construct D^s_tv
   // D^s_Tv = D_vT / sum_v' D_v'T
@@ -1981,15 +1989,22 @@ void folding(lp_problem_t<i_t, f_t>& problem)
     }
   }
   D_s_row.row_start[reduced_cols] = nnz;
+#ifdef PRINT_INFO
   printf("D^s row nz %d predicted %d\n", nnz, previous_cols);
   printf("Converting D^s row to compressed column\n");
-  csc_matrix_t<i_t, f_t> D_s(reduced_cols, previous_cols, 1);
+#endif
+  //csc_matrix_t<i_t, f_t> D_s(reduced_cols, previous_cols, 1);
+  presolve_info.folding_info.D_s.resize(reduced_cols, previous_cols, 1);
+  csc_matrix_t<i_t, f_t>& D_s = presolve_info.folding_info.D_s;
   D_s_row.to_compressed_col(D_s);
+#ifdef WRITE_DS
   printf("Completed D^s\n");
   fid = fopen("D_s.txt", "w");
   D_s.write_matrix_market(fid);
   fclose(fid);
+#endif
 
+#ifdef DEBUG
   // Verify that D^s D = I
   csc_matrix_t<i_t, f_t> D_product(reduced_cols, reduced_cols, 1);
   multiply(D_s, D, D_product);
@@ -2309,8 +2324,9 @@ void folding(lp_problem_t<i_t, f_t>& problem)
          reduced_rows,
          reduced_cols,
          A_prime.col_start[reduced_cols]);
-  raft::handle_t handle{};
-  user_problem_t<i_t, f_t> reduced_problem(&handle);
+#define SOLVE_REDUCED_PROBLEM
+#ifdef SOLVE_REDUCED_PROBLEM
+  user_problem_t<i_t, f_t> reduced_problem(problem.handle_ptr);
   reduced_problem.num_rows     = reduced_rows;
   reduced_problem.num_cols     = reduced_cols;
   reduced_problem.A            = A_prime;
@@ -2323,30 +2339,65 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   reduced_problem.num_range_rows = 0;
   reduced_problem.row_sense      = std::vector<char>(reduced_rows, 'E');
   reduced_problem.var_types    = std::vector<variable_type_t>(reduced_cols, variable_type_t::CONTINUOUS);
+#endif
+
+  problem.num_rows = reduced_rows;
+  problem.num_cols = reduced_cols;
+  problem.objective = c_prime;
+  problem.A = A_prime;
+  problem.rhs = b_prime;
+  problem.lower = std::vector<f_t>(reduced_cols, 0.0);
+  problem.upper = std::vector<f_t>(reduced_cols, inf);
+  problem.obj_constant = 0.0;
+  problem.obj_scale = 1.0;
+
+  presolve_info.folding_info.c_tilde = c_tilde;
+  presolve_info.folding_info.A_tilde = A_tilde;
+  presolve_info.folding_info.is_folded = true;
+  presolve_info.folding_info.num_upper_bounds = nz_ub;
+
+
+
   printf("Folding time %.2f seconds\n", toc(start_time));
 
+#ifdef SOLVE_REDUCED_PROBLEM
   // Solve the reduced problem
   lp_solution_t<i_t, f_t> reduced_solution(reduced_rows, reduced_cols);
   simplex_solver_settings_t<i_t, f_t> reduced_settings;
   reduced_settings.folding = false;
-  reduced_settings.barrier = false;
-  reduced_settings.barrier_presolve = false;
+  reduced_settings.barrier = true;
+  reduced_settings.barrier_presolve = true;
   reduced_settings.log.log = true;
-  solve_linear_program(
+
+
+  solve_linear_program_with_barrier(
     reduced_problem, reduced_settings, reduced_solution);
 
-  std::vector<f_t> x_prime = reduced_solution.x;
-  //printf("Reduced solution\n");
-  for (i_t j = 0; j < reduced_cols; j++) {
-    //printf("x_prime[%d] = %f\n", j, x_prime[j]);
-  }
+  std::vector<f_t>& x_prime = reduced_solution.x;
+  std::vector<f_t>& y_prime = reduced_solution.y;
+  std::vector<f_t>& z_prime = reduced_solution.z;
   printf("Reduced objective = %e\n", reduced_solution.objective);
 
   std::vector<f_t> x(previous_cols);
+  std::vector<f_t> y(previous_rows);
+  std::vector<f_t> z(previous_cols);
   matrix_vector_multiply(D, 1.0, x_prime, 0.0, x);
+  matrix_transpose_vector_multiply(C_s, 1.0, y_prime, 0.0, y);
+  matrix_transpose_vector_multiply(D_s, 1.0, z_prime, 0.0, z);
 
-  printf("Original objective = %e\n", dot<i_t, f_t>(c_tilde, x));
+  printf("Original primal objective = %e\n", dot<i_t, f_t>(c_tilde, x));
+  printf("Original dual objective   = %e\n", dot<i_t, f_t>(b_tilde, y));
 
+  printf("|| y ||_2 = %e\n", vector_norm2<i_t, f_t>(y));
+  printf("|| z ||_2 = %e\n", vector_norm2<i_t, f_t>(z));
+
+  std::vector<f_t> dual_residual(previous_cols);
+  for (i_t j = 0; j < previous_cols; j++) {
+    dual_residual[j] = z[j] - c_tilde[j];
+  }
+  matrix_transpose_vector_multiply(A_tilde, 1.0, y, 1.0, dual_residual);
+  printf("Original dual residual = %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
+#endif
 }
 
 template <typename i_t, typename f_t>
@@ -2551,7 +2602,9 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     problem.num_cols = num_cols;
   }
 
-  if (settings.folding) { folding(problem); }
+  if (settings.barrier_presolve && settings.folding) {
+    folding(problem, presolve_info);
+  }
 
   // Check for empty rows
   i_t num_empty_rows = 0;
@@ -2835,9 +2888,68 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
                       std::vector<f_t>& uncrushed_y,
                       std::vector<f_t>& uncrushed_z)
 {
+
+  std::vector<f_t> input_x = crushed_x;
+  std::vector<f_t> input_y = crushed_y;
+  std::vector<f_t> input_z = crushed_z;
+  if (presolve_info.folding_info.is_folded) {
+    // We solved a foled problem in the form
+    // minimize c_prime^T x_prime
+    // subject to A_prime x_prime = b_prime
+    // x_prime >= 0
+    //
+    // where A_prime = C^s A D
+    // and c_prime = D^T c
+    // and b_prime = C^s b
+
+    // We need to map this solution back to the converted problem
+    //
+    // minimize c^T x
+    // subject to A * x = b
+    //            x_j + w_j = u_j, j in U
+    //            0 <= x,
+    //            0 <= w
+
+    i_t reduced_cols = presolve_info.folding_info.D.n;
+    i_t previous_cols =  presolve_info.folding_info.D.m;
+    i_t reduced_rows = presolve_info.folding_info.C_s.m;
+    i_t previous_rows = presolve_info.folding_info.C_s.n;
+
+    std::vector<f_t> xtilde(previous_cols);
+    std::vector<f_t> ytilde(previous_rows);
+    std::vector<f_t> ztilde(previous_cols);
+
+    matrix_vector_multiply(presolve_info.folding_info.D, 1.0, crushed_x, 0.0, xtilde);
+    matrix_transpose_vector_multiply(presolve_info.folding_info.C_s, 1.0, crushed_y, 0.0, ytilde);
+    matrix_transpose_vector_multiply(presolve_info.folding_info.D_s, 1.0, crushed_z, 0.0, ztilde);
+
+    printf("|| y ||_2 = %e\n", vector_norm2<i_t, f_t>(ytilde));
+    printf("|| z ||_2 = %e\n", vector_norm2<i_t, f_t>(ztilde));
+    std::vector<f_t> dual_residual(previous_cols);
+    for (i_t j = 0; j < previous_cols; j++) {
+      dual_residual[j] = ztilde[j] - presolve_info.folding_info.c_tilde[j];
+    }
+    matrix_transpose_vector_multiply(presolve_info.folding_info.A_tilde, 1.0, ytilde, 1.0, dual_residual);
+    printf("Unfolded dual residual = %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
+
+
+    // Now we need to map the solution back to the original problem
+    // minimize c^T x
+    // subject to A * x = b
+    //           0 <= x,
+    //           x_j <= u_j, j in U
+    input_x = xtilde;
+    input_x.resize(previous_cols - presolve_info.folding_info.num_upper_bounds);
+    input_y = ytilde;
+    input_y.resize(previous_rows - presolve_info.folding_info.num_upper_bounds);
+    input_z = ztilde;
+    input_z.resize(previous_cols - presolve_info.folding_info.num_upper_bounds);
+  }
+
   if (presolve_info.removed_constraints.size() == 0) {
-    uncrushed_y = crushed_y;
+    uncrushed_y = input_y;
   } else {
+    printf("Handling removed constraints %d\n", presolve_info.removed_constraints.size());
     // We removed some constraints, so we need to map the crushed solution back to the original
     // constraints
     const i_t m = presolve_info.removed_constraints.size() + presolve_info.remaining_constraints.size();
@@ -2845,7 +2957,7 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
 
     i_t k = 0;
     for (const i_t i : presolve_info.remaining_constraints) {
-      uncrushed_y[i] = crushed_y[k];
+      uncrushed_y[i] = input_y[k];
       k++;
     }
     for (const i_t i : presolve_info.removed_constraints) {
@@ -2854,9 +2966,10 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   }
 
   if (presolve_info.removed_variables.size() == 0) {
-    uncrushed_x = crushed_x;
-    uncrushed_z = crushed_z;
+    uncrushed_x = input_x;
+    uncrushed_z = input_z;
   } else {
+    printf("Handling removed variables %d\n", presolve_info.removed_variables.size());
     // We removed some variables, so we need to map the crushed solution back to the original
     // variables
     const i_t n = presolve_info.removed_variables.size() + presolve_info.remaining_variables.size();
@@ -2865,8 +2978,8 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
 
     i_t k = 0;
     for (const i_t j : presolve_info.remaining_variables) {
-      uncrushed_x[j] = crushed_x[k];
-      uncrushed_z[j] = crushed_z[k];
+      uncrushed_x[j] = input_x[k];
+      uncrushed_z[j] = input_z[k];
       k++;
     }
 
@@ -2880,6 +2993,7 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
 
   const i_t num_free_variables = presolve_info.free_variable_pairs.size() / 2;
   if (num_free_variables > 0) {
+    printf("Handling free variables %d\n", num_free_variables);
     // We added free variables so we need to map the crushed solution back to the original variables
     for (i_t k = 0; k < 2 * num_free_variables; k += 2) {
       const i_t u = presolve_info.free_variable_pairs[k];
@@ -2892,6 +3006,7 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   }
 
   if (presolve_info.removed_lower_bounds.size() > 0) {
+    printf("Handling removed lower bounds %d\n", presolve_info.removed_lower_bounds.size());
     // We removed some lower bounds so we need to map the crushed solution back to the original
     // variables
     for (i_t j = 0; j < uncrushed_x.size(); j++) {

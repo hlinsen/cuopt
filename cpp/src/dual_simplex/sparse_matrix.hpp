@@ -44,6 +44,16 @@ class csc_matrix_t {
   {
   }
 
+  void resize(i_t rows, i_t cols, i_t nz)
+  {
+    m = rows;
+    n = cols;
+    nz_max = nz;
+    col_start.resize(n + 1);
+    i.resize(nz_max);
+    x.resize(nz_max);
+  }
+
   // Adjust to i and x vectors for a new number of nonzeros
   void reallocate(i_t new_nz);
 
