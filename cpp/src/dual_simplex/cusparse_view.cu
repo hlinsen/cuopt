@@ -16,6 +16,7 @@
  */
 
 #include <dual_simplex/dense_vector.hpp>
+#include <dual_simplex/sparse_matrix.hpp>
 #include <dual_simplex/pinned_host_allocator.hpp>
 #include "dual_simplex/cusparse_view.hpp"
 
@@ -124,57 +125,58 @@ void my_cusparsespmv_preprocess(cusparseHandle_t handle,
 
 template <typename i_t, typename f_t>
 cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
-                                           i_t rows,
-                                           i_t cols,
-                                           i_t nnz,
-                                           const std::vector<i_t>& offsets,
-                                           const std::vector<i_t>& indices,
-                                           const std::vector<f_t>& data)
+                                          const csc_matrix_t<i_t, f_t>& A)
   : handle_ptr_(handle_ptr),
-    offsets_(0, handle_ptr->get_stream()),
-    indices_(0, handle_ptr->get_stream()),
-    data_(0, handle_ptr->get_stream()),
+    A_offsets_(0, handle_ptr->get_stream()),
+    A_indices_(0, handle_ptr->get_stream()),
+    A_data_(0, handle_ptr->get_stream()),
+    A_T_offsets_(0, handle_ptr->get_stream()),
+    A_T_indices_(0, handle_ptr->get_stream()),
+    A_T_data_(0, handle_ptr->get_stream()),
     spmv_buffer_(0, handle_ptr->get_stream()),
     d_one_(f_t(1), handle_ptr->get_stream()),
     d_minus_one_(f_t(-1), handle_ptr->get_stream()),
     d_zero_(f_t(0), handle_ptr->get_stream())
 {
   // TMP matrix data should already be on the GPU and in CSR not CSC
-  offsets_ = device_copy(offsets, handle_ptr->get_stream());
-  indices_ = device_copy(indices, handle_ptr->get_stream());
-  data_    = device_copy(data, handle_ptr->get_stream());
+  printf("A hash: %zu\n", A.hash());
+  csr_matrix_t<i_t, f_t> A_csr(A.m, A.n, 1);
+  A.to_compressed_row(A_csr);
+  i_t rows = A_csr.m;
+  i_t cols = A_csr.n;
+  i_t nnz = A_csr.x.size();
+  const std::vector<i_t>& offsets = A_csr.row_start;
+  const std::vector<i_t>& indices = A_csr.j;
+  const std::vector<f_t>& data = A_csr.x;
 
-  // TMP Should be csr transpose then create CSR but something is wrong
-  /*raft::sparse::linalg::csr_transpose(*handle_ptr,
-                                      csc_offsets_.data(),
-                                      csc_indices_.data(),
-                                      csc_data_.data(),
-                                      offsets_.data(),
-                                      indices_.data(),
-                                      data_.data(),
-                                      rows,
-                                      cols,
-                                      nnz,
-                                      handle_ptr->get_stream());*/
+  A_offsets_ = device_copy(offsets, handle_ptr->get_stream());
+  A_indices_ = device_copy(indices, handle_ptr->get_stream());
+  A_data_    = device_copy(data, handle_ptr->get_stream());
 
-  // TODO add to RAFT a const version
-  // No RAFT version without the const so you will get a linktime issuen hence the const_cast
-  /*RAFT_CUSPARSE_TRY(raft::sparse::detail::cusparsecreatecsr(
-  &A_,
-  rows,
-  cols,
-  nnz,
-  const_cast<i_t*>(offsets.data()),
-  const_cast<i_t*>(indices.data()),
-  const_cast<f_t*>(data.data())));*/
+  A_T_offsets_ = device_copy(A.col_start, handle_ptr->get_stream());
+  A_T_indices_ = device_copy(A.i, handle_ptr->get_stream());
+  A_T_data_    = device_copy(A.x, handle_ptr->get_stream());
 
-  cusparseCreateCsc(&A_,
+  cusparseCreateCsr(&A_,
                     rows,
                     cols,
                     nnz,
-                    offsets_.data(),
-                    indices_.data(),
-                    data_.data(),
+                    A_offsets_.data(),
+                    A_indices_.data(),
+                    A_data_.data(),
+                    CUSPARSE_INDEX_32I,
+                    CUSPARSE_INDEX_32I,
+                    CUSPARSE_INDEX_BASE_ZERO,
+                    CUDA_R_64F);
+
+
+  cusparseCreateCsr(&A_T_,
+                    cols,
+                    rows,
+                    nnz,
+                    A_T_offsets_.data(),
+                    A_T_indices_.data(),
+                    A_T_data_.data(),
                     CUSPARSE_INDEX_32I,
                     CUSPARSE_INDEX_32I,
                     CUSPARSE_INDEX_BASE_ZERO,
@@ -213,13 +215,11 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
                              spmv_buffer_.data(),
                              handle_ptr->get_stream());
 
-  // TMP: we should store the tranpose matrix in the calling object and call spmv on this transpose
-  // matrix Using CUSPARSE_OPERATION_TRANSPOSE is inefficient and not deterministic
   RAFT_CUSPARSE_TRY(
     raft::sparse::detail::cusparsespmv_buffersize(handle_ptr_->get_cusparse_handle(),
-                                                  CUSPARSE_OPERATION_TRANSPOSE,
+                                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
                                                   d_one_.data(),
-                                                  A_,
+                                                  A_T_,
                                                   y,
                                                   d_one_.data(),
                                                   x,
@@ -229,9 +229,9 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
   spmv_buffer_transpose_.resize(buffer_size_spmv, handle_ptr_->get_stream());
 
   my_cusparsespmv_preprocess(handle_ptr_->get_cusparse_handle(),
-                             CUSPARSE_OPERATION_TRANSPOSE,
+                             CUSPARSE_OPERATION_NON_TRANSPOSE,
                              d_one_.data(),
-                             A_,
+                             A_T_,
                              y,
                              d_one_.data(),
                              x,
@@ -315,22 +315,20 @@ void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
                                                f_t beta,
                                                cusparseDnVecDescr_t y)
 {
-  // Would be simpler if we could pass host data direclty but other cusparse calls with the same
+  // Would be simpler if we could pass host data direct;y but other cusparse calls with the same
   // handler depend on device data
   cuopt_assert(alpha == f_t(1) || alpha == f_t(-1), "Only alpha 1 or -1 supported");
   cuopt_assert(beta == f_t(1) || beta == f_t(-1) || beta == f_t(0),
                "Only beta 1 or -1 or 0 supported");
-  // TMP: we should store the tranpose matrix in the calling object and call spmv on this transpose
-  // matrix Using CUSPARSE_OPERATION_TRANSPOSE is inefficient and not deterministic
   rmm::device_scalar<f_t>* d_beta = &d_one_;
   if (beta == f_t(0))
     d_beta = &d_zero_;
   else if (beta == f_t(-1))
     d_beta = &d_minus_one_;
   raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
-                                     CUSPARSE_OPERATION_TRANSPOSE,
+                                     CUSPARSE_OPERATION_NON_TRANSPOSE,
                                      (alpha == 1) ? d_one_.data() : d_minus_one_.data(),
-                                     A_,
+                                     A_T_,
                                      x,
                                      d_beta->data(),
                                      y,

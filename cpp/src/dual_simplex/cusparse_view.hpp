@@ -16,6 +16,8 @@
  */
 #pragma once
 
+#include <dual_simplex/sparse_matrix.hpp>
+
 #include <cusparse_v2.h>
 
 #include <rmm/device_scalar.hpp>
@@ -33,12 +35,7 @@ class cusparse_view_t {
  public:
   // TMP matrix data should already be on the GPU and in CSR not CSC
   cusparse_view_t(raft::handle_t const* handle_ptr,
-                  i_t rows,
-                  i_t cols,
-                  i_t nnz,
-                  const std::vector<i_t>& offsets,  // Host CSC matrix
-                  const std::vector<i_t>& indices,
-                  const std::vector<f_t>& data);
+                  const csc_matrix_t<i_t, f_t>& A);
 
   static cusparseDnVecDescr_t create_vector(const rmm::device_uvector<f_t>& vec);
 
@@ -58,10 +55,14 @@ class cusparse_view_t {
   raft::handle_t const* handle_ptr_{nullptr};
 
  private:
-  rmm::device_uvector<i_t> offsets_;
-  rmm::device_uvector<i_t> indices_;
-  rmm::device_uvector<f_t> data_;
+  rmm::device_uvector<i_t> A_offsets_;
+  rmm::device_uvector<i_t> A_indices_;
+  rmm::device_uvector<f_t> A_data_;
   cusparseSpMatDescr_t A_;
+  rmm::device_uvector<i_t> A_T_offsets_;
+  rmm::device_uvector<i_t> A_T_indices_;
+  rmm::device_uvector<f_t> A_T_data_;
+  cusparseSpMatDescr_t A_T_;
   rmm::device_buffer spmv_buffer_;
   rmm::device_buffer spmv_buffer_transpose_;
   rmm::device_scalar<f_t> d_one_;

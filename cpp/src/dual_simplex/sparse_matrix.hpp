@@ -118,6 +118,8 @@ class csc_matrix_t {
   template <typename Allocator>
   void scale_columns(const std::vector<f_t, Allocator>& scale);
 
+  size_t hash() const;
+
   i_t m;                       // number of rows
   i_t n;                       // number of columns
   i_t nz_max;                  // maximum number of entries

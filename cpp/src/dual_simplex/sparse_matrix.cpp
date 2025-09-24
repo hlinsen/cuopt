@@ -519,6 +519,31 @@ void csc_matrix_t<i_t, f_t>::check_matrix() const
 }
 
 template <typename i_t, typename f_t>
+size_t csc_matrix_t<i_t, f_t>::hash() const
+{
+  auto hash_combine_i = [](size_t seed, i_t i) {
+    seed ^= std::hash<i_t>{}(i) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    return seed;
+  };
+  auto hash_combine_f = [](size_t seed, f_t x) {
+    seed ^= std::hash<f_t>{}(x) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    return seed;
+  };
+
+  size_t seed = this->n;
+  seed = hash_combine_i(seed, this->m);
+  for (i_t j = 0; j <= this->n; ++j) {
+    seed = hash_combine_i(seed, this->col_start[j]);
+  }
+  i_t nnz = this->col_start[this->n];
+  for (i_t p = 0; p < nnz; ++p) {
+    seed = hash_combine_i(seed, this->i[p]);
+    seed = hash_combine_f(seed, this->x[p]);
+  }
+  return seed;
+}
+
+template <typename i_t, typename f_t>
 void csr_matrix_t<i_t, f_t>::check_matrix() const
 {
   std::vector<i_t> col_marker(this->n, -1);
