@@ -43,7 +43,7 @@ class barrier_solver_t {
   barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
                    const presolve_info_t<i_t, f_t>& presolve,
                    const simplex_solver_settings_t<i_t, f_t>& settings);
-  lp_status_t solve(const barrier_solver_settings_t<i_t, f_t>& options,
+  lp_status_t solve(f_t start_time, const barrier_solver_settings_t<i_t, f_t>& options,
                     lp_solution_t<i_t, f_t>& solution);
 
  private:
