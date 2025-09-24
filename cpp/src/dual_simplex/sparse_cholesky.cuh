@@ -93,19 +93,19 @@ class sparse_cholesky_base_t {
     }                                                                \
   } while (0);
 
+// RMM pool fragmentation makes the workspace size smaller than the actual free space on the GPU
+// Use cudaMallocAsync instead of the RMM pool until we reduce our memory footprint/fragmentation.
+// TODO: Still use RMM for smaller problems to benefit from their allocation optimizations.
 template <typename mem_pool_t>
 int cudss_device_alloc(void* ctx, void** ptr, size_t size, cudaStream_t stream)
 {
-  auto ret = reinterpret_cast<mem_pool_t*>(ctx)->allocate(size, stream);
-  *ptr     = ret;
-  return 0;
+  return cudaMallocAsync(ptr, size, stream);
 }
 
 template <typename mem_pool_t>
 int cudss_device_dealloc(void* ctx, void* ptr, size_t size, cudaStream_t stream)
 {
-  reinterpret_cast<mem_pool_t*>(ctx)->deallocate(ptr, size, stream);
-  return 0;
+  return cudaFreeAsync(ptr, stream);
 }
 
 template <typename i_t, typename f_t>
@@ -138,8 +138,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     mem_handler.device_alloc = cudss_device_alloc<rmm::mr::device_memory_resource>;
     mem_handler.device_free  = cudss_device_dealloc<rmm::mr::device_memory_resource>;
 
-    CUDSS_CALL_AND_CHECK_EXIT(
-      cudssSetDeviceMemHandler(handle, &mem_handler), status, "cudssSetDeviceMemHandler");
+    // CUDSS_CALL_AND_CHECK_EXIT(
+    //   cudssSetDeviceMemHandler(handle, &mem_handler), status, "cudssSetDeviceMemHandler");
 
     char* env_value = std::getenv("CUDSS_THREADING_LIB");
     if (env_value != nullptr) {
@@ -166,9 +166,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 #ifdef CUDSS_DETERMINISTIC
     settings_.log.printf("cuDSS solve mode            : deterministic\n");
     int32_t deterministic = 1;
-    CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig, CUDSS_CONFIG_DETERMINISTIC_MODE, &deterministic, sizeof(int32_t)),
-                              status,
-                              "cudssConfigSet for deterministic mode");
+    CUDSS_CALL_AND_CHECK_EXIT(
+      cudssConfigSet(
+        solverConfig, CUDSS_CONFIG_DETERMINISTIC_MODE, &deterministic, sizeof(int32_t)),
+      status,
+      "cudssConfigSet for deterministic mode");
 #endif
 #endif
 
@@ -351,7 +353,6 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   i_t factorize(device_csr_matrix_t<i_t, f_t>& Arow) override
   {
     raft::common::nvtx::range fun_scope("Factorize: cuDSS");
-
 
 #ifdef PRINT_MATRIX_NORM
     cudaStreamSynchronize(stream);
