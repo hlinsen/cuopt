@@ -2855,12 +2855,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
 }
 
 template <typename i_t, typename f_t>
-lp_status_t barrier_solver_t<i_t, f_t>::solve(const barrier_solver_settings_t<i_t, f_t>& options,
+lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
+                                              const barrier_solver_settings_t<i_t, f_t>& options,
                                               lp_solution_t<i_t, f_t>& solution)
 {
   raft::common::nvtx::range fun_scope("Barrier: solve");
-
-  float64_t start_time = tic();
 
   i_t n = lp.num_cols;
   i_t m = lp.num_rows;
