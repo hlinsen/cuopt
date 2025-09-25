@@ -1478,7 +1478,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, const simplex_solver_settings_t<i_
   i_t n = problem.num_cols;
 
   if (settings.folding == -1 && (m > 1e6 || n > 1e6)) {
-    settings.log.printf("Folding: Problem has %d rows and %d columns, skipping\n", m, n);
+    settings.log.printf("Folding: Skipping\n");
     return;
   }
 
@@ -2851,7 +2851,6 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   }
 
   if (presolve_info.removed_constraints.size() == 0) {
-    printf("copying input y to uncrushed y\n");
     uncrushed_y = input_y;
   } else {
     printf("Handling removed constraints %d\n", presolve_info.removed_constraints.size());
@@ -2871,9 +2870,7 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   }
 
   if (presolve_info.removed_variables.size() == 0) {
-    printf("copying input x to uncrushed x\n");
     uncrushed_x = input_x;
-    printf("copying input z to uncrushed z\n");
     uncrushed_z = input_z;
   } else {
     printf("Handling removed variables %d\n", presolve_info.removed_variables.size());

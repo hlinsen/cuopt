@@ -63,7 +63,7 @@ struct simplex_solver_settings_t {
       eliminate_singletons(true),
       print_presolve_stats(true),
       barrier_presolve(false),
-      use_cudss(false),
+      cudss_deterministic(false),
       barrier(false),
       eliminate_dense_columns(true),
       folding(-1),
@@ -121,7 +121,7 @@ struct simplex_solver_settings_t {
   bool eliminate_singletons;  // true to eliminate singletons from the basis
   bool print_presolve_stats;  // true to print presolve stats
   bool barrier_presolve;      // true to use barrier presolve
-  bool use_cudss;  // true to use cuDSS for sparse Cholesky factorization, false to use cholmod
+  bool cudss_deterministic;  // true to use cuDSS deterministic mode, false for non-deterministic
   bool barrier;    // true to use barrier method, false to use dual simplex method
   bool eliminate_dense_columns;  // true to eliminate dense columns from A*D*A^T
   i_t folding;  // -1 automatic, 0 don't fold, 1 fold

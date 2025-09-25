@@ -2789,10 +2789,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
   if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
       relative_dual_residual < settings.barrier_relaxed_optimality_tol &&
       relative_complementarity_residual < settings.barrier_relaxed_complementarity_tol) {
-    settings.log.printf("Restoring previous solution: primal %.2e dual %.2e complementarity %.2e\n",
-                        relative_primal_residual,
-                        relative_dual_residual,
-                        relative_complementarity_residual);
+    settings.log.printf("Restoring previous solution\n");
     data.to_solution(lp,
                      iter,
                      primal_objective,
@@ -2913,11 +2910,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
   i_t iter = 0;
   settings.log.printf("\n");
   settings.log.printf(
-    "         Objective                                  Residual            Time\n");
+    "        Objective                            Infeasibility              Time\n");
   settings.log.printf(
     "Iter    Primal               Dual            Primal   Dual    Compl.    Elapsed\n");
   float64_t elapsed_time = toc(start_time);
-  settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e %.1f\n",
+  settings.log.printf("%3d   %+.12e %+.12e %.2e %.2e %.2e %.1f\n",
                       iter,
                       primal_objective,
                       dual_objective,

@@ -138,8 +138,12 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
     d_minus_one_(f_t(-1), handle_ptr->get_stream()),
     d_zero_(f_t(0), handle_ptr->get_stream())
 {
-  // TMP matrix data should already be on the GPU and in CSR not CSC
-  printf("A hash: %zu\n", A.hash());
+  // TMP matrix data should already be on the GPU
+  constexpr bool debug = false;
+  if (debug)
+  {
+    printf("A hash: %zu\n", A.hash());
+  }
   csr_matrix_t<i_t, f_t> A_csr(A.m, A.n, 1);
   A.to_compressed_row(A_csr);
   i_t rows = A_csr.m;

@@ -153,7 +153,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     cudssGetProperty(MAJOR_VERSION, &major);
     cudssGetProperty(MINOR_VERSION, &minor);
     cudssGetProperty(PATCH_LEVEL, &patch);
-    settings.log.printf("CUDSS Version               : %d.%d.%d\n", major, minor, patch);
+    settings.log.printf("cuDSS Version               : %d.%d.%d\n", major, minor, patch);
 
     cuda_error = cudaSuccess;
     status     = CUDSS_STATUS_SUCCESS;
@@ -169,7 +169,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     char* env_value = std::getenv("CUDSS_THREADING_LIB");
     if (env_value != nullptr) {
-      settings.log.printf("CUDSS threading layer       : %s\n", env_value);
+      settings.log.printf("cuDSS Threading layer       : %s\n", env_value);
       CUDSS_CALL_AND_CHECK_EXIT(
         cudssSetThreadingLayer(handle, NULL), status, "cudssSetThreadingLayer");
     }
@@ -189,16 +189,15 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                                 "cudssDataSet for interrupt");
     }
 
-#define CUDSS_DETERMINISTIC
-#ifdef CUDSS_DETERMINISTIC
-    settings_.log.printf("cuDSS solve mode            : deterministic\n");
-    int32_t deterministic = 1;
-    CUDSS_CALL_AND_CHECK_EXIT(
-      cudssConfigSet(
-        solverConfig, CUDSS_CONFIG_DETERMINISTIC_MODE, &deterministic, sizeof(int32_t)),
-      status,
-      "cudssConfigSet for deterministic mode");
-#endif
+    if (settings_.cudss_deterministic) {
+      settings_.log.printf("cuDSS solve mode            : deterministic\n");
+      int32_t deterministic = 1;
+      CUDSS_CALL_AND_CHECK_EXIT(
+        cudssConfigSet(
+          solverConfig, CUDSS_CONFIG_DETERMINISTIC_MODE, &deterministic, sizeof(int32_t)),
+          status,
+          "cudssConfigSet for deterministic mode");
+    }
 #endif
 
 #ifdef USE_AMD
