@@ -115,8 +115,6 @@ class barrier_solver_t {
                                             iteration_data_t<i_t, f_t>& data,
                                             f_t start_time,
                                             i_t iter,
-                                            f_t norm_b,
-                                            f_t norm_c,
                                             f_t& primal_objective,
                                             f_t& primal_residual_norm,
                                             f_t& dual_residual_norm,

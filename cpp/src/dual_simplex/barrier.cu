@@ -2364,9 +2364,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       f_t y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
       max_residual        = std::max(max_residual, y_residual_norm);
       if (y_residual_norm > 1e-2) {
-        settings.log.printf("|| h || = %.2e\n",
-                            device_vector_norm_inf<i_t, f_t>(d_h_, stream_view_));
-        settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
+        settings.log.printf("||ADAT*dy - h|| = %.2e || h || = %.2e\n", y_residual_norm, device_vector_norm_inf<i_t, f_t>(d_h_, stream_view_));
       }
       if (y_residual_norm > 1e4) { return -1; }
     }
@@ -2741,18 +2739,15 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
   iteration_data_t<i_t, f_t>& data,
   f_t start_time,
   i_t iter,
-  f_t norm_b,
-  f_t norm_c,
+  f_t& primal_objective,
   f_t& primal_residual_norm,
   f_t& dual_residual_norm,
   f_t& complementarity_residual_norm,
-  f_t& primal_objective,
   f_t& relative_primal_residual,
   f_t& relative_dual_residual,
   f_t& relative_complementarity_residual,
   lp_solution_t<i_t, f_t>& solution)
 {
-  printf("relative_primal_residual %.2e, relative_dual_residual %.2e, relative_complementarity_residual %.2e\n", relative_primal_residual, relative_dual_residual, relative_complementarity_residual);
   if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
       relative_dual_residual < settings.barrier_relaxed_optimality_tol &&
       relative_complementarity_residual < settings.barrier_relaxed_complementarity_tol) {
@@ -3047,8 +3042,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
                                            data,
                                            start_time,
                                            iter,
-                                           norm_b,
-                                           norm_c,
                                            primal_objective,
                                            primal_residual_norm,
                                            dual_residual_norm,
@@ -3214,8 +3207,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
                                              data,
                                              start_time,
                                              iter,
-                                             norm_b,
-                                             norm_c,
                                              primal_objective,
                                              primal_residual_norm,
                                              dual_residual_norm,
@@ -3475,8 +3466,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
         if (relative_primal_residual < data.relative_primal_residual_save &&
             relative_dual_residual < data.relative_dual_residual_save &&
             relative_complementarity_residual < data.relative_complementarity_residual_save) {
-          printf("Saving solution: feasibility %.2e, optimality %.2e, complementarity %.2e\n",
-                 relative_primal_residual, relative_dual_residual, relative_complementarity_residual);
+          settings.log.debug("Saving solution: feasibility %.2e (%.2e), optimality %.2e (%.2e), complementarity %.2e (%.2e)\n",
+                 relative_primal_residual, primal_residual_norm, relative_dual_residual, dual_residual_norm, relative_complementarity_residual, complementarity_residual_norm);
           data.w_save               = data.w;
           data.x_save               = data.x;
           data.y_save               = data.y;
@@ -3499,7 +3490,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
         return lp_status_t::NUMERICAL_ISSUES;
       }
 
-      settings.log.printf("%2d   %+.12e %+.12e %.2e %.2e %.2e %.1f\n",
+      settings.log.printf("%3d   %+.12e %+.12e %.2e %.2e %.2e %.1f\n",
                           iter,
                           primal_objective + lp.obj_constant,
                           dual_objective + lp.obj_constant,

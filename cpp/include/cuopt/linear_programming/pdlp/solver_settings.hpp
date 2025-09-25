@@ -208,7 +208,7 @@ class pdlp_solver_settings_t {
   std::string user_problem_file{""};
   bool per_constraint_residual{false};
   bool crossover{false};
-  bool folding{false};
+  i_t folding{-1};
   i_t augmented{-1};
   bool eliminate_dense_columns{true};
   bool save_best_primal_so_far{false};

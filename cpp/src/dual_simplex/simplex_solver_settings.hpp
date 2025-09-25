@@ -66,7 +66,7 @@ struct simplex_solver_settings_t {
       use_cudss(false),
       barrier(false),
       eliminate_dense_columns(true),
-      folding(false),
+      folding(-1),
       augmented(false),
       crossover(false),
       refactor_frequency(100),
@@ -124,7 +124,7 @@ struct simplex_solver_settings_t {
   bool use_cudss;  // true to use cuDSS for sparse Cholesky factorization, false to use cholmod
   bool barrier;    // true to use barrier method, false to use dual simplex method
   bool eliminate_dense_columns;  // true to eliminate dense columns from A*D*A^T
-  bool folding;  // true to fold the problem, false to not
+  i_t folding;  // -1 automatic, 0 don't fold, 1 fold
   i_t augmented;  // -1 automatic, 0 to solve with ADAT, 1 to solve with augmented system
   bool crossover;  // true to do crossover, false to not
   i_t refactor_frequency;       // number of basis updates before refactorization

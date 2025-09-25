@@ -834,38 +834,9 @@ void find_vertices_to_refine(const std::unordered_set<i_t>& refining_color_verti
   }
 }
 
-template <typename i_t, typename f_t>
-void compute_sums_of_refined_vertices_old(i_t refining_color,
-                                      const std::vector<i_t>& vertices_to_refine,
-                                      const std::vector<i_t>& offsets,
-                                      const std::vector<i_t>& vertex_list,
-                                      const std::vector<f_t>& weight_list,
-                                      const std::vector<i_t>& color_map_A,
-                                      const std::vector<i_t>& color_map_B,
-                                      std::vector<f_t>& vertex_to_sum,
-                                      std::vector<f_t>& max_sum_by_color)
-{
-  for (i_t v : vertices_to_refine) {
-    f_t sum = 0.0;
-    const i_t start = offsets[v];
-    const i_t end = offsets[v + 1];
-    for (i_t p = start; p < end; p++) {
-      const i_t u = vertex_list[p];
-      if (color_map_A[u] == refining_color) {
-        sum += weight_list[p];
-      }
-    }
-    vertex_to_sum[v] = sum;
-    if (std::isnan(max_sum_by_color[color_map_B[v]])) {
-      max_sum_by_color[color_map_B[v]] = sum;
-    } else {
-      max_sum_by_color[color_map_B[v]] = std::max(max_sum_by_color[color_map_B[v]], sum);
-    }
-  }
-}
 
 template <typename i_t, typename f_t>
-void compute_sums_of_refined_vertices_new(i_t refining_color,
+void compute_sums_of_refined_vertices(i_t refining_color,
                                       const std::unordered_set<i_t>& refining_color_vertices,
                                       const std::vector<i_t>& vertices_to_refine,
                                       const std::vector<i_t>& offsets,
@@ -933,44 +904,15 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
     // sum_{v in R} A_vw for all w such that A_vw != 0
     // Note that if A_vw != 0 and A_vw' != 0, we may
     // have that w and w' are in a different (column) color
-#ifdef DEBUG
-    std::vector<f_t> vertex_to_sum_verify = vertex_to_sum;
-    std::vector<f_t> max_sum_by_color_verify = max_sum_by_color;
-#endif
-    compute_sums_of_refined_vertices_new(refining_color.color,
-                                         refining_color.vertices,
-                                         vertices_to_refine,
-                                         Arow.row_start,
-                                         Arow.j,
-                                         Arow.x,
-                                         col_color_map,
-                                         vertex_to_sum,
-                                         max_sum_by_color);
-#ifdef DEBUG
-    compute_sums_of_refined_vertices_old(refining_color.color,
-                                         vertices_to_refine,
-                                         A.col_start,
-                                         A.i,
-                                         A.x,
-                                         row_color_map,
-                                         col_color_map,
-                                         vertex_to_sum_verify,
-                                         max_sum_by_color_verify);
-
-    for (i_t v = 0; v < vertex_to_sum.size(); v++) {
-      if (vertex_to_sum[v] != vertex_to_sum_verify[v]) {
-        printf("Vertex %d has sum %e != %e\n", v, vertex_to_sum[v], vertex_to_sum_verify[v]);
-        exit(1);
-      }
-    }
-    for (i_t c = 0; c < max_sum_by_color.size(); c++) {
-      if ((!std::isnan(max_sum_by_color[c]) || !std::isnan(max_sum_by_color_verify[c])) && max_sum_by_color[c] != max_sum_by_color_verify[c]) {
-        printf(
-          "Column color %d has max sum %e != %e\n", c, max_sum_by_color[c], max_sum_by_color_verify[c]);
-        exit(1);
-      }
-    }
-#endif
+    compute_sums_of_refined_vertices(refining_color.color,
+                                     refining_color.vertices,
+                                     vertices_to_refine,
+                                     Arow.row_start,
+                                     Arow.j,
+                                     Arow.x,
+                                     col_color_map,
+                                     vertex_to_sum,
+                                     max_sum_by_color);
   } else {
     // The refining color is a column color
     // Find all vertices (rows) that have a neighbor in the refining color
@@ -984,16 +926,13 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                             vertices_to_refine_by_color,
                             marked_colors,
                             colors_to_update);
-#ifdef DEBUG
-    std::vector<f_t> vertex_to_sum_verify    = vertex_to_sum;
-    std::vector<f_t> max_sum_by_color_verify = max_sum_by_color;
-#endif
+
     // Let Q be the refining color, Q is a subset of the columns
     // We need to compute
     // sum_{w in Q} A_vw for all v such that A_vw != 0
     // Note that if A_vw != 0 and A_v'w != 0, we may
     // have that v and v' are in a different (row) color
-    compute_sums_of_refined_vertices_new(refining_color.color,
+    compute_sums_of_refined_vertices(refining_color.color,
                                      refining_color.vertices,
                                      vertices_to_refine,
                                      A.col_start,
@@ -1002,31 +941,6 @@ void compute_sums(const csc_matrix_t<i_t, f_t>& A,
                                      row_color_map,
                                      vertex_to_sum,
                                      max_sum_by_color);
-#ifdef DEBUG
-    compute_sums_of_refined_vertices_old(refining_color.color,
-                                     vertices_to_refine,
-                                     Arow.row_start,
-                                     Arow.j,
-                                     Arow.x,
-                                     col_color_map,
-                                     row_color_map,
-                                     vertex_to_sum_verify,
-                                     max_sum_by_color_verify);
-
-    for (i_t v = 0; v < vertex_to_sum.size(); v++) {
-      if (vertex_to_sum[v] != vertex_to_sum_verify[v]) {
-        printf("Vertex %d has sum %e != %e\n", v, vertex_to_sum[v], vertex_to_sum_verify[v]);
-        exit(1);
-      }
-    }
-    for (i_t c = 0; c < max_sum_by_color.size(); c++) {
-      if ((!std::isnan(max_sum_by_color[c]) || !std::isnan(max_sum_by_color_verify[c])) && max_sum_by_color[c] != max_sum_by_color_verify[c]) {
-        printf(
-          "Row color %d has max sum %e != %e\n", c, max_sum_by_color[c], max_sum_by_color_verify[c]);
-        exit(1);
-      }
-    }
-#endif
   }
 }
 
@@ -1093,7 +1007,6 @@ void split_colors(i_t color,
                   i_t& total_colors_seen)
 {
   bool in_stack = color_in_stack[color];
-  //printf("Splitting color %d, size %ld\n", color, colors[color].vertices.size());
 
   sum_to_sizes.clear();
   color_sums.clear();
@@ -1102,7 +1015,6 @@ void split_colors(i_t color,
   }
   if (vertices_to_refine_by_color[color].size() != colors[color].vertices.size()) {
     const i_t remaining_size = colors[color].vertices.size() - vertices_to_refine_by_color[color].size();
-    //printf("Color %d has %d remaining vertices\n", color, remaining_size);
     if (remaining_size < 0) {
       printf("Negative remaining size %d\n", remaining_size);
 
@@ -1243,6 +1155,7 @@ void color_lower_bounds(const csc_matrix_t<i_t, f_t>& A,
 
 template <typename i_t, typename f_t>
 i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
+                const simplex_solver_settings_t<i_t, f_t>& settings,
                  std::vector<color_t<i_t>>& colors,
                  i_t row_threshold,
                  i_t col_threshold,
@@ -1252,6 +1165,7 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
                  i_t& total_colors_seen)
 {
   f_t start_time = tic();
+  f_t last_log_time = start_time;
   const i_t m = A.m;
   const i_t n = A.n;
   csr_matrix_t<i_t, f_t> A_row(m, n, 1);
@@ -1261,9 +1175,9 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
   i_t col_lower_bound = 0;
 
   color_lower_bounds(A, A_row, row_lower_bound, col_lower_bound);
-  printf("Row lower bound %d / %d col lower bound %d / %d\n", row_lower_bound, row_threshold, col_lower_bound, col_threshold);
+  settings.log.debug("Folding: Row lower bound %d / %d col lower bound %d / %d\n", row_lower_bound, row_threshold, col_lower_bound, col_threshold);
   if (row_lower_bound > row_threshold || col_lower_bound > col_threshold) {
-    printf("Folding: Row lower bound %d is greater than row threshold %d or col lower bound %d is greater than col threshold %d\n", row_lower_bound, row_threshold, col_lower_bound, col_threshold);
+    settings.log.debug("Folding: Row lower bound %d is greater than row threshold %d or col lower bound %d is greater than col threshold %d\n", row_lower_bound, row_threshold, col_lower_bound, col_threshold);
     return -1;
   }
 
@@ -1314,7 +1228,6 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
   std::vector<i_t> colors_to_update;
   colors_to_update.reserve(max_vertices);
 
-  //printf("Max vertices %d\n", max_vertices);
   i_t num_refinements = 0;
   f_t colors_per_refinement = 0.0;
   while (!color_stack.empty()) {
@@ -1404,7 +1317,7 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
     i_t projected_colors = num_row_colors + num_col_colors + static_cast<i_t>(colors_per_refinement * static_cast<f_t>(color_stack.size()));
 
     if (total_colors_seen >= max_colors - 10) {
-      printf("Increase max colors from %d to %d\n", max_colors, max_colors * 2);
+      settings.log.debug("Folding: Increase max colors from %d to %d\n", max_colors, max_colors * 2);
       max_colors *= 2;
       color_in_stack.resize(max_colors, 0);
       vertices_to_refine_by_color.resize(max_colors);
@@ -1416,8 +1329,8 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
 #ifdef DEBUG
     for (i_t k = 0; k < max_vertices; k++) {
       if (vertex_to_sum[k] != 0.0) {
-        printf("Vertex %d has sum %e\n", k, vertex_to_sum[k]);
-        exit(1);
+        settings.log.printf("Folding: Vertex %d has sum %e\n", k, vertex_to_sum[k]);
+        return -2;
       }
     }
 #endif
@@ -1431,8 +1344,8 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
 #ifdef DEBUG
     for (i_t k = 0; k < total_colors_seen; k++) {
       if (vertices_to_refine_by_color[k].size() != 0) {
-        printf("Color %d has %ld vertices to refine. Not cleared\n", k, vertices_to_refine_by_color[k].size());
-        exit(1);
+        settings.log.printf("Folding: Color %d has %ld vertices to refine. Not cleared\n", k, vertices_to_refine_by_color[k].size());
+        return -2;
       }
     }
 #endif
@@ -1440,14 +1353,14 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
 #ifdef DEBUG
     for (i_t i = 0; i < m; i++) {
       if (row_color_map[i] >= total_colors_seen) {
-        printf("Row color %d is not in the colors vector\n", row_color_map[i]);
-        exit(1);
+        settings.log.printf("Folding: Row color %d is not in the colors vector\n", row_color_map[i]);
+        return -2;
       }
     }
     for (i_t j = 0; j < n; j++) {
       if (col_color_map[j] >= total_colors_seen) {
-        printf("Column color %d is not in the colors vector. %d\n", col_color_map[j], num_colors);
-        exit(1);
+        settings.log.printf("Folding: Column color %d is not in the colors vector. %d\n", col_color_map[j], num_colors);
+        return -2;
       }
     }
 #endif
@@ -1465,8 +1378,8 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
           num_active_row_colors++;
           for (i_t v : color.vertices) {
             if (row_color_map[v] != color.color) {
-              printf("Row color map %d does not match color %d for vertex %d\n", row_color_map[v], color.color, v);
-              exit(1);
+              settings.log.printf("Folding: Row color map %d does not match color %d for vertex %d\n", row_color_map[v], color.color, v);
+              return -2;
             }
           }
         }
@@ -1474,8 +1387,8 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
           num_active_col_colors++;
           for (i_t v : color.vertices) {
             if (col_color_map[v] != color.color) {
-              printf("Column color map %d does not match color %d for vertex %d\n", col_color_map[v], color.color, v);
-              exit(1);
+              settings.log.printf("Folding: Column color map %d does not match color %d for vertex %d\n", col_color_map[v], color.color, v);
+              return -2;
             }
           }
         }
@@ -1483,22 +1396,27 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
     }
     //printf("Number of active colors: %d\n", num_active_colors);
     if (num_active_colors != num_colors) {
-      printf("Number of active colors does not match number of colors\n");
-      exit(1);
+      settings.log.printf("Folding: Number of active colors does not match number of colors\n");
+      return -2;
     }
     //printf("Number of active row colors: %d\n", num_active_row_colors);
      if (num_active_row_colors != num_row_colors) {
-      printf("Number of active row colors does not match number of row colors\n");
-      exit(1);
+      settings.log.printf("Folding: Number of active row colors does not match number of row colors\n");
+      return -2;
     }
     //printf("Number of active column colors: %d\n", num_active_col_colors);
     if (num_active_col_colors != num_col_colors) {
-      printf("Number of active column colors does not match number of column colors\n");
-      exit(1);
+      settings.log.printf("Folding: Number of active column colors does not match number of column colors\n");
+      return -2;
     }
 #endif
-    if (num_refinements % 100 == 0) {
-      printf(
+
+
+    if (toc(last_log_time) > 1.0) {
+      last_log_time = tic();
+      settings.log.printf("Folding: %d refinements %d colors in %.2fs", num_refinements, num_row_colors + num_col_colors, toc(start_time));
+#ifdef PRINT_INFO
+      settings.log.debug(
         "Number of refinements %8d. Number of colors %d (row colors %d, col colors %d) stack size %ld colors per "
         "refinement %.2f projected colors %d in %.2f seconds\n",
         num_refinements,
@@ -1509,30 +1427,31 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
         colors_per_refinement,
         projected_colors,
         toc(start_time));
+#endif
     }
     if (num_row_colors >= max_vertices)
     {
-      printf("Too many row colors %d max %d\n", num_row_colors, max_vertices);
-      exit(1);
+      settings.log.printf("Folding: Too many row colors %d max %d\n", num_row_colors, max_vertices);
+      return -2;
     }
     if (num_col_colors >= max_vertices)
     {
-      printf("Too many column colors %d max %d\n", num_col_colors, max_vertices);
-      exit(1);
+      settings.log.printf("Folding: Too many column colors %d max %d\n", num_col_colors, max_vertices);
+      return -2;
     }
 
     if (num_row_colors > row_threshold || num_col_colors > col_threshold) {
-      printf("Folding: Number of row colors %d is greater than row threshold %d or number of column colors %d is greater than col threshold %d\n", num_row_colors, row_threshold, num_col_colors, col_threshold);
+      settings.log.printf("Folding: Number of colors exceeds threshold");
       return -1;
     }
   }
-  printf("Number of refinements: %d\n", num_refinements);
-#undef DEBUG
+  settings.log.printf("Folding: Colors %d. Refinements: %d\n", num_row_colors + num_col_colors, num_refinements);
+
   return 0;
 }
 
 template <typename i_t, typename f_t>
-void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolve_info)
+void folding(lp_problem_t<i_t, f_t>& problem, const simplex_solver_settings_t<i_t, f_t>& settings, presolve_info_t<i_t, f_t>& presolve_info)
 {
 
   // Handle linear programs in the form
@@ -1558,8 +1477,8 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   i_t m = problem.num_rows;
   i_t n = problem.num_cols;
 
-  if (m > 1e6 || n > 1e6) {
-    printf("Folding: Problem has %d rows and %d columns, skipping\n", m, n);
+  if (settings.folding == -1 && (m > 1e6 || n > 1e6)) {
+    settings.log.printf("Folding: Problem has %d rows and %d columns, skipping\n", m, n);
     return;
   }
 
@@ -1593,18 +1512,17 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
       finite_upper_bounds.push_back(problem.upper[j]);
     }
   }
-  printf("Nonzero lower bounds %d, finite upper bounds %d\n", nz_lb, nz_ub);
 
   if (nz_lb > 0)
   {
-    printf("Cant handle problems with nonzero lower bounds\n");
-    exit(1);
+    settings.log.printf("Folding: Can't handle problems with nonzero lower bounds\n");
+    return;
   }
 
   i_t m_prime = m + 1 + nz_ub;
   i_t n_prime = n + nz_ub + 1;
   i_t augmented_nz = problem.A.col_start[n] + nz_obj + nz_rhs + 3 * nz_ub + 1;
-  printf("Augmented matrix has %d rows, %d columns, %d nonzeros\n", m_prime, n_prime, augmented_nz);
+  settings.log.debug("Folding: Augmented matrix has %d rows, %d columns, %d nonzeros\n", m_prime, n_prime, augmented_nz);
 
   csc_matrix_t<i_t, f_t> augmented(m_prime, n_prime, augmented_nz);
   i_t nnz = 0;
@@ -1672,7 +1590,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   augmented.x[nnz] = inf;
   nnz++;
   augmented.col_start[n+nz_ub+1] = nnz; // Finalize the matrix
-  printf("Augmented matrix has %d nonzeros predicted %d\n", nnz, augmented_nz);
+  settings.log.debug("Folding: Augmented matrix has %d nonzeros predicted %d\n", nnz, augmented_nz);
 
   // Ensure only 1 inf in the augmented matrice
   i_t num_inf = 0;
@@ -1681,10 +1599,10 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
       num_inf++;
     }
   }
-  printf("Augmented matrix has %d infs\n", num_inf);
+  settings.log.debug("Folding: Augmented matrix has %d infs\n", num_inf);
   if (num_inf != 1) {
-    printf("Augmented matrix has %d infs, expected 1\n", num_inf);
-    exit(1);
+    settings.log.printf("Folding: Augmented matrix has %d infs, expected 1\n", num_inf);
+    return;
   }
 
 #ifdef WRITE_AUGMENTED
@@ -1702,14 +1620,15 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   i_t num_colors;
   i_t total_colors_seen;
   f_t color_start_time = tic();
-  i_t row_threshold = static_cast<i_t>( .50 * static_cast<f_t>(m));
-  i_t col_threshold = static_cast<i_t>( .50 * static_cast<f_t>(n));
-  i_t status = color_graph(augmented, colors, row_threshold, col_threshold, num_row_colors, num_col_colors, num_colors, total_colors_seen);
+  f_t fold_threshold = settings.folding == -1 ? 0.50 : 1.0;
+  i_t row_threshold = static_cast<i_t>( fold_threshold * static_cast<f_t>(m));
+  i_t col_threshold = static_cast<i_t>( fold_threshold * static_cast<f_t>(n));
+  i_t status = color_graph(augmented, settings, colors, row_threshold, col_threshold, num_row_colors, num_col_colors, num_colors, total_colors_seen);
   if (status != 0) {
-    printf("Folding: Coloring aborted\n");
+    settings.log.printf("Folding: Coloring aborted in %.2f seconds\n", toc(color_start_time));
     return;
   }
-  printf("Coloring time %.2f seconds\n", toc(color_start_time));
+  settings.log.printf("Folding: Coloring time %.2f seconds\n", toc(color_start_time));
 
 
   // Go through the active colors and ensure that the row corresponding to the objective is its own color
@@ -1738,10 +1657,9 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   {
     if (color.active == kActive) {
       if (color.row_or_column == kRow) {
-        //printf("Active row color %d has %ld vertices\n", color.color, color.vertices.size());
         if (color.vertices.size() == 1) {
           if (*color.vertices.begin() == m + nz_ub) {
-            printf("Row color %d is the objective color\n", color.color);
+            settings.log.debug("Folding: Row color %d is the objective color\n", color.color);
             found_objective_color = true;
             objective_color = color_count;
           } else {
@@ -1750,15 +1668,17 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
         }
         else {
           row_colors.push_back(color_count);
+#ifdef ROW_RHS_CHECK
           // Check that all vertices in the same row color have the same rhs value
           auto it = color.vertices.begin();
           f_t rhs_value = full_rhs[*it];
           for (++it; it != color.vertices.end(); ++it) {
             if (full_rhs[*it] != rhs_value) {
-              printf("RHS value for vertex %d is %e, but should be %e. Difference is %e\n", *it, full_rhs[*it], rhs_value, full_rhs[*it] - rhs_value);
-              exit(1);
+              settings.log.printf("Folding: RHS value for vertex %d is %e, but should be %e. Difference is %e\n", *it, full_rhs[*it], rhs_value, full_rhs[*it] - rhs_value);
+              return;
             }
           }
+#endif
         }
       }
     }
@@ -1766,8 +1686,8 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   }
 
   if (!found_objective_color) {
-    printf("Objective color not found\n");
-    exit(1);
+    settings.log.printf("Folding: Objective color not found\n");
+    return;
   }
 
   // Go through the active colors and ensure that the column corresponding to the rhs is its own color
@@ -1786,10 +1706,9 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   {
     if (color.active == kActive) {
       if (color.row_or_column == kCol) {
-        //printf("Active column color %d has %ld vertices\n", color.color, color.vertices.size());
         if (color.vertices.size() == 1) {
           if (*color.vertices.begin() == n_prime - 1) {
-            printf("Column color %d is the rhs color\n", color.color);
+            settings.log.debug("Folding: Column color %d is the rhs color\n", color.color);
             found_rhs_color = true;
             rhs_color = color_count;
           } else {
@@ -1798,15 +1717,17 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
         }
         else {
           col_colors.push_back(color_count);
+#ifdef COL_OBJ_CHECK
           // Check that all vertices in the same column color have the same objective value
           auto it = color.vertices.begin();
           f_t objective_value = full_objective[*it];
           for (; it != color.vertices.end(); ++it) {
             if (full_objective[*it] != objective_value) {
-              printf("Objective value for vertex %d is %e, but should be %e. Difference is %e\n", *it, full_objective[*it], objective_value, full_objective[*it] - objective_value);
-              exit(1);
+              settings.log.printf("Folding: Objective value for vertex %d is %e, but should be %e. Difference is %e\n", *it, full_objective[*it], objective_value, full_objective[*it] - objective_value);
+              return;
             }
           }
+#endif
         }
       }
     }
@@ -1814,8 +1735,8 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   }
 
   if (!found_rhs_color) {
-    printf("RHS color not found\n");
-    exit(1);
+    settings.log.printf("Folding: RHS color not found\n");
+    return;
   }
 
 
@@ -1840,14 +1761,12 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
 
   i_t previous_rows = m + nz_ub;
   i_t reduced_rows = num_row_colors - 1;
-  printf("previous_rows %d reduced_rows %d\n", previous_rows, reduced_rows);
+  settings.log.debug("Folding: previous_rows %d reduced_rows %d\n", previous_rows, reduced_rows);
 
   // Construct the matrix Pi_P
   // Pi_vP = { 1 if v in P
   //         { 0 otherwise
-#ifdef PRINT_INFO
-  printf("Constructing Pi_P\n");
-#endif
+  settings.log.debug("Folding: Constructing Pi_P\n");
   csc_matrix_t<i_t, f_t> Pi_P(previous_rows, reduced_rows, previous_rows);
   nnz = 0;
   for (i_t k = 0; k < reduced_rows; k++) {
@@ -1861,9 +1780,10 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     }
   }
   Pi_P.col_start[reduced_rows] = nnz;
-  printf("Pi_P nz %d predicted %d\n", nnz, previous_rows);
+  settings.log.debug("Folding: Pi_P nz %d predicted %d\n", nnz, previous_rows);
   if (nnz != previous_rows) {
-    exit(1);
+    settings.log.printf("Folding: Pi_P nz %d predicted %d\n", nnz, previous_rows);
+    return;
   }
 #ifdef WRITE_PI_P
   FILE* fid = fopen("Pi_P.txt", "w");
@@ -1879,26 +1799,25 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   // We have that Pi_vT = {1 if v in color T, 0 otherwiseS
   // C^s_tv = { 1/|T| if v in color T
   //         { 0
-  printf("Constructing C^s row\n");
+  settings.log.debug("Folding: Constructing C^s row\n");
   csr_matrix_t<i_t, f_t> C_s_row(reduced_rows, previous_rows, previous_rows);
   nnz = 0;
-  printf("row_colors size %ld reduced_rows %d\n", row_colors.size(), reduced_rows);
+  settings.log.debug("Folding: row_colors size %ld reduced_rows %d\n", row_colors.size(), reduced_rows);
   if (row_colors.size() != reduced_rows)
   {
-    printf("Bad row colors\n");
-    exit(1);
+    settings.log.printf("Folding: Bad row colors\n");
+    return;
   }
   for (i_t k = 0; k < reduced_rows; k++) {
     C_s_row.row_start[k] = nnz;
     const i_t color_index = row_colors[k];
     if (color_index < 0)
     {
-      printf("Bad row colors\n");
-      exit(1);
+      settings.log.printf("Folding: Bad row colors\n");
+      return;
     }
     const color_t<i_t>& color = colors[color_index];
     const i_t color_size = color.vertices.size();
-    //printf("Color %d row %d active %d has %ld vertices\n", color.color, color.row_or_column, color.active, color_size);
     for (i_t v : color.vertices) {
       C_s_row.j[nnz] = v;
       C_s_row.x[nnz] = 1.0 / static_cast<f_t>(color_size);
@@ -1906,14 +1825,14 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     }
   }
   C_s_row.row_start[reduced_rows] = nnz;
-  printf("C_s nz %d predicted %d\n", nnz, previous_rows);
-  printf("Converting C^s row to compressed column\n");
+  settings.log.debug("Folding: C_s nz %d predicted %d\n", nnz, previous_rows);
+  settings.log.debug("Folding: Converting C^s row to compressed column\n");
 
   //csc_matrix_t<i_t, f_t> C_s(reduced_rows, previous_rows, 1);
   presolve_info.folding_info.C_s.resize(reduced_rows, previous_rows, 1);
   csc_matrix_t<i_t, f_t>& C_s = presolve_info.folding_info.C_s;
   C_s_row.to_compressed_col(C_s);
-  printf("Completed C^s\n");
+  settings.log.debug("Folding: Completed C^s\n");
 #ifdef DEBUG
   fid = fopen("C_s.txt", "w");
   C_s.write_matrix_market(fid);
@@ -1941,11 +1860,10 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   // D = Pi_Q
   // D_vQ = { 1 if v in Q
   //        { 0 otherwise
-  printf("Constructing D\n");
+  settings.log.debug("Folding: Constructing D\n");
   i_t previous_cols = n + nz_ub;
   i_t reduced_cols = num_col_colors - 1;
-  printf("previous_cols %d reduced_cols %d\n", previous_cols, reduced_cols);
-  //csc_matrix_t<i_t, f_t> D(previous_cols, reduced_cols, previous_cols);
+  settings.log.debug("Folding: previous columns %d reduced columns %d\n", previous_cols, reduced_cols);
   presolve_info.folding_info.D.resize(previous_cols, reduced_cols, previous_cols);
   csc_matrix_t<i_t, f_t>& D = presolve_info.folding_info.D;
   nnz = 0;
@@ -1954,8 +1872,8 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     const i_t color_index = col_colors[k];
     //printf("column color %d index %d colors size %ld\n", k, color_index, colors.size());
     if (color_index < 0) {
-      printf("Bad column colors\n");
-      exit(1);
+      settings.log.printf("Folding: Bad column colors\n");
+      return;
     }
     const color_t<i_t>& color = colors[color_index];
     for (const i_t v : color.vertices) {
@@ -1965,7 +1883,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     }
   }
   D.col_start[reduced_cols] = nnz;
-  printf("D nz %d predicted %d\n", nnz, previous_cols);
+  settings.log.debug("Folding: D nz %d predicted %d\n", nnz, previous_cols);
 #ifdef WRITE_D
   fid = fopen("D.txt", "w");
   D.write_matrix_market(fid);
@@ -1981,7 +1899,6 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     const i_t color_index = col_colors[k];
     const color_t<i_t>& color = colors[color_index];
     const i_t color_size = color.vertices.size();
-    //printf("Color %d row/col %d active %d has %d vertices\n", color.color, color.row_or_column, color.active, color_size);
     for (i_t v : color.vertices) {
       D_s_row.j[nnz] = v;
       D_s_row.x[nnz] = 1.0 / static_cast<f_t>(color_size);
@@ -1989,16 +1906,14 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     }
   }
   D_s_row.row_start[reduced_cols] = nnz;
-#ifdef PRINT_INFO
-  printf("D^s row nz %d predicted %d\n", nnz, previous_cols);
-  printf("Converting D^s row to compressed column\n");
-#endif
+  settings.log.debug("Folding: D^s row nz %d predicted %d\n", nnz, previous_cols);
+  settings.log.debug("Folding: Converting D^s row to compressed column\n");
   //csc_matrix_t<i_t, f_t> D_s(reduced_cols, previous_cols, 1);
   presolve_info.folding_info.D_s.resize(reduced_cols, previous_cols, 1);
   csc_matrix_t<i_t, f_t>& D_s = presolve_info.folding_info.D_s;
   D_s_row.to_compressed_col(D_s);
 #ifdef WRITE_DS
-  printf("Completed D^s\n");
+  settings.log.printf("Folding: Writing D^s\n");
   fid = fopen("D_s.txt", "w");
   D_s.write_matrix_market(fid);
   fclose(fid);
@@ -2017,27 +1932,27 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   D_identity.col_start[reduced_cols] = reduced_cols;
   csc_matrix_t<i_t, f_t> D_error(reduced_cols, reduced_cols, 1);
   add(D_product, D_identity, 1.0, -1.0, D_error);
-  printf("|| D^s D - I ||_1 = %f\n", D_error.norm1());
+  settings.log.debug("Folding: || D^s D - I ||_1 = %f\n", D_error.norm1());
   if (D_error.norm1() > 1e-6) {
-    exit(1);
+    settings.log.printf("Folding: || D^s D - I ||_1 = %f\n", D_error.norm1());
+    return;
   }
 
   // Construct the matrix X
   // X = C C^s
-  printf("Constructing X\n");
+  settings.log.debug("Folding: Constructing X\n");
   csc_matrix_t<i_t, f_t> X(previous_rows, previous_rows, 1);
   multiply(Pi_P, C_s, X);
-  printf("Completed X\n");
+  settings.log.debug("Folding: Completed X\n");
   std::vector<f_t> X_col_sums(previous_rows);
   for (i_t j = 0; j < previous_rows; j++) {
     X_col_sums[j] = 0.0;
     for (i_t p = X.col_start[j]; p < X.col_start[j + 1]; p++) {
       X_col_sums[j] += X.x[p];
     }
-    //printf("X_col_sums[%d] = %f\n", j, X_col_sums[j]);
     if (std::abs(X_col_sums[j] - 1.0) > 1e-6) {
-      printf("X_col_sums[%d] = %f\n", j, X_col_sums[j]);
-      exit(1);
+      settings.log.printf("Folding: X_col_sums[%d] = %f\n", j, X_col_sums[j]);
+      return;
     }
   }
   csr_matrix_t<i_t, f_t> X_row(previous_rows, previous_rows, 1);
@@ -2048,20 +1963,19 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     for (i_t p = X_row.row_start[i]; p < X_row.row_start[i + 1]; p++) {
       X_row_sums[i] += X_row.x[p];
     }
-    //printf("X_row_sums[%d] = %f\n", i, X_row_sums[i]);
     if (std::abs(X_row_sums[i] - 1.0) > 1e-6) {
-      printf("X_row_sums[%d] = %f\n", i, X_row_sums[i]);
-      exit(1);
+      settings.log.printf("Folding: X_row_sums[%d] = %f\n", i, X_row_sums[i]);
+      return;
     }
   }
-  printf("Verfied X is doubly stochastic\n");
+  settings.log.printf("Folding: Verified X is doubly stochastic\n");
 
   // Construct the matrix Y
   // Y = D D^s
-  printf("Constructing Y\n");
+  settings.log.printf("Folding: Constructing Y\n");
   csc_matrix_t<i_t, f_t> Y(previous_cols, previous_cols, 1);
   multiply(D, D_s, Y);
-  printf("Completed Y\n");
+  settings.log.debug("Folding: Completed Y\n");
 
   std::vector<f_t> Y_col_sums(previous_cols);
   for (i_t j = 0; j < previous_cols; j++) {
@@ -2070,8 +1984,8 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
       Y_col_sums[j] += Y.x[p];
     }
     if (std::abs(Y_col_sums[j] - 1.0) > 1e-6) {
-      printf("Y_col_sums[%d] = %f\n", j, Y_col_sums[j]);
-      exit(1);
+      settings.log.printf("Folding: Y_col_sums[%d] = %f\n", j, Y_col_sums[j]);
+      return;
     }
   }
   csr_matrix_t<i_t, f_t> Y_row(previous_cols, previous_cols, 1);
@@ -2083,14 +1997,14 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
       Y_row_sums[i] += Y_row.x[p];
     }
     if (std::abs(Y_row_sums[i] - 1.0) > 1e-6) {
-      printf("Y_row_sums[%d] = %f\n", i, Y_row_sums[i]);
-      exit(1);
+      settings.log.printf("Folding: Y_row_sums[%d] = %f\n", i, Y_row_sums[i]);
+      return;
     }
   }
-  printf("Verfied Y is doubly stochastic\n");
+  settings.log.printf("Folding: Verified Y is doubly stochastic\n");
 #endif
   // Construct the matrix A_tilde
-  printf("Constructing A_tilde\n");
+  settings.log.debug("Folding: Constructing A_tilde\n");
   i_t A_nnz = problem.A.col_start[n];
   csc_matrix_t<i_t, f_t> A_tilde = augmented;
   A_tilde.remove_row(m + nz_ub);
@@ -2117,7 +2031,6 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     if (row_color.active == kActive && row_color.row_or_column == kRow) {
       for (i_t u : row_color.vertices) {
         row_to_color[u] = k;
-        //printf("Row %d assigned to color %d =? %d\n", u, k, row_color.color);
       }
     }
   }
@@ -2157,7 +2070,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
                     if (col_to_color[j] == k) { sum_Avprime += A_tilde_row.x[p]; }
                   }
                   if (std::abs(sum_Av - sum_Avprime) > 1e-12) {
-                    printf("u %d v %d row color %d sum_A%d: %f sum_A%d: = %f\n",
+                    settings.log.printf("Folding: u %d v %d row color %d sum_A%d: %f sum_A%d: = %f\n",
                            u,
                            v,
                            h,
@@ -2165,30 +2078,30 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
                            sum_Av,
                            v,
                            sum_Avprime);
-                    printf("row color %d vertices: ", h);
+                    settings.log.printf("Folding: row color %d vertices: ", h);
                     for (i_t u : row_color.vertices) {
-                      printf("%d(%d) ", u, row_to_color[u]);
+                      settings.log.printf("%d(%d) ", u, row_to_color[u]);
                     }
-                    printf("\n");
-                    printf("col color %d vertices: ", k);
+                    settings.log.printf("\n");
+                    settings.log.printf("col color %d vertices: ", k);
                     for (i_t v : col_color.vertices) {
-                      printf("%d(%d) ", v, col_to_color[v]);
+                      settings.log.printf("%d(%d) ", v, col_to_color[v]);
                     }
-                    printf("\n");
-                    printf("row %d\n", u);
+                    settings.log.printf("\n");
+                    settings.log.printf("row %d\n", u);
                     for (i_t p = A_tilde_row.row_start[u]; p < A_tilde_row.row_start[u + 1]; p++) {
                       const i_t j = A_tilde_row.j[p];
-                      printf("row %d col %d column color %d value %e\n", u, j, col_to_color[j], A_tilde_row.x[p]);
+                      settings.log.printf("row %d col %d column color %d value %e\n", u, j, col_to_color[j], A_tilde_row.x[p]);
                       if (col_to_color[j] == k) { sum_Av += A_tilde_row.x[p]; }
                     }
-                    printf("row %d\n", v);
+                    settings.log.printf("row %d\n", v);
                     for (i_t p = A_tilde_row.row_start[v]; p < A_tilde_row.row_start[v + 1]; p++) {
                       const i_t j = A_tilde_row.j[p];
-                      printf("row %d col %d column color %d value %e\n", v, j, col_to_color[j], A_tilde_row.x[p]);
+                      settings.log.printf("row %d col %d column color %d value %e\n", v, j, col_to_color[j], A_tilde_row.x[p]);
                       if (col_to_color[j] == k) { sum_Avprime += A_tilde_row.x[p]; }
                     }
-                    printf("total colors seen %d\n", total_colors_seen);
-                    exit(1);
+                    settings.log.printf("total colors seen %d\n", total_colors_seen);
+                    return;
                   }
                 }
               }
@@ -2198,7 +2111,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
       }
     }
   }
-  printf("Verified that the column partition is equitable\n");
+  settings.log.printf("Folding: Verified that the column partition is equitable\n");
 
   for (i_t k = 0; k < num_colors; k++) {
     const color_t<i_t>& row_color = colors[k];
@@ -2225,8 +2138,8 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
                     }
                   }
                   if (std::abs(sum_A_u - sum_A_v) > 1e-12) {
-                    printf("u %d v %d row color %d sum_A%d: %f sum_A%d: = %f\n", u, v, k, u, sum_A_u, v, sum_A_v);
-                    exit(1);
+                    settings.log.printf("Folding: u %d v %d row color %d sum_A%d: %f sum_A%d: = %f\n", u, v, k, u, sum_A_u, v, sum_A_v);
+                    return;
                   }
                 }
               }
@@ -2236,7 +2149,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
       }
     }
   }
-  printf("Verified that the row partition is equitable\n");
+  settings.log.printf("Folding: Verified that the row partition is equitable\n");
 
   fid = fopen("X.txt", "w");
   X.write_matrix_market(fid);
@@ -2245,16 +2158,18 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   Y.write_matrix_market(fid);
   fclose(fid);
 #endif
+
+
   if (A_tilde.m != previous_rows || A_tilde.n != previous_cols) {
-    printf("A_tilde has %d rows and %d cols, expected %d and %d\n",
+    settings.log.printf("Folding: A_tilde has %d rows and %d cols, expected %d and %d\n",
            A_tilde.m,
            A_tilde.n,
            previous_rows,
            previous_cols);
-    exit(1);
+    return;
   }
 
-  printf("partial A_tilde nz %d predicted %d\n", nnz, A_nnz + 2 * nz_ub);
+  settings.log.debug("Folding: partial A_tilde nz %d predicted %d\n", nnz, A_nnz + 2 * nz_ub);
 
 #ifdef DEBUG
   // Verify that XA = AY
@@ -2273,16 +2188,16 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   printf("|| XA - AY ||_1 = %f\n", XA_AY_error.norm1());
 #endif
   // Construct the matrix A_prime
-  printf("Constructing A_prime\n");
+  settings.log.debug("Folding: Constructing A_prime\n");
   csc_matrix_t<i_t, f_t> A_prime(reduced_rows, reduced_cols, 1);
   csc_matrix_t<i_t, f_t> AD(previous_rows, reduced_cols, 1);
-  printf("Multiplying A_tilde and D\n");
+  settings.log.debug("Folding: Multiplying A_tilde and D\n");
   multiply(A_tilde, D, AD);
-  printf("Multiplying C_s and AD\n");
+  settings.log.debug("Folding: Multiplying C_s and AD\n");
   multiply(C_s, AD, A_prime);
 
   // Construct the vector b_prime
-  printf("Constructing b_prime\n");
+  settings.log.debug("Folding: Constructing b_prime\n");
   std::vector<f_t> b_tilde(previous_rows);
   for (i_t i = 0; i < m; i++) {
     b_tilde[i] = problem.rhs[i];
@@ -2292,13 +2207,9 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   }
   std::vector<f_t> b_prime(reduced_rows);
   matrix_vector_multiply(C_s, 1.0, b_tilde, 0.0, b_prime);
-  //printf("b_prime\n");
-  for (i_t i = 0; i < reduced_rows; i++) {
-    //printf("b_prime[%d] = %f\n", i, b_prime[i]);
-  }
 
   // Construct the vector c_prime
-  printf("Constructing c_prime\n");
+  settings.log.debug("Folding: Constructing c_prime\n");
   std::vector<f_t> c_tilde(previous_cols);
   for (i_t j = 0; j < n; j++) {
     c_tilde[j] = problem.objective[j];
@@ -2308,19 +2219,14 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   }
   std::vector<f_t> c_prime(reduced_cols);
   matrix_transpose_vector_multiply(D, 1.0, c_tilde, 0.0, c_prime);
-  //printf("c_prime\n");
-  for (i_t j = 0; j < reduced_cols; j++) {
-    //printf("c_prime[%d] = %f\n", j, c_prime[j]);
-  }
-  //A_prime.print_matrix();
 
   if (reduced_rows > reduced_cols) {
-    printf("reduced_rows %d > reduced_cols %d\n", reduced_rows, reduced_cols);
-    exit(1);
+    settings.log.printf("Folding: Reduced rows %d > reduced cols %d\n", reduced_rows, reduced_cols);
+    return;
   }
 
   // Construct a new problem
-  printf("Constructing reduced problem: rows %d cols %d nnz %d\n",
+  settings.log.printf("Folding: Constructing reduced problem: %d constraints %d variables and %d nonzeros\n",
          reduced_rows,
          reduced_cols,
          A_prime.col_start[reduced_cols]);
@@ -2356,9 +2262,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   presolve_info.folding_info.is_folded = true;
   presolve_info.folding_info.num_upper_bounds = nz_ub;
 
-
-
-  printf("Folding time %.2f seconds\n", toc(start_time));
+  settings.log.printf("Folding: time %.2f seconds\n", toc(start_time));
 
 #ifdef SOLVE_REDUCED_PROBLEM
   // Solve the reduced problem
@@ -2376,7 +2280,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   std::vector<f_t>& x_prime = reduced_solution.x;
   std::vector<f_t>& y_prime = reduced_solution.y;
   std::vector<f_t>& z_prime = reduced_solution.z;
-  printf("Reduced objective = %e\n", reduced_solution.objective);
+  settings.log.printf("Folding: Reduced objective = %e\n", reduced_solution.objective);
 
   std::vector<f_t> x(previous_cols);
   std::vector<f_t> y(previous_rows);
@@ -2385,10 +2289,10 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
   matrix_transpose_vector_multiply(C_s, 1.0, y_prime, 0.0, y);
   matrix_transpose_vector_multiply(D_s, 1.0, z_prime, 0.0, z);
 
-  printf("Original primal objective = %e\n", dot<i_t, f_t>(c_tilde, x));
-  printf("Original dual objective   = %e\n", dot<i_t, f_t>(b_tilde, y));
+  settings.log.printf("Folding: Original primal objective = %e\n", dot<i_t, f_t>(c_tilde, x));
+  settings.log.printf("Folding: Original dual objective   = %e\n", dot<i_t, f_t>(b_tilde, y));
 
-  printf("|| y ||_2 = %e\n", vector_norm2<i_t, f_t>(y));
+  settings.log.printf("Folding: || y ||_2 = %e\n", vector_norm2<i_t, f_t>(y));
   printf("|| z ||_2 = %e\n", vector_norm2<i_t, f_t>(z));
 
   std::vector<f_t> dual_residual(previous_cols);
@@ -2396,7 +2300,7 @@ void folding(lp_problem_t<i_t, f_t>& problem, presolve_info_t<i_t, f_t>& presolv
     dual_residual[j] = z[j] - c_tilde[j];
   }
   matrix_transpose_vector_multiply(A_tilde, 1.0, y, 1.0, dual_residual);
-  printf("Original dual residual = %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
+  settings.log.printf("Folding: Original dual residual = %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
 #endif
 }
 
@@ -2602,8 +2506,8 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     problem.num_cols = num_cols;
   }
 
-  if (settings.barrier_presolve && settings.folding) {
-    folding(problem, presolve_info);
+  if (settings.barrier_presolve && settings.folding != 0) {
+    folding(problem, settings, presolve_info);
   }
 
   // Check for empty rows
