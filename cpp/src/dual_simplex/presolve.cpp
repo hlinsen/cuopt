@@ -2416,6 +2416,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   if (settings.dualize != 0 &&
       (settings.dualize == 1 ||
        (settings.dualize == -1 && less_rows > 1.2 * problem.num_cols && equal_rows < 2e4))) {
+
     settings.log.printf("Dualizing in presolve\n");
 
     i_t num_upper_bounds = 0;
@@ -2433,6 +2434,32 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
         vars_with_upper_bounds.push_back(j);
       }
     }
+
+    i_t max_column_nz = 0;
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      const i_t col_nz = problem.A.col_start[j + 1] - problem.A.col_start[j];
+      max_column_nz    = std::max(col_nz, max_column_nz);
+    }
+
+    std::vector<i_t> row_degree(problem.num_rows, 0);
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      const i_t col_start = problem.A.col_start[j];
+      const i_t col_end   = problem.A.col_start[j + 1];
+      for (i_t p = col_start; p < col_end; p++) {
+        row_degree[problem.A.i[p]]++;
+      }
+    }
+
+    i_t max_row_nz = 0;
+    for (i_t i = 0; i < problem.num_rows; i++) {
+      max_row_nz = std::max(row_degree[i], max_row_nz);
+    }
+    settings.log.printf("max row nz %d max col nz %d\n", max_row_nz, max_column_nz);
+
+    if (settings.dualize == -1 && max_row_nz > 1e4 && max_column_nz < max_row_nz) {
+      can_dualize = false;
+    }
+
     if (can_dualize) {
       i_t dual_rows = problem.num_cols;
       i_t dual_cols = problem.num_rows + problem.num_cols + num_upper_bounds;

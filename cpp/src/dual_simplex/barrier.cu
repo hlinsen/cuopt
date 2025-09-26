@@ -269,18 +269,19 @@ class iteration_data_t {
     chol->set_positive_definite(false);
     if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
     // Perform symbolic analysis
+    symbolic_status = 0;
     if (use_augmented) {
       // Build the sparsity pattern of the augmented system
       form_augmented(true);
       if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
-      chol->analyze(augmented);
+      symbolic_status = chol->analyze(augmented);
     } else {
       form_adat(true);
       if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return; }
       if (use_gpu) {
-        chol->analyze(device_ADAT);
+        symbolic_status = chol->analyze(device_ADAT);
       } else {
-        chol->analyze(ADAT);
+        symbolic_status = chol->analyze(ADAT);
       }
     }
   }
@@ -1478,6 +1479,7 @@ class iteration_data_t {
   const csc_matrix_t<i_t, f_t>& A;
 
   bool use_augmented;
+  i_t symbolic_status;
 
   std::unique_ptr<sparse_cholesky_base_t<i_t, f_t>> chol;
 
@@ -2853,6 +2855,10 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
   }
 
   iteration_data_t<i_t, f_t> data(lp, num_upper_bounds, settings);
+  if (data.symbolic_status != 0) {
+    settings.log.printf("Error in symbolic analysis\n");
+     return lp_status_t::NUMERICAL_ISSUES;
+  }
   if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
     settings.log.printf("Barrier solver halted\n");
     return lp_status_t::CONCURRENT_LIMIT;
