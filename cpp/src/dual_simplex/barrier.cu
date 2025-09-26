@@ -22,6 +22,7 @@
 #include <dual_simplex/dense_vector.hpp>
 #include <dual_simplex/device_sparse_matrix.cuh>
 #include <dual_simplex/presolve.hpp>
+#include <dual_simplex/solve.hpp>
 #include <dual_simplex/sparse_cholesky.cuh>
 #include <dual_simplex/sparse_matrix.hpp>
 #include <dual_simplex/sparse_matrix_kernels.cuh>
@@ -2763,7 +2764,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
     settings.log.printf("\n");
     settings.log.printf(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
-    settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
+    settings.log.printf("Objective %+.8e\n", compute_user_objective(lp, primal_objective));
     settings.log.printf("Primal infeasibility (abs/rel): %8.2e/%8.2e\n",
                         primal_residual_norm,
                         relative_primal_residual);
@@ -2802,7 +2803,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
     settings.log.printf("\n");
     settings.log.printf(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
-    settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
+    settings.log.printf("Objective %+.8e\n", compute_user_objective(lp, primal_objective));
     settings.log.printf("Primal infeasibility (abs/rel): %8.2e/%8.2e\n",
                         primal_residual_norm,
                         relative_primal_residual);
@@ -3497,8 +3498,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
 
       settings.log.printf("%3d   %+.12e %+.12e %.2e %.2e %.2e %.1f\n",
                           iter,
-                          primal_objective + lp.obj_constant,
-                          dual_objective + lp.obj_constant,
+                          compute_user_objective(lp, primal_objective),
+                          compute_user_objective(lp, dual_objective),
                           relative_primal_residual,
                           relative_dual_residual,
                           relative_complementarity_residual,
@@ -3517,7 +3518,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
       settings.log.printf("\n");
       settings.log.printf(
         "Optimal solution found in %d iterations and %.2fs\n", iter, toc(start_time));
-      settings.log.printf("Objective %+.8e\n", primal_objective + lp.obj_constant);
+      settings.log.printf("Objective %+.8e\n", compute_user_objective(lp, primal_objective));
       settings.log.printf("Primal infeasibility (abs/rel): %8.2e/%8.2e\n",
                           primal_residual_norm,
                           relative_primal_residual);

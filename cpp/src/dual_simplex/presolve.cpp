@@ -2411,6 +2411,84 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
     problem.A.transpose(Arow);
     bound_strengthening(row_sense, settings, problem, Arow);
   }
+  settings.log.printf("equality rows %d less rows %d columns %d\n", equal_rows, less_rows, problem.num_cols);
+  if (settings.dualize != 0 && (settings.dualize == 1 || (settings.dualize == -1 && less_rows > 1.2 * problem.num_cols))) {
+    settings.log.printf("Dualizing in presolve\n");
+
+
+    i_t num_upper_bounds = 0;
+    std::vector<i_t> vars_with_upper_bounds;
+    vars_with_upper_bounds.reserve(problem.num_cols);
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (problem.lower[j] != 0.0) {
+        settings.log.printf("Variable %d has a nonzero lower bound %e\n", j, problem.lower[j]);
+        return;
+      }
+      if (problem.upper[j] < inf) {
+        num_upper_bounds++;
+        vars_with_upper_bounds.push_back(j);
+      }
+    }
+
+    i_t dual_rows = problem.num_cols;
+    i_t dual_cols = problem.num_rows + problem.num_cols + num_upper_bounds;
+    lp_problem_t<i_t, f_t> dual_problem(problem.handle_ptr, 1, 1, 0);
+    csc_matrix_t<i_t, f_t> dual_constraint_matrix(1, 1, 0);
+    problem.A.transpose(dual_constraint_matrix);
+    // dual_constraint_matrix <- [-A^T I I]
+    dual_constraint_matrix.m = dual_rows;
+    dual_constraint_matrix.n = dual_cols;
+    i_t nnz = dual_constraint_matrix.col_start[problem.num_rows];
+    i_t new_nnz = nnz + problem.num_cols + num_upper_bounds;
+    dual_constraint_matrix.col_start.resize(dual_cols + 1);
+    dual_constraint_matrix.i.resize(new_nnz);
+    dual_constraint_matrix.x.resize(new_nnz);
+    for (i_t p = 0; p < nnz; p++) {
+      dual_constraint_matrix.x[p] *= -1.0;
+    }
+    i_t i = 0;
+    for (i_t j = problem.num_rows; j < problem.num_rows + problem.num_cols; j++) {
+      dual_constraint_matrix.col_start[j] = nnz;
+      dual_constraint_matrix.i[nnz] = i++;
+      dual_constraint_matrix.x[nnz] = 1.0;
+      nnz++;
+    }
+    for (i_t k = 0; k < num_upper_bounds; k++) {
+      i_t p = problem.num_rows + problem.num_cols + k;
+      dual_constraint_matrix.col_start[p] = nnz;
+      dual_constraint_matrix.i[nnz] = vars_with_upper_bounds[k];
+      dual_constraint_matrix.x[nnz] = -1.0;
+      nnz++;
+    }
+    dual_constraint_matrix.col_start[dual_cols] = nnz;
+    settings.log.printf("dual_constraint_matrix nnz %d predicted %d\n", nnz, new_nnz);
+    dual_problem.num_rows = dual_rows;
+    dual_problem.num_cols = dual_cols;
+    dual_problem.objective.resize(dual_cols, 0.0);
+    for (i_t j = 0; j < problem.num_rows; j++) {
+      dual_problem.objective[j] = problem.rhs[j];
+    }
+    for (i_t k = 0; k < num_upper_bounds; k++) {
+      i_t j = problem.num_rows + problem.num_cols + k;
+      dual_problem.objective[j] = problem.upper[vars_with_upper_bounds[k]];
+    }
+    dual_problem.A = dual_constraint_matrix;
+    dual_problem.rhs = problem.objective;
+    dual_problem.lower = std::vector<f_t>(dual_cols, 0.0);
+    dual_problem.upper = std::vector<f_t>(dual_cols, inf);
+    for (i_t j : equality_rows) {
+      dual_problem.lower[j] = -inf;
+    }
+    dual_problem.obj_constant = 0.0;
+    dual_problem.obj_scale = -1.0;
+
+    equal_rows = problem.num_cols;
+    less_rows = 0;
+
+    problem = dual_problem;
+
+    settings.log.printf("Solving the dual\n");
+  }
 
   if (less_rows > 0) {
     convert_less_than_to_equal(user_problem, row_sense, problem, less_rows, new_slacks);

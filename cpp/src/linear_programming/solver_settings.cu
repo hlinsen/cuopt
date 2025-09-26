@@ -47,6 +47,7 @@ pdlp_solver_settings_t<i_t, f_t>::pdlp_solver_settings_t(const pdlp_solver_setti
     crossover(other.crossover),
     folding(other.folding),
     augmented(other.augmented),
+    dualize(other.dualize),
     cudss_deterministic(other.cudss_deterministic),
     eliminate_dense_columns(other.eliminate_dense_columns),
     save_best_primal_so_far(other.save_best_primal_so_far),

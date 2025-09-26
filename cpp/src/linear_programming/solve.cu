@@ -307,30 +307,31 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   f_t norm_user_objective = dual_simplex::vector_norm2<i_t, f_t>(user_problem.objective);
   f_t norm_rhs            = dual_simplex::vector_norm2<i_t, f_t>(user_problem.rhs);
 
-  dual_simplex::simplex_solver_settings_t<i_t, f_t> dual_simplex_settings;
-  dual_simplex_settings.time_limit              = settings.time_limit;
-  dual_simplex_settings.iteration_limit         = settings.iteration_limit;
-  dual_simplex_settings.concurrent_halt         = settings.concurrent_halt;
-  dual_simplex_settings.folding                 = settings.folding;
-  dual_simplex_settings.augmented               = settings.augmented;
-  dual_simplex_settings.barrier                 = true;
-  dual_simplex_settings.crossover               = settings.crossover;
-  dual_simplex_settings.eliminate_dense_columns = settings.eliminate_dense_columns;
-  dual_simplex_settings.cudss_deterministic     = settings.cudss_deterministic;
-  dual_simplex_settings.barrier_relaxed_feasibility_tol =
+  dual_simplex::simplex_solver_settings_t<i_t, f_t> barrier_settings;
+  barrier_settings.time_limit              = settings.time_limit;
+  barrier_settings.iteration_limit         = settings.iteration_limit;
+  barrier_settings.concurrent_halt         = settings.concurrent_halt;
+  barrier_settings.folding                 = settings.folding;
+  barrier_settings.augmented               = settings.augmented;
+  barrier_settings.dualize                 = settings.dualize;
+  barrier_settings.barrier                 = true;
+  barrier_settings.crossover               = settings.crossover;
+  barrier_settings.eliminate_dense_columns = settings.eliminate_dense_columns;
+  barrier_settings.cudss_deterministic     = settings.cudss_deterministic;
+  barrier_settings.barrier_relaxed_feasibility_tol =
     settings.tolerances.relative_primal_tolerance;
-  dual_simplex_settings.barrier_relaxed_optimality_tol =
+  barrier_settings.barrier_relaxed_optimality_tol =
     settings.tolerances.relative_dual_tolerance;
-  dual_simplex_settings.barrier_relaxed_complementarity_tol =
+  barrier_settings.barrier_relaxed_complementarity_tol =
     settings.tolerances.relative_gap_tolerance;
-  if (dual_simplex_settings.concurrent_halt != nullptr) {
-    // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
-    dual_simplex_settings.log.log = false;
+  if (barrier_settings.concurrent_halt != nullptr) {
+    // Don't show the barrier log in concurrent mode. Show the PDLP log instead
+    barrier_settings.log.log = false;
   }
 
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
   auto status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
-    user_problem, dual_simplex_settings, solution);
+    user_problem, barrier_settings, solution);
 
   CUOPT_LOG_INFO("Barrier finished in %.2f seconds", timer.elapsed_time());
 

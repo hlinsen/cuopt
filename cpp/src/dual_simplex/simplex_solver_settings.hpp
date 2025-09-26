@@ -67,7 +67,8 @@ struct simplex_solver_settings_t {
       barrier(false),
       eliminate_dense_columns(true),
       folding(-1),
-      augmented(false),
+      augmented(0),
+      dualize(-1),
       crossover(false),
       refactor_frequency(100),
       iteration_log_frequency(1000),
@@ -127,6 +128,7 @@ struct simplex_solver_settings_t {
   bool eliminate_dense_columns;  // true to eliminate dense columns from A*D*A^T
   i_t folding;                   // -1 automatic, 0 don't fold, 1 fold
   i_t augmented;           // -1 automatic, 0 to solve with ADAT, 1 to solve with augmented system
+  i_t dualize;             // -1 automatic, 0 to not dualize, 1 to dualize
   bool crossover;          // true to do crossover, false to not
   i_t refactor_frequency;  // number of basis updates before refactorization
   i_t iteration_log_frequency;  // number of iterations between log updates
