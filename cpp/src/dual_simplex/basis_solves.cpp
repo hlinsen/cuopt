@@ -625,7 +625,8 @@ i_t basis_repair(const csc_matrix_t<i_t, f_t>& A,
   assert(slacks_found == m);
 
   // Create nonbasic_map
-  std::vector<i_t> nonbasic_map(n, -1);  // nonbasic_map[j] = p if nonbasic[p] = j, -1 if j is basic/superbasic
+  std::vector<i_t> nonbasic_map(
+    n, -1);  // nonbasic_map[j] = p if nonbasic[p] = j, -1 if j is basic/superbasic
   const i_t num_nonbasic = nonbasic_list.size();
   for (i_t k = 0; k < num_nonbasic; ++k) {
     nonbasic_map[nonbasic_list[k]] = k;

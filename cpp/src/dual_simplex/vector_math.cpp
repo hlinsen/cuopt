@@ -58,7 +58,7 @@ f_t vector_norm2(const std::vector<f_t, Allocator>& x)
 template <typename i_t, typename f_t>
 f_t vector_norm1(const std::vector<f_t>& x)
 {
-  i_t n = x.size();
+  i_t n   = x.size();
   f_t sum = 0.0;
   for (i_t j = 0; j < n; ++j) {
     sum += std::abs(x[j]);

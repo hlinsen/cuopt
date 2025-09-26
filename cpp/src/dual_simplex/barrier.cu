@@ -92,8 +92,7 @@ class iteration_data_t {
       dual_residual(lp.num_cols),
       complementarity_xz_residual(lp.num_cols),
       complementarity_wv_residual(num_upper_bounds),
-      cusparse_view_(lp.handle_ptr,
-                     lp.A),
+      cusparse_view_(lp.handle_ptr, lp.A),
       primal_rhs(lp.num_rows),
       bound_rhs(num_upper_bounds),
       dual_rhs(lp.num_cols),
@@ -2364,7 +2363,9 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       f_t y_residual_norm = device_vector_norm_inf<i_t, f_t>(d_y_residual_, stream_view_);
       max_residual        = std::max(max_residual, y_residual_norm);
       if (y_residual_norm > 1e-2) {
-        settings.log.printf("||ADAT*dy - h|| = %.2e || h || = %.2e\n", y_residual_norm, device_vector_norm_inf<i_t, f_t>(d_h_, stream_view_));
+        settings.log.printf("||ADAT*dy - h|| = %.2e || h || = %.2e\n",
+                            y_residual_norm,
+                            device_vector_norm_inf<i_t, f_t>(d_h_, stream_view_));
       }
       if (y_residual_norm > 1e4) { return -1; }
     }
@@ -2777,14 +2778,14 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
   }
 
   // Restore previous solution
-  primal_residual_norm = data.primal_residual_norm_save;
-  dual_residual_norm = data.dual_residual_norm_save;
-  complementarity_residual_norm = data.complementarity_residual_norm_save;
-  relative_primal_residual = data.relative_primal_residual_save;
-  relative_dual_residual = data.relative_dual_residual_save;
+  primal_residual_norm              = data.primal_residual_norm_save;
+  dual_residual_norm                = data.dual_residual_norm_save;
+  complementarity_residual_norm     = data.complementarity_residual_norm_save;
+  relative_primal_residual          = data.relative_primal_residual_save;
+  relative_dual_residual            = data.relative_dual_residual_save;
   relative_complementarity_residual = data.relative_complementarity_residual_save;
 
-  primal_objective         = data.c.inner_product(data.x_save);
+  primal_objective = data.c.inner_product(data.x_save);
 
   if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
       relative_dual_residual < settings.barrier_relaxed_optimality_tol &&
@@ -3463,19 +3464,26 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
         if (relative_primal_residual < data.relative_primal_residual_save &&
             relative_dual_residual < data.relative_dual_residual_save &&
             relative_complementarity_residual < data.relative_complementarity_residual_save) {
-          settings.log.debug("Saving solution: feasibility %.2e (%.2e), optimality %.2e (%.2e), complementarity %.2e (%.2e)\n",
-                 relative_primal_residual, primal_residual_norm, relative_dual_residual, dual_residual_norm, relative_complementarity_residual, complementarity_residual_norm);
-          data.w_save               = data.w;
-          data.x_save               = data.x;
-          data.y_save               = data.y;
-          data.v_save               = data.v;
-          data.z_save               = data.z;
-          data.relative_primal_residual_save = relative_primal_residual;
-          data.relative_dual_residual_save = relative_dual_residual;
+          settings.log.debug(
+            "Saving solution: feasibility %.2e (%.2e), optimality %.2e (%.2e), complementarity "
+            "%.2e (%.2e)\n",
+            relative_primal_residual,
+            primal_residual_norm,
+            relative_dual_residual,
+            dual_residual_norm,
+            relative_complementarity_residual,
+            complementarity_residual_norm);
+          data.w_save                                 = data.w;
+          data.x_save                                 = data.x;
+          data.y_save                                 = data.y;
+          data.v_save                                 = data.v;
+          data.z_save                                 = data.z;
+          data.relative_primal_residual_save          = relative_primal_residual;
+          data.relative_dual_residual_save            = relative_dual_residual;
           data.relative_complementarity_residual_save = relative_complementarity_residual;
-          data.primal_residual_norm_save = primal_residual_norm;
-          data.dual_residual_norm_save = dual_residual_norm;
-          data.complementarity_residual_norm_save = complementarity_residual_norm;
+          data.primal_residual_norm_save              = primal_residual_norm;
+          data.dual_residual_norm_save                = dual_residual_norm;
+          data.complementarity_residual_norm_save     = complementarity_residual_norm;
         }
       }
 

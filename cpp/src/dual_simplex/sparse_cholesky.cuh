@@ -108,15 +108,16 @@ int cudss_device_dealloc(void* ctx, void* ptr, size_t size, cudaStream_t stream)
   return cudaFreeAsync(ptr, stream);
 }
 
-
 template <class T>
-inline void hash_combine(std::size_t& seed, const T& v) {
+inline void hash_combine(std::size_t& seed, const T& v)
+{
   seed ^= std::hash<T>{}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 }
 
-  // Function to compute a combined hash for an array of doubles
+// Function to compute a combined hash for an array of doubles
 template <typename i_t, typename f_t>
-std::size_t compute_hash(const dense_vector_t<i_t, f_t>& arr) {
+std::size_t compute_hash(const dense_vector_t<i_t, f_t>& arr)
+{
   std::size_t seed = arr.size();
   for (const auto& i : arr) {
     hash_combine(seed, i);
@@ -125,14 +126,14 @@ std::size_t compute_hash(const dense_vector_t<i_t, f_t>& arr) {
 }
 
 template <typename f_t>
-std::size_t compute_hash(const f_t* arr, size_t size) {
+std::size_t compute_hash(const f_t* arr, size_t size)
+{
   std::size_t seed = size;
   for (size_t i = 0; i < size; i++) {
     hash_combine(seed, arr[i]);
   }
   return seed;
 }
-
 
 template <typename i_t, typename f_t>
 class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
@@ -167,13 +168,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     // CUDSS_CALL_AND_CHECK_EXIT(
     //   cudssSetDeviceMemHandler(handle, &mem_handler), status, "cudssSetDeviceMemHandler");
 
-
     const char* cudss_mt_lib_file = nullptr;
-    char* env_value = std::getenv("CUDSS_THREADING_LIB");
+    char* env_value               = std::getenv("CUDSS_THREADING_LIB");
     if (env_value != nullptr) {
       cudss_mt_lib_file = env_value;
-    }
-    else if (CUDSS_MT_LIB_FILE != nullptr) {
+    } else if (CUDSS_MT_LIB_FILE != nullptr) {
       cudss_mt_lib_file = CUDSS_MT_LIB_FILE;
     }
 
@@ -204,8 +203,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       CUDSS_CALL_AND_CHECK_EXIT(
         cudssConfigSet(
           solverConfig, CUDSS_CONFIG_DETERMINISTIC_MODE, &deterministic, sizeof(int32_t)),
-          status,
-          "cudssConfigSet for deterministic mode");
+        status,
+        "cudssConfigSet for deterministic mode");
     }
 #endif
 
@@ -394,7 +393,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     csr_matrix_t<i_t, f_t> Arow_host = Arow.to_host(Arow.row_start.stream());
     csc_matrix_t<i_t, f_t> A_col(Arow_host.m, Arow_host.n, 1);
     Arow_host.to_compressed_col(A_col);
-    settings_.log.printf("before factorize || A to factor|| = %.16e hash: %zu\n", A_col.norm1(), A_col.hash());
+    settings_.log.printf(
+      "before factorize || A to factor|| = %.16e hash: %zu\n", A_col.norm1(), A_col.hash());
     cudaStreamSynchronize(stream);
 #endif
     // csr_matrix_t<i_t, f_t> Arow;
@@ -668,14 +668,17 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDA_CALL_AND_CHECK(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
 
 #ifdef PRINT_RHS_AND_SOLUTION_HASH
-  dense_vector_t<i_t, f_t> b_host(n);
-  dense_vector_t<i_t, f_t> x_host(n);
-  raft::copy(b_host.data(), b.data(), n, stream);
-  raft::copy(x_host.data(), x.data(), n, stream);
-  cudaStreamSynchronize(stream);
-  settings_.log.printf("RHS norm %.16e, hash: %zu, Solution norm %.16e, hash: %zu\n", vector_norm2<i_t, f_t>(b_host), compute_hash(b_host), vector_norm2<i_t, f_t>(x_host), compute_hash(x_host));
+    dense_vector_t<i_t, f_t> b_host(n);
+    dense_vector_t<i_t, f_t> x_host(n);
+    raft::copy(b_host.data(), b.data(), n, stream);
+    raft::copy(x_host.data(), x.data(), n, stream);
+    cudaStreamSynchronize(stream);
+    settings_.log.printf("RHS norm %.16e, hash: %zu, Solution norm %.16e, hash: %zu\n",
+                         vector_norm2<i_t, f_t>(b_host),
+                         compute_hash(b_host),
+                         vector_norm2<i_t, f_t>(x_host),
+                         compute_hash(x_host));
 #endif
-
 
     return 0;
   }

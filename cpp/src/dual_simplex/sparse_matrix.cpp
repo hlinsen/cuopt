@@ -531,7 +531,7 @@ size_t csc_matrix_t<i_t, f_t>::hash() const
   };
 
   size_t seed = this->n;
-  seed = hash_combine_i(seed, this->m);
+  seed        = hash_combine_i(seed, this->m);
   for (i_t j = 0; j <= this->n; ++j) {
     seed = hash_combine_i(seed, this->col_start[j]);
   }

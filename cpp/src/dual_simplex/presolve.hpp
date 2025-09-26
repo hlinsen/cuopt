@@ -88,7 +88,8 @@ struct presolve_info_t {
   std::vector<f_t> removed_lower_bounds;
   // indices of the constraints in the original problem that remain in the presolved problem
   std::vector<i_t> remaining_constraints;
-  // indices of the constraints in the original problem that have been removed in the presolved problem
+  // indices of the constraints in the original problem that have been removed in the presolved
+  // problem
   std::vector<i_t> removed_constraints;
 
   folding_info_t<i_t, f_t> folding_info;

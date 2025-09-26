@@ -99,12 +99,13 @@ struct simplex_solver_settings_t {
   f_t fixed_tol;             // If l <= x <= u with u - l < fixed_tol a variable is consider fixed
   f_t zero_tol;              // Values below this tolerance are considered numerically zero
   f_t barrier_relative_feasibility_tol;  // Relative feasibility tolerance for barrier method
-  f_t barrier_relative_optimality_tol;  // Relative optimality tolerance for barrier method
-  f_t barrier_relative_complementarity_tol;  // Relative complementarity tolerance for barrier method
-  f_t barrier_relaxed_feasibility_tol;  // Relative feasibility tolerance for barrier method
-  f_t barrier_relaxed_optimality_tol;  // Relative optimality tolerance for barrier method
+  f_t barrier_relative_optimality_tol;   // Relative optimality tolerance for barrier method
+  f_t
+    barrier_relative_complementarity_tol;   // Relative complementarity tolerance for barrier method
+  f_t barrier_relaxed_feasibility_tol;      // Relative feasibility tolerance for barrier method
+  f_t barrier_relaxed_optimality_tol;       // Relative optimality tolerance for barrier method
   f_t barrier_relaxed_complementarity_tol;  // Relative complementarity tolerance for barrier method
-  f_t cut_off;               // If the dual objective is greater than the cutoff we stop
+  f_t cut_off;  // If the dual objective is greater than the cutoff we stop
   f_t
     steepest_edge_ratio;  // the ratio of computed steepest edge mismatch from updated steepest edge
   f_t steepest_edge_primal_tol;  // Primal tolerance divided by steepest edge norm
@@ -121,13 +122,13 @@ struct simplex_solver_settings_t {
   bool eliminate_singletons;  // true to eliminate singletons from the basis
   bool print_presolve_stats;  // true to print presolve stats
   bool barrier_presolve;      // true to use barrier presolve
-  bool cudss_deterministic;  // true to use cuDSS deterministic mode, false for non-deterministic
-  bool barrier;    // true to use barrier method, false to use dual simplex method
+  bool cudss_deterministic;   // true to use cuDSS deterministic mode, false for non-deterministic
+  bool barrier;               // true to use barrier method, false to use dual simplex method
   bool eliminate_dense_columns;  // true to eliminate dense columns from A*D*A^T
-  i_t folding;  // -1 automatic, 0 don't fold, 1 fold
-  i_t augmented;  // -1 automatic, 0 to solve with ADAT, 1 to solve with augmented system
-  bool crossover;  // true to do crossover, false to not
-  i_t refactor_frequency;       // number of basis updates before refactorization
+  i_t folding;                   // -1 automatic, 0 don't fold, 1 fold
+  i_t augmented;           // -1 automatic, 0 to solve with ADAT, 1 to solve with augmented system
+  bool crossover;          // true to do crossover, false to not
+  i_t refactor_frequency;  // number of basis updates before refactorization
   i_t iteration_log_frequency;  // number of iterations between log updates
   i_t first_iteration_log;      // number of iterations to log at beginning of solve
   i_t num_threads;              // number of threads to use
@@ -138,7 +139,7 @@ struct simplex_solver_settings_t {
   std::function<void(std::vector<f_t>&, std::vector<f_t>&, f_t)> set_simplex_solution_callback;
   mutable logger_t log;
   volatile int* concurrent_halt;  // if nullptr ignored, if !nullptr, 0 if solver should
-                                      // continue, 1 if solver should halt
+                                  // continue, 1 if solver should halt
 };
 
 }  // namespace cuopt::linear_programming::dual_simplex
