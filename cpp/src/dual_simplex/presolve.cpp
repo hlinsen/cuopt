@@ -2412,23 +2412,26 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
     bound_strengthening(row_sense, settings, problem, Arow);
   }
   settings.log.printf("equality rows %d less rows %d columns %d\n", equal_rows, less_rows, problem.num_cols);
-  if (settings.dualize != 0 && (settings.dualize == 1 || (settings.dualize == -1 && less_rows > 1.2 * problem.num_cols))) {
+  if (settings.dualize != 0 && (settings.dualize == 1 || (settings.dualize == -1 && less_rows > 1.2 * problem.num_cols && equal_rows < 2e4))) {
     settings.log.printf("Dualizing in presolve\n");
 
 
     i_t num_upper_bounds = 0;
     std::vector<i_t> vars_with_upper_bounds;
     vars_with_upper_bounds.reserve(problem.num_cols);
+    bool can_dualize = true;
     for (i_t j = 0; j < problem.num_cols; j++) {
       if (problem.lower[j] != 0.0) {
         settings.log.printf("Variable %d has a nonzero lower bound %e\n", j, problem.lower[j]);
-        return;
+        can_dualize = false;
+       break;
       }
       if (problem.upper[j] < inf) {
         num_upper_bounds++;
         vars_with_upper_bounds.push_back(j);
       }
     }
+    if (can_dualize) {
 
     i_t dual_rows = problem.num_cols;
     i_t dual_cols = problem.num_rows + problem.num_cols + num_upper_bounds;
@@ -2488,6 +2491,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
     problem = dual_problem;
 
     settings.log.printf("Solving the dual\n");
+    }
   }
 
   if (less_rows > 0) {
