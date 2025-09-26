@@ -26,7 +26,8 @@
 
 #include <raft/common/nvtx.hpp>
 
-#if !defined(TEST_BARRIER_UNAVAILABLE) && CUDA_VERSION < 13000
+#if !defined(TEST_BARRIER_UNAVAILABLE) && CUDART_VERSION < 13000
+
 #include "cudss.h"
 #endif
 
@@ -45,7 +46,7 @@ class sparse_cholesky_base_t {
   virtual void set_positive_definite(bool positive_definite)                        = 0;
 };
 
-#if !defined(TEST_BARRIER_UNAVAILABLE) && CUDA_VERSION < 13000
+#if !defined(TEST_BARRIER_UNAVAILABLE) && CUDART_VERSION < 13000
 
 #define CUDSS_EXAMPLE_FREE \
   do {                     \
@@ -719,6 +720,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 };
 
 #else
+
 template <typename i_t, typename f_t>
 class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
  public:
