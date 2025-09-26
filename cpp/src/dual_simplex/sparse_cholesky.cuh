@@ -726,35 +726,45 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
  public:
   sparse_cholesky_cudss_t(raft::handle_t const* handle_ptr,
                           const simplex_solver_settings_t<i_t, f_t>& settings,
-                          i_t size) : positive_definite(false), settings_(settings) {}
+                          i_t size)
+    : positive_definite(false), settings_(settings)
+  {
+  }
 
   ~sparse_cholesky_cudss_t() override {}
 
-  i_t analyze(const csc_matrix_t<i_t, f_t>& A_in) override {
+  i_t analyze(const csc_matrix_t<i_t, f_t>& A_in) override
+  {
     settings_.log.printf("Barrier unavailable for cuDSS 0.6 and CUDA 13.0\n");
     return -1;
   }
-  i_t factorize(const csc_matrix_t<i_t, f_t>& A_in) override {
+  i_t factorize(const csc_matrix_t<i_t, f_t>& A_in) override
+  {
     settings_.log.printf("Barrier unavailable for cuDSS 0.6 and CUDA 13.0\n");
     return -1;
   }
-  i_t analyze(device_csr_matrix_t<i_t, f_t>& A_in) override {
+  i_t analyze(device_csr_matrix_t<i_t, f_t>& A_in) override
+  {
     settings_.log.printf("Barrier unavailable for cuDSS 0.6 and CUDA 13.0\n");
     return -1;
   }
-  i_t factorize(device_csr_matrix_t<i_t, f_t>& A_in) override {
+  i_t factorize(device_csr_matrix_t<i_t, f_t>& A_in) override
+  {
     settings_.log.printf("Barrier unavailable for cuDSS 0.6 and CUDA 13.0\n");
     return -1;
   }
-  i_t solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) override {
+  i_t solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) override
+  {
     settings_.log.printf("Barrier unavailable for cuDSS 0.6 and CUDA 13.0\n");
     return -1;
   }
-  i_t solve(rmm::device_uvector<f_t>& b, rmm::device_uvector<f_t>& x) override {
+  i_t solve(rmm::device_uvector<f_t>& b, rmm::device_uvector<f_t>& x) override
+  {
     settings_.log.printf("Barrier unavailable for cuDSS 0.6 and CUDA 13.0\n");
     return -1;
   }
-  void set_positive_definite(bool positive_definite) override {
+  void set_positive_definite(bool positive_definite) override
+  {
     this->positive_definite = positive_definite;
   }
   bool positive_definite;

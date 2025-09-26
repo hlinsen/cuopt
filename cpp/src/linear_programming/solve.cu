@@ -308,22 +308,19 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   f_t norm_rhs            = dual_simplex::vector_norm2<i_t, f_t>(user_problem.rhs);
 
   dual_simplex::simplex_solver_settings_t<i_t, f_t> barrier_settings;
-  barrier_settings.time_limit              = settings.time_limit;
-  barrier_settings.iteration_limit         = settings.iteration_limit;
-  barrier_settings.concurrent_halt         = settings.concurrent_halt;
-  barrier_settings.folding                 = settings.folding;
-  barrier_settings.augmented               = settings.augmented;
-  barrier_settings.dualize                 = settings.dualize;
-  barrier_settings.barrier                 = true;
-  barrier_settings.crossover               = settings.crossover;
-  barrier_settings.eliminate_dense_columns = settings.eliminate_dense_columns;
-  barrier_settings.cudss_deterministic     = settings.cudss_deterministic;
-  barrier_settings.barrier_relaxed_feasibility_tol =
-    settings.tolerances.relative_primal_tolerance;
-  barrier_settings.barrier_relaxed_optimality_tol =
-    settings.tolerances.relative_dual_tolerance;
-  barrier_settings.barrier_relaxed_complementarity_tol =
-    settings.tolerances.relative_gap_tolerance;
+  barrier_settings.time_limit                      = settings.time_limit;
+  barrier_settings.iteration_limit                 = settings.iteration_limit;
+  barrier_settings.concurrent_halt                 = settings.concurrent_halt;
+  barrier_settings.folding                         = settings.folding;
+  barrier_settings.augmented                       = settings.augmented;
+  barrier_settings.dualize                         = settings.dualize;
+  barrier_settings.barrier                         = true;
+  barrier_settings.crossover                       = settings.crossover;
+  barrier_settings.eliminate_dense_columns         = settings.eliminate_dense_columns;
+  barrier_settings.cudss_deterministic             = settings.cudss_deterministic;
+  barrier_settings.barrier_relaxed_feasibility_tol = settings.tolerances.relative_primal_tolerance;
+  barrier_settings.barrier_relaxed_optimality_tol  = settings.tolerances.relative_dual_tolerance;
+  barrier_settings.barrier_relaxed_complementarity_tol = settings.tolerances.relative_gap_tolerance;
   if (barrier_settings.concurrent_halt != nullptr) {
     // Don't show the barrier log in concurrent mode. Show the PDLP log instead
     barrier_settings.log.log = false;
