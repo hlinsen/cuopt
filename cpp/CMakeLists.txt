@@ -279,6 +279,11 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/libmps_parser)
 set(CMAKE_LIBRARY_PATH ${CMAKE_CURRENT_BINARY_DIR}/libmps_parser/)
 
 
+
+# Pass CUDSS_MT_LIB_FILE as a compile definition
+target_compile_definitions(cuopt PRIVATE CUDSS_MT_LIB_FILE="${CUDSS_MT_LIB_FILE}")
+
+
 execute_process(
   COMMAND git rev-parse --short HEAD
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -303,7 +308,7 @@ target_link_libraries(cuopt
   CCCL::CCCL
   raft::raft
   cuopt::mps_parser
-  ${CUDSS_LIBRARIES}
+  ${CUDSS_LIB_FILE}
   PRIVATE
   ${CUOPT_PRIVATE_CUDA_LIBS}
   )

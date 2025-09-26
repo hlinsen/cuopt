@@ -33,6 +33,7 @@ dependencies:
 - httpx
 - ipython
 - jsonref==1.1.0
+- libcudss-dev
 - libcurand-dev
 - libcusolver-dev
 - libcusparse-dev
