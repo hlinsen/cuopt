@@ -2416,7 +2416,6 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   if (settings.dualize != 0 &&
       (settings.dualize == 1 ||
        (settings.dualize == -1 && less_rows > 1.2 * problem.num_cols && equal_rows < 2e4))) {
-
     settings.log.printf("Dualizing in presolve\n");
 
     i_t num_upper_bounds = 0;
