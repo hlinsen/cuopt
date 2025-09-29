@@ -174,10 +174,8 @@ class iteration_data_t {
       }
 #endif
       float64_t column_density_time = toc(start_column_density);
-      if (!settings.eliminate_dense_columns) {
-        dense_columns_unordered.clear(); 
-      }
-      n_dense_columns               = static_cast<i_t>(dense_columns_unordered.size());
+      if (!settings.eliminate_dense_columns) { dense_columns_unordered.clear(); }
+      n_dense_columns = static_cast<i_t>(dense_columns_unordered.size());
       if (n_dense_columns > 0) {
         settings.log.printf("Dense columns               : %d\n", n_dense_columns);
       }
@@ -2804,8 +2802,9 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
     settings.log.printf("Primal infeasibility (abs/rel): %8.2e/%8.2e\n",
                         data.primal_residual_norm_save,
                         data.relative_primal_residual_save);
-    settings.log.printf(
-      "Dual infeasibility   (abs/rel): %8.2e/%8.2e\n", data.dual_residual_norm_save, data.relative_dual_residual_save);
+    settings.log.printf("Dual infeasibility   (abs/rel): %8.2e/%8.2e\n",
+                        data.dual_residual_norm_save,
+                        data.relative_dual_residual_save);
     settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
                         data.complementarity_residual_norm_save,
                         data.relative_complementarity_residual_save);
