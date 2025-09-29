@@ -211,7 +211,7 @@ class pdlp_solver_settings_t {
   bool cudss_deterministic{false};
   i_t folding{-1};
   i_t augmented{-1};
-  i_t dualize{-1};
+  i_t dualize{0};
   bool eliminate_dense_columns{true};
   bool save_best_primal_so_far{false};
   bool first_primal_feasible{false};

@@ -2413,7 +2413,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   }
   settings.log.printf(
     "equality rows %d less rows %d columns %d\n", equal_rows, less_rows, problem.num_cols);
-  if (settings.dualize != 0 &&
+  if (settings.barrier && settings.dualize != 0 &&
       (settings.dualize == 1 ||
        (settings.dualize == -1 && less_rows > 1.2 * problem.num_cols && equal_rows < 2e4))) {
     settings.log.printf("Dualizing in presolve\n");
