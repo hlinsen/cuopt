@@ -1876,15 +1876,19 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
   raft::copy(data.d_primal_residual_.data(), lp.rhs.data(), lp.rhs.size(), stream_view_);
 
   data.d_dual_residual_.resize(data.dual_residual.size(), stream_view_);
-  raft::copy(
-    data.d_dual_residual_.data(), data.dual_residual.data(), data.dual_residual.size(), stream_view_);
+  raft::copy(data.d_dual_residual_.data(),
+             data.dual_residual.data(),
+             data.dual_residual.size(),
+             stream_view_);
   d_upper_bounds_.resize(data.n_upper_bounds, stream_view_);
   raft::copy(d_upper_bounds_.data(), data.upper_bounds.data(), data.n_upper_bounds, stream_view_);
   d_upper_.resize(lp.upper.size(), stream_view_);
   raft::copy(d_upper_.data(), lp.upper.data(), lp.upper.size(), stream_view_);
   data.d_bound_residual_.resize(data.bound_residual.size(), stream_view_);
-  raft::copy(
-    data.d_bound_residual_.data(), data.bound_residual.data(), data.bound_residual.size(), stream_view_);
+  raft::copy(data.d_bound_residual_.data(),
+             data.bound_residual.data(),
+             data.bound_residual.size(),
+             stream_view_);
 
   // Compute primal_residual = b - A*x
 
@@ -1950,14 +1954,18 @@ void barrier_solver_t<i_t, f_t>::gpu_compute_residuals(const rmm::device_uvector
              data.d_complementarity_xz_residual_.data(),
              data.d_complementarity_xz_residual_.size(),
              stream_view_);
-  raft::copy(
-    data.dual_residual.data(), data.d_dual_residual_.data(), data.d_dual_residual_.size(), stream_view_);
+  raft::copy(data.dual_residual.data(),
+             data.d_dual_residual_.data(),
+             data.d_dual_residual_.size(),
+             stream_view_);
   raft::copy(data.primal_residual.data(),
              data.d_primal_residual_.data(),
              data.d_primal_residual_.size(),
              stream_view_);
-  raft::copy(
-    data.bound_residual.data(), data.d_bound_residual_.data(), data.d_bound_residual_.size(), stream_view_);
+  raft::copy(data.bound_residual.data(),
+             data.d_bound_residual_.data(),
+             data.d_bound_residual_.size(),
+             stream_view_);
   // Sync to make sure host data has been copied
   RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 }
@@ -2672,8 +2680,10 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     raft::common::nvtx::range fun_scope("Barrier: dual_residual GPU");
 
     // dual_residual <- A' * dy - E * dv  + dz -  dual_rhs
-    thrust::fill(
-      rmm::exec_policy(stream_view_), data.d_dual_residual_.begin(), data.d_dual_residual_.end(), f_t(0.0));
+    thrust::fill(rmm::exec_policy(stream_view_),
+                 data.d_dual_residual_.begin(),
+                 data.d_dual_residual_.end(),
+                 f_t(0.0));
 
     // dual_residual <- E * dv
     thrust::scatter(rmm::exec_policy(stream_view_),
@@ -2693,8 +2703,9 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       [] HD(f_t dual_residual, f_t dz, f_t dual_rhs) { return dual_residual + dz - dual_rhs; },
       stream_view_);
 
-    const f_t dual_residual_norm = device_vector_norm_inf<i_t, f_t>(data.d_dual_residual_, stream_view_);
-    max_residual                 = std::max(max_residual, dual_residual_norm);
+    const f_t dual_residual_norm =
+      device_vector_norm_inf<i_t, f_t>(data.d_dual_residual_, stream_view_);
+    max_residual = std::max(max_residual, dual_residual_norm);
     if (dual_residual_norm > 1e-2) {
       settings.log.printf("|| A' * dy - E * dv  + dz -  dual_rhs || = %.2e\n", dual_residual_norm);
     }

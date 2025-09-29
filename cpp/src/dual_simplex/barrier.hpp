@@ -191,7 +191,7 @@ class barrier_solver_t {
   // GPU ADAT multiply
   rmm::device_uvector<f_t> d_u_;
   // Compute residuals
-  
+
   rmm::device_uvector<f_t> d_upper_;
 
   pinned_dense_vector_t<i_t, f_t> restrict_u_;
