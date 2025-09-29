@@ -127,6 +127,7 @@ class iteration_data_t {
       settings_(settings),
       handle_ptr(lp.handle_ptr),
       stream_view_(lp.handle_ptr->get_stream()),
+      d_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
       d_x_(0, lp.handle_ptr->get_stream()),
       d_z_(0, lp.handle_ptr->get_stream()),
       d_w_(0, lp.handle_ptr->get_stream()),
@@ -1543,6 +1544,9 @@ class iteration_data_t {
   cusparseDnVecDescr_t cusparse_u_;
 
   // Device vectors
+
+  rmm::device_uvector<f_t> d_diag_;
+
   rmm::device_uvector<f_t> d_x_;
   rmm::device_uvector<f_t> d_z_;
   rmm::device_uvector<f_t> d_w_;
@@ -1578,7 +1582,6 @@ barrier_solver_t<i_t, f_t>::barrier_solver_t(const lp_problem_t<i_t, f_t>& lp,
     settings(settings),
     presolve_info(presolve),
     stream_view_(lp.handle_ptr->get_stream()),
-    d_diag_(lp.num_cols, lp.handle_ptr->get_stream()),
     d_bound_rhs_(0, lp.handle_ptr->get_stream()),
     d_upper_bounds_(0, lp.handle_ptr->get_stream()),
     d_tmp3_(lp.num_cols, lp.handle_ptr->get_stream()),
@@ -2181,8 +2184,8 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 
     // diag = z ./ x
     cub::DeviceTransform::Transform(cuda::std::make_tuple(data.d_z_.data(), data.d_x_.data()),
-                                    d_diag_.data(),
-                                    d_diag_.size(),
+                                    data.d_diag_.data(),
+                                    data.d_diag_.size(),
                                     cuda::std::divides<>{},
                                     stream_view_);
 
@@ -2193,8 +2196,8 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
         cuda::std::make_tuple(
           data.d_v_.data(),
           data.d_w_.data(),
-          thrust::make_permutation_iterator(d_diag_.data(), d_upper_bounds_.data())),
-        thrust::make_permutation_iterator(d_diag_.data(), d_upper_bounds_.data()),
+          thrust::make_permutation_iterator(data.d_diag_.data(), d_upper_bounds_.data())),
+        thrust::make_permutation_iterator(data.d_diag_.data(), d_upper_bounds_.data()),
         d_upper_bounds_.size(),
         [] HD(f_t v_k, f_t w_k, f_t diag_j) { return diag_j + (v_k / w_k); },
         stream_view_);
@@ -2203,13 +2206,13 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
 
     // inv_diag = 1.0 ./ diag
     cub::DeviceTransform::Transform(
-      d_diag_.data(),
+      data.d_diag_.data(),
       data.d_inv_diag.data(),
-      d_diag_.size(),
+      data.d_diag_.size(),
       [] HD(f_t diag) { return f_t(1) / diag; },
       stream_view_);
 
-    raft::copy(data.diag.data(), d_diag_.data(), d_diag_.size(), stream_view_);
+    raft::copy(data.diag.data(), data.d_diag_.data(), data.d_diag_.size(), stream_view_);
     raft::copy(data.inv_diag.data(), data.d_inv_diag.data(), data.d_inv_diag.size(), stream_view_);
   }
 
@@ -2413,7 +2416,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       data.cusparse_view_.transpose_spmv(1.0, data.cusparse_dy_, -1.0, data.cusparse_r1_);
 
       cub::DeviceTransform::Transform(
-        cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data(), d_diag_.data()),
+        cuda::std::make_tuple(data.d_inv_diag.data(), d_r1_.data(), data.d_diag_.data()),
         thrust::make_zip_iterator(d_dx_.data(), d_dx_residual_.data()),
         data.d_inv_diag.size(),
         [] HD(f_t inv_diag, f_t r1, f_t diag) -> thrust::tuple<f_t, f_t> {
