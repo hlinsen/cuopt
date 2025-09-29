@@ -163,7 +163,6 @@ class barrier_solver_t {
   const simplex_solver_settings_t<i_t, f_t>& settings;
   const presolve_info_t<i_t, f_t>& presolve_info;
 
-  
   rmm::device_uvector<f_t> d_bound_rhs_;
 
   rmm::device_uvector<i_t> d_upper_bounds_;
