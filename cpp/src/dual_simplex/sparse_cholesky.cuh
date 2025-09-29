@@ -192,7 +192,6 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
 #if CUDSS_VERSION_MAJOR >= 0 && CUDSS_VERSION_MINOR >= 7
     if (settings_.concurrent_halt != nullptr) {
-      printf("Trying to set user host interupt to %p\n", settings_.concurrent_halt);
       CUDSS_CALL_AND_CHECK_EXIT(cudssDataSet(handle,
                                              solverData,
                                              CUDSS_DATA_USER_HOST_INTERRUPT,
