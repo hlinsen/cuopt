@@ -162,37 +162,6 @@ class barrier_solver_t {
   const lp_problem_t<i_t, f_t>& lp;
   const simplex_solver_settings_t<i_t, f_t>& settings;
   const presolve_info_t<i_t, f_t>& presolve_info;
-
-  rmm::device_uvector<f_t> d_bound_rhs_;
-
-  rmm::device_uvector<i_t> d_upper_bounds_;
-  rmm::device_uvector<f_t> d_tmp3_;
-  rmm::device_uvector<f_t> d_tmp4_;
-  rmm::device_uvector<f_t> d_r1_;
-  rmm::device_uvector<f_t> d_r1_prime_;
-
-  rmm::device_uvector<f_t> d_c_;
-
-  rmm::device_uvector<f_t> d_complementarity_xz_rhs_;
-  rmm::device_uvector<f_t> d_complementarity_wv_rhs_;
-  rmm::device_uvector<f_t> d_dual_rhs_;
-
-  rmm::device_uvector<f_t> d_y_residual_;
-  rmm::device_uvector<f_t> d_dx_residual_;
-  rmm::device_uvector<f_t> d_xz_residual_;
-
-  rmm::device_uvector<f_t> d_dw_residual_;
-  rmm::device_uvector<f_t> d_wv_residual_;
-  // After Compute search direction
-
-  // GPU ADAT multiply
-  rmm::device_uvector<f_t> d_u_;
-  // Compute residuals
-
-  rmm::device_uvector<f_t> d_upper_;
-
-  pinned_dense_vector_t<i_t, f_t> restrict_u_;
-
   rmm::cuda_stream_view stream_view_;
 };
 
