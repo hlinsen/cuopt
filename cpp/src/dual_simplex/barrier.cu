@@ -174,6 +174,9 @@ class iteration_data_t {
       }
 #endif
       float64_t column_density_time = toc(start_column_density);
+      if (!settings.eliminate_dense_columns) {
+        dense_columns_unordered.clear(); 
+      }
       n_dense_columns               = static_cast<i_t>(dense_columns_unordered.size());
       if (n_dense_columns > 0) {
         settings.log.printf("Dense columns               : %d\n", n_dense_columns);
@@ -2758,7 +2761,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
     data.to_solution(lp,
                      iter,
                      primal_objective,
-                     primal_objective + lp.obj_constant,
+                     compute_user_objective(lp, primal_objective),
                      vector_norm2<i_t, f_t>(data.primal_residual),
                      vector_norm2<i_t, f_t>(data.dual_residual),
                      data.cusparse_view_,
@@ -2780,26 +2783,18 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
                                   // status
   }
 
-  // Restore previous solution
-  primal_residual_norm              = data.primal_residual_norm_save;
-  dual_residual_norm                = data.dual_residual_norm_save;
-  complementarity_residual_norm     = data.complementarity_residual_norm_save;
-  relative_primal_residual          = data.relative_primal_residual_save;
-  relative_dual_residual            = data.relative_dual_residual_save;
-  relative_complementarity_residual = data.relative_complementarity_residual_save;
+  f_t primal_objective_save = data.c.inner_product(data.x_save);
 
-  primal_objective = data.c.inner_product(data.x_save);
-
-  if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
-      relative_dual_residual < settings.barrier_relaxed_optimality_tol &&
-      relative_complementarity_residual < settings.barrier_relaxed_complementarity_tol) {
+  if (data.relative_primal_residual_save < settings.barrier_relaxed_feasibility_tol &&
+      data.relative_dual_residual_save < settings.barrier_relaxed_optimality_tol &&
+      data.relative_complementarity_residual_save < settings.barrier_relaxed_complementarity_tol) {
     settings.log.printf("Restoring previous solution\n");
     data.to_solution(lp,
                      iter,
-                     primal_objective,
-                     primal_objective + lp.obj_constant,
-                     primal_residual_norm,
-                     dual_residual_norm,
+                     primal_objective_save,
+                     compute_user_objective(lp, primal_objective_save),
+                     data.primal_residual_norm_save,
+                     data.dual_residual_norm_save,
                      data.cusparse_view_,
                      solution);
     settings.log.printf("\n");
@@ -2807,13 +2802,13 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
       "Suboptimal solution found in %d iterations and %.2f seconds\n", iter, toc(start_time));
     settings.log.printf("Objective %+.8e\n", compute_user_objective(lp, primal_objective));
     settings.log.printf("Primal infeasibility (abs/rel): %8.2e/%8.2e\n",
-                        primal_residual_norm,
-                        relative_primal_residual);
+                        data.primal_residual_norm_save,
+                        data.relative_primal_residual_save);
     settings.log.printf(
-      "Dual infeasibility   (abs/rel): %8.2e/%8.2e\n", dual_residual_norm, relative_dual_residual);
+      "Dual infeasibility   (abs/rel): %8.2e/%8.2e\n", data.dual_residual_norm_save, data.relative_dual_residual_save);
     settings.log.printf("Complementarity gap  (abs/rel): %8.2e/%8.2e\n",
-                        complementarity_residual_norm,
-                        relative_complementarity_residual);
+                        data.complementarity_residual_norm_save,
+                        data.relative_complementarity_residual_save);
     settings.log.printf("\n");
     return lp_status_t::OPTIMAL;  // TODO: Barrier should probably have a separate suboptimal
                                   // status
@@ -3538,7 +3533,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
       data.to_solution(lp,
                        iter,
                        primal_objective,
-                       primal_objective + lp.obj_constant,
+                       compute_user_objective(lp, primal_objective),
                        primal_residual_norm,
                        dual_residual_norm,
                        data.cusparse_view_,
@@ -3549,7 +3544,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
   data.to_solution(lp,
                    iter,
                    primal_objective,
-                   primal_objective + lp.obj_constant,
+                   compute_user_objective(lp, primal_objective),
                    vector_norm2<i_t, f_t>(data.primal_residual),
                    vector_norm2<i_t, f_t>(data.dual_residual),
                    data.cusparse_view_,

@@ -2590,6 +2590,33 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     }
   }
 
+    // Check for empty rows
+    i_t num_empty_rows = 0;
+    {
+      csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
+      problem.A.to_compressed_row(Arow);
+      for (i_t i = 0; i < problem.num_rows; i++) {
+        if (Arow.row_start[i + 1] - Arow.row_start[i] == 0) { num_empty_rows++; }
+      }
+    }
+    if (num_empty_rows > 0) {
+      settings.log.printf("Presolve removing %d empty rows\n", num_empty_rows);
+      i_t i = remove_empty_rows(problem, row_sense, num_empty_rows, presolve_info);
+      if (i != 0) { return -1; }
+    }
+  
+    // Check for empty cols
+    i_t num_empty_cols = 0;
+    {
+      for (i_t j = 0; j < problem.num_cols; ++j) {
+        if ((problem.A.col_start[j + 1] - problem.A.col_start[j]) == 0) { num_empty_cols++; }
+      }
+    }
+    if (num_empty_cols > 0) {
+      settings.log.printf("Presolve attempt to remove %d empty cols\n", num_empty_cols);
+      remove_empty_cols(problem, num_empty_cols, presolve_info);
+    }
+
   // Check for free variables
   i_t free_variables = 0;
   for (i_t j = 0; j < problem.num_cols; j++) {
@@ -2658,32 +2685,7 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     folding(problem, settings, presolve_info);
   }
 
-  // Check for empty rows
-  i_t num_empty_rows = 0;
-  {
-    csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
-    problem.A.to_compressed_row(Arow);
-    for (i_t i = 0; i < problem.num_rows; i++) {
-      if (Arow.row_start[i + 1] - Arow.row_start[i] == 0) { num_empty_rows++; }
-    }
-  }
-  if (num_empty_rows > 0) {
-    settings.log.printf("Presolve removing %d empty rows\n", num_empty_rows);
-    i_t i = remove_empty_rows(problem, row_sense, num_empty_rows, presolve_info);
-    if (i != 0) { return -1; }
-  }
 
-  // Check for empty cols
-  i_t num_empty_cols = 0;
-  {
-    for (i_t j = 0; j < problem.num_cols; ++j) {
-      if ((problem.A.col_start[j + 1] - problem.A.col_start[j]) == 0) { num_empty_cols++; }
-    }
-  }
-  if (num_empty_cols > 0) {
-    settings.log.printf("Presolve attempt to remove %d empty cols\n", num_empty_cols);
-    remove_empty_cols(problem, num_empty_cols, presolve_info);
-  }
 
   // Check for dependent rows
   bool check_dependent_rows = false;  // settings.barrier;
