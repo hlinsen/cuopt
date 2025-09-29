@@ -165,7 +165,7 @@ class barrier_solver_t {
 
   rmm::device_uvector<f_t> d_diag_;
   rmm::device_uvector<f_t> d_bound_rhs_;
- 
+
   rmm::device_uvector<i_t> d_upper_bounds_;
   rmm::device_uvector<f_t> d_tmp3_;
   rmm::device_uvector<f_t> d_tmp4_;
