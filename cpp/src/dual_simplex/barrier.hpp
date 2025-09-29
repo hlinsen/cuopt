@@ -170,19 +170,17 @@ class barrier_solver_t {
   rmm::device_uvector<f_t> d_tmp4_;
   rmm::device_uvector<f_t> d_r1_;
   rmm::device_uvector<f_t> d_r1_prime_;
-  rmm::device_uvector<f_t> d_dx_;
-  rmm::device_uvector<f_t> d_dy_;
+  
   rmm::device_uvector<f_t> d_c_;
 
   rmm::device_uvector<f_t> d_complementarity_xz_rhs_;
   rmm::device_uvector<f_t> d_complementarity_wv_rhs_;
   rmm::device_uvector<f_t> d_dual_rhs_;
-  rmm::device_uvector<f_t> d_dz_;
-  rmm::device_uvector<f_t> d_dv_;
+ 
   rmm::device_uvector<f_t> d_y_residual_;
   rmm::device_uvector<f_t> d_dx_residual_;
   rmm::device_uvector<f_t> d_xz_residual_;
-  rmm::device_uvector<f_t> d_dw_;
+ 
   rmm::device_uvector<f_t> d_dw_residual_;
   rmm::device_uvector<f_t> d_wv_residual_;
   // After Compute search direction
