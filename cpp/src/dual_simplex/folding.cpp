@@ -23,9 +23,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-
 namespace cuopt::linear_programming::dual_simplex {
-
 
 template <typename i_t>
 struct color_t {

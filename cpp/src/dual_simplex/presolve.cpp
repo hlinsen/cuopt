@@ -779,8 +779,6 @@ i_t add_artifical_variables(lp_problem_t<i_t, f_t>& problem,
   return 0;
 }
 
-
-
 template <typename i_t, typename f_t>
 void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
                           const simplex_solver_settings_t<i_t, f_t>& settings,

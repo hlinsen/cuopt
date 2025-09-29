@@ -17,8 +17,8 @@
 
 #pragma once
 
-#include <dual_simplex/simplex_solver_settings.hpp>
 #include <dual_simplex/presolve.hpp>
+#include <dual_simplex/simplex_solver_settings.hpp>
 #include <dual_simplex/types.hpp>
 
 namespace cuopt::linear_programming::dual_simplex {

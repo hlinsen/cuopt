@@ -76,49 +76,40 @@ class barrier_solver_t {
   f_t max_step_to_boundary(const dense_vector_t<i_t, f_t, AllocatorA>& x,
                            const dense_vector_t<i_t, f_t, AllocatorB>& dx) const;
 
-  
-  
-  
-
   void compute_primal_dual_step_length(iteration_data_t<i_t, f_t>& data,
                                        f_t step_scale,
                                        f_t& step_primal,
                                        f_t& step_dual);
-  
+
   void compute_residual_norms(iteration_data_t<i_t, f_t>& data,
                               f_t& primal_residual_norm,
                               f_t& dual_residual_norm,
                               f_t& complementarity_residual_norm);
-  void compute_mu(iteration_data_t<i_t, f_t>& data,
-                  f_t& mu);
+  void compute_mu(iteration_data_t<i_t, f_t>& data, f_t& mu);
   void compute_primal_dual_objective(iteration_data_t<i_t, f_t>& data,
-                                    f_t& primal_objective,
-                                    f_t& dual_objective);
+                                     f_t& primal_objective,
+                                     f_t& dual_objective);
 
-   void cpu_compute_residual_norms(const dense_vector_t<i_t, f_t>& w,
-                                      const dense_vector_t<i_t, f_t>& x,
-                                      const dense_vector_t<i_t, f_t>& y,
-                                      const dense_vector_t<i_t, f_t>& v,
-                                      const dense_vector_t<i_t, f_t>& z,
-                                      iteration_data_t<i_t, f_t>& data,
-                                      f_t& primal_residual_norm,
-                                      f_t& dual_residual_norm,
-                                      f_t& complementarity_residual_norm);
+  void cpu_compute_residual_norms(const dense_vector_t<i_t, f_t>& w,
+                                  const dense_vector_t<i_t, f_t>& x,
+                                  const dense_vector_t<i_t, f_t>& y,
+                                  const dense_vector_t<i_t, f_t>& v,
+                                  const dense_vector_t<i_t, f_t>& z,
+                                  iteration_data_t<i_t, f_t>& data,
+                                  f_t& primal_residual_norm,
+                                  f_t& dual_residual_norm,
+                                  f_t& complementarity_residual_norm);
 
   // To be able to directly pass lambdas to transform functions
  public:
- void compute_next_iterate(iteration_data_t<i_t, f_t>& data,
-  f_t step_scale,
-  f_t step_primal,
-  f_t step_dual);
- void compute_final_direction(iteration_data_t<i_t, f_t>& data);
- void compute_cc_rhs(iteration_data_t<i_t, f_t>& data,
-  f_t& new_mu);
- void compute_target_mu(iteration_data_t<i_t, f_t>& data,
-  f_t mu,
-  f_t& mu_aff,
-  f_t& sigma,
-  f_t& new_mu);
+  void compute_next_iterate(iteration_data_t<i_t, f_t>& data,
+                            f_t step_scale,
+                            f_t step_primal,
+                            f_t step_dual);
+  void compute_final_direction(iteration_data_t<i_t, f_t>& data);
+  void compute_cc_rhs(iteration_data_t<i_t, f_t>& data, f_t& new_mu);
+  void compute_target_mu(
+    iteration_data_t<i_t, f_t>& data, f_t mu, f_t& mu_aff, f_t& sigma, f_t& new_mu);
   void compute_affine_rhs(iteration_data_t<i_t, f_t>& data);
   void gpu_compute_residuals(rmm::device_uvector<f_t> const& d_w,
                              rmm::device_uvector<f_t> const& d_x,
