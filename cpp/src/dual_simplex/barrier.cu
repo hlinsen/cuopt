@@ -17,10 +17,12 @@
 
 #include <dual_simplex/barrier.hpp>
 
+#include <dual_simplex/conjugate_gradient.hpp>
 #include <dual_simplex/cusparse_info.hpp>
 #include <dual_simplex/dense_matrix.hpp>
 #include <dual_simplex/dense_vector.hpp>
 #include <dual_simplex/device_sparse_matrix.cuh>
+#include <dual_simplex/iterative_refinement.hpp>
 #include <dual_simplex/presolve.hpp>
 #include <dual_simplex/solve.hpp>
 #include <dual_simplex/sparse_cholesky.cuh>
@@ -847,7 +849,24 @@ class iteration_data_t {
 
       // Now do some rounds of PCG
       const bool do_pcg = true;
-      if (do_pcg) { preconditioned_conjugate_gradient(settings_, b, 1e-9, x); }
+      if (do_pcg) {
+        struct op_t {
+          const iteration_data_t* self;
+          op_t(const iteration_data_t* s) : self(s) {}
+          void a_multiply(f_t alpha,
+                          const dense_vector_t<i_t, f_t>& x,
+                          f_t beta,
+                          dense_vector_t<i_t, f_t>& y) const
+          {
+            self->adat_multiply(alpha, x, beta, y);
+          }
+          void m_solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) const
+          {
+            self->chol->solve(b, x);
+          }
+        } op(this);
+        preconditioned_conjugate_gradient(op, settings_, b, 1e-9, x);
+      }
 
       return solve_status;
     }
@@ -1281,106 +1300,6 @@ class iteration_data_t {
     }
   }
 
-  void preconditioned_conjugate_gradient(const simplex_solver_settings_t<i_t, f_t>& settings,
-                                         const dense_vector_t<i_t, f_t>& b,
-                                         f_t tolerance,
-                                         dense_vector_t<i_t, f_t>& xinout) const
-  {
-    const bool show_pcg_info          = false;
-    dense_vector_t<i_t, f_t> residual = b;
-    dense_vector_t<i_t, f_t> y(ADAT.n);
-
-    dense_vector_t<i_t, f_t> x = xinout;
-
-    const csc_matrix_t<i_t, f_t>& A = ADAT;
-
-    // r = A*x - b
-    adat_multiply(1.0, x, -1.0, residual);
-
-    // Solve M y = r for y
-    chol->solve(residual, y);
-
-    dense_vector_t<i_t, f_t> p = y;
-    p.multiply_scalar(-1.0);
-
-    dense_vector_t<i_t, f_t> Ap(A.n);
-    i_t iter                  = 0;
-    f_t norm_residual         = vector_norm2<i_t, f_t>(residual);
-    f_t initial_norm_residual = norm_residual;
-    if (show_pcg_info) {
-      settings.log.printf("PCG initial residual 2-norm %e inf-norm %e\n",
-                          norm_residual,
-                          vector_norm_inf<i_t, f_t>(residual, stream_view_));
-    }
-
-    f_t rTy = residual.inner_product(y);
-
-    while (norm_residual > tolerance && iter < 100) {
-      // Compute Ap = A * p
-      adat_multiply(1.0, p, 0.0, Ap);
-
-      // Compute alpha = (r^T * y) / (p^T * Ap)
-      f_t alpha = rTy / p.inner_product(Ap);
-
-      // Update residual = residual + alpha * Ap
-      residual.axpy(alpha, Ap, 1.0);
-
-      f_t new_residual = vector_norm2<i_t, f_t>(residual);
-      if (new_residual > 1.1 * norm_residual || new_residual > 1.1 * initial_norm_residual) {
-        if (show_pcg_info) {
-          settings.log.printf(
-            "PCG residual increased by more than 10%%. New %e > %e\n", new_residual, norm_residual);
-        }
-        break;
-      }
-      norm_residual = new_residual;
-
-      // Update x = x + alpha * p
-      x.axpy(alpha, p, 1.0);
-
-      // residual = A*x - b
-      residual = b;
-      adat_multiply(1.0, x, -1.0, residual);
-      norm_residual = vector_norm2<i_t, f_t>(residual);
-
-      // Solve M y = r for y
-      chol->solve(residual, y);
-
-      // Compute beta = (r_+^T y_+) / (r^T y)
-      f_t r1Ty1 = residual.inner_product(y);
-      f_t beta  = r1Ty1 / rTy;
-
-      rTy = r1Ty1;
-
-      // Update p = -y + beta * p
-      p.axpy(-1.0, y, beta);
-
-      iter++;
-
-      if (show_pcg_info) {
-        settings.log.printf("PCG iter %3d 2-norm_residual %.2e inf-norm_residual %.2e\n",
-                            iter,
-                            norm_residual,
-                            vector_norm_inf<i_t, f_t>(residual, stream_view_));
-      }
-    }
-
-    residual = b;
-    adat_multiply(1.0, x, -1.0, residual);
-    norm_residual = vector_norm2<i_t, f_t>(residual);
-    if (norm_residual < initial_norm_residual) {
-      if (show_pcg_info) {
-        settings.log.printf("PCG improved residual 2-norm %.2e/%.2e in %d iterations\n",
-                            norm_residual,
-                            initial_norm_residual,
-                            iter);
-      }
-      xinout = x;
-    } else {
-      if (show_pcg_info) { settings.log.printf("Rejecting PCG solution\n"); }
-    }
-  }
-
   // y <- alpha * Augmented * x + beta * y
   void augmented_multiply(f_t alpha,
                           const dense_vector_t<i_t, f_t>& x,
@@ -1408,55 +1327,6 @@ class iteration_data_t {
     }
     for (i_t i = n; i < n + m; ++i) {
       y[i] = y2[i - n];
-    }
-  }
-
-  void iterative_refinement_augmented(const dense_vector_t<i_t, f_t>& b,
-                                      dense_vector_t<i_t, f_t>& x)
-  {
-    const i_t m                               = A.m;
-    const i_t n                               = A.n;
-    dense_vector_t<i_t, f_t> x_sav            = x;
-    dense_vector_t<i_t, f_t> r                = b;
-    const bool show_iterative_refinement_info = false;
-
-    augmented_multiply(-1.0, x, 1.0, r);
-
-    f_t error = vector_norm_inf<i_t, f_t>(r);
-    if (show_iterative_refinement_info) {
-      printf(
-        "Iterative refinement. Initial error %e || x || %.16e\n", error, vector_norm2<i_t, f_t>(x));
-    }
-    dense_vector_t<i_t, f_t> delta_x(n + m);
-    i_t iter = 0;
-    while (error > 1e-8 && iter < 30) {
-      delta_x.set_scalar(0.0);
-      chol->solve(r, delta_x);
-
-      x.axpy(1.0, delta_x, 1.0);
-
-      r = b;
-      augmented_multiply(-1.0, x, 1.0, r);
-
-      f_t new_error = vector_norm_inf<i_t, f_t>(r);
-      if (new_error > error) {
-        x = x_sav;
-        if (show_iterative_refinement_info) {
-          printf(
-            "%d Iterative refinement error increased %e %e. Stopping\n", iter, error, new_error);
-        }
-        break;
-      }
-      error = new_error;
-      x_sav = x;
-      iter++;
-      if (show_iterative_refinement_info) {
-        printf("%d Iterative refinement error %e. || x || %.16e || dx || %.16e Continuing\n",
-               iter,
-               error,
-               vector_norm2<i_t, f_t>(x),
-               vector_norm2<i_t, f_t>(delta_x));
-      }
     }
   }
 
@@ -1678,7 +1548,22 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     }
     dense_vector_t<i_t, f_t> soln(lp.num_cols + lp.num_rows);
     i_t solve_status = data.chol->solve(rhs, soln);
-    data.iterative_refinement_augmented(rhs, soln);
+    struct op_t {
+      op_t(const iteration_data_t<i_t, f_t>& data) : data_(data) {}
+      const iteration_data_t<i_t, f_t>& data_;
+      void a_multiply(f_t alpha,
+                      const dense_vector_t<i_t, f_t>& x,
+                      f_t beta,
+                      dense_vector_t<i_t, f_t>& y) const
+      {
+        data_.augmented_multiply(alpha, x, beta, y);
+      }
+      void solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) const
+      {
+        data_.chol->solve(b, x);
+      }
+    } op(data);
+    iterative_refinement(op, rhs, soln);
     for (i_t k = 0; k < lp.num_cols; k++) {
       data.x[k] = soln[k];
     }
@@ -2337,11 +2222,26 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     }
     dense_vector_t<i_t, f_t> augmented_soln(lp.num_cols + lp.num_rows);
     data.chol->solve(augmented_rhs, augmented_soln);
-    data.iterative_refinement_augmented(augmented_rhs, augmented_soln);
+    struct op_t {
+      op_t(const iteration_data_t<i_t, f_t>& data) : data_(data) {}
+      const iteration_data_t<i_t, f_t>& data_;
+      void a_multiply(f_t alpha,
+                      const dense_vector_t<i_t, f_t>& x,
+                      f_t beta,
+                      dense_vector_t<i_t, f_t>& y) const
+      {
+        data_.augmented_multiply(alpha, x, beta, y);
+      }
+      void solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) const
+      {
+        data_.chol->solve(b, x);
+      }
+    } op(data);
+    iterative_refinement(op, augmented_rhs, augmented_soln);
     dense_vector_t<i_t, f_t> augmented_residual = augmented_rhs;
     matrix_vector_multiply(data.augmented, 1.0, augmented_soln, -1.0, augmented_residual);
     f_t solve_err = vector_norm_inf<i_t, f_t>(augmented_residual);
-    if (solve_err > 1e-6) {
+    if (solve_err > 1e-1) {
       settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e after IR\n", solve_err);
     }
     for (i_t k = 0; k < lp.num_cols; k++) {
@@ -2361,14 +2261,14 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     dense_vector_t<i_t, f_t> res = data.primal_rhs;
     matrix_vector_multiply(lp.A, 1.0, dx, -1.0, res);
     f_t prim_err = vector_norm_inf<i_t, f_t>(res);
-    if (prim_err > 1e-6) { settings.log.printf("|| A * dx - r_p || %e\n", prim_err); }
+    if (prim_err > 1e-1) { settings.log.printf("|| A * dx - r_p || %e\n", prim_err); }
 
     dense_vector_t<i_t, f_t> res1(lp.num_cols);
     data.diag.pairwise_product(dx, res1);
     res1.axpy(-1.0, r1, -1.0);
     matrix_transpose_vector_multiply(lp.A, 1.0, dy, 1.0, res1);
     f_t res1_err = vector_norm_inf<i_t, f_t>(res1);
-    if (res1_err > 1e-6) {
+    if (res1_err > 1e-1) {
       settings.log.printf("|| A'*dy - r_1 - D dx || %e", vector_norm_inf<i_t, f_t>(res1));
     }
 
@@ -2388,7 +2288,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     }
     data.augmented_multiply(1.0, dxdy, -1.0, res2);
     f_t res2_err = vector_norm_inf<i_t, f_t>(res2);
-    if (res2_err > 1e-6) { settings.log.printf("|| Aug_0 (dx, dy) - aug_rhs || %e\n", res2_err); }
+    if (res2_err > 1e-1) { settings.log.printf("|| Aug_0 (dx, dy) - aug_rhs || %e\n", res2_err); }
   } else {
     {
       raft::common::nvtx::range fun_scope("Barrier: Solve A D^{-1} A^T dy = h");

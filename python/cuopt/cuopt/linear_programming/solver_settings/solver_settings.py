@@ -19,16 +19,16 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_ABSOLUTE_DUAL_TOLERANCE,
     CUOPT_ABSOLUTE_GAP_TOLERANCE,
     CUOPT_ABSOLUTE_PRIMAL_TOLERANCE,
-    CUOPT_CROSSOVER,
-    CUOPT_DUAL_INFEASIBLE_TOLERANCE,
-    CUOPT_FIRST_PRIMAL_FEASIBLE,
-    CUOPT_INFEASIBILITY_DETECTION,
-    CUOPT_ITERATION_LIMIT,
     CUOPT_AUGMENTED,
-    CUOPT_FOLDING,
+    CUOPT_CROSSOVER,
+    CUOPT_CUDSS_DETERMINISTIC,
+    CUOPT_DUAL_INFEASIBLE_TOLERANCE,
     CUOPT_DUALIZE,
     CUOPT_ELIMINATE_DENSE_COLUMNS,
-    CUOPT_CUDSS_DETERMINISTIC,
+    CUOPT_FIRST_PRIMAL_FEASIBLE,
+    CUOPT_FOLDING,
+    CUOPT_INFEASIBILITY_DETECTION,
+    CUOPT_ITERATION_LIMIT,
     CUOPT_LOG_FILE,
     CUOPT_LOG_TO_CONSOLE,
     CUOPT_METHOD,
@@ -389,8 +389,12 @@ class SolverSettings:
             "augmented": self.get_parameter(CUOPT_AUGMENTED),
             "folding": self.get_parameter(CUOPT_FOLDING),
             "dualize": self.get_parameter(CUOPT_DUALIZE),
-            "eliminate_dense_columns": self.get_parameter(CUOPT_ELIMINATE_DENSE_COLUMNS),
-            "cudss_deterministic": self.get_parameter(CUOPT_CUDSS_DETERMINISTIC),
+            "eliminate_dense_columns": self.get_parameter(
+                CUOPT_ELIMINATE_DENSE_COLUMNS
+            ),
+            "cudss_deterministic": self.get_parameter(
+                CUOPT_CUDSS_DETERMINISTIC
+            ),
             "crossover": self.get_parameter(CUOPT_CROSSOVER),
             "log_to_console": self.get_parameter(CUOPT_LOG_TO_CONSOLE),
             "first_primal_feasible": self.get_parameter(
