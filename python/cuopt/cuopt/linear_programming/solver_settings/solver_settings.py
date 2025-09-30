@@ -24,6 +24,11 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_FIRST_PRIMAL_FEASIBLE,
     CUOPT_INFEASIBILITY_DETECTION,
     CUOPT_ITERATION_LIMIT,
+    CUOPT_AUGMENTED,
+    CUOPT_FOLDING,
+    CUOPT_DUALIZE,
+    CUOPT_ELIMINATE_DENSE_COLUMNS,
+    CUOPT_CUDSS_DETERMINISTIC,
     CUOPT_LOG_FILE,
     CUOPT_LOG_TO_CONSOLE,
     CUOPT_METHOD,
@@ -58,6 +63,7 @@ class SolverMethod(IntEnum):
     Concurrent = 0
     PDLP = auto()
     DualSimplex = auto()
+    Barrier = auto()
 
     def __str__(self):
         """Convert the solver method to a string.
@@ -380,6 +386,11 @@ class SolverSettings:
                 CUOPT_MIP_HEURISTICS_ONLY
             ),
             "num_cpu_threads": self.get_parameter(CUOPT_NUM_CPU_THREADS),
+            "augmented": self.get_parameter(CUOPT_AUGMENTED),
+            "folding": self.get_parameter(CUOPT_FOLDING),
+            "dualize": self.get_parameter(CUOPT_DUALIZE),
+            "eliminate_dense_columns": self.get_parameter(CUOPT_ELIMINATE_DENSE_COLUMNS),
+            "cudss_deterministic": self.get_parameter(CUOPT_CUDSS_DETERMINISTIC),
             "crossover": self.get_parameter(CUOPT_CROSSOVER),
             "log_to_console": self.get_parameter(CUOPT_LOG_TO_CONSOLE),
             "first_primal_feasible": self.get_parameter(

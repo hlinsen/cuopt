@@ -27,6 +27,7 @@ class SolverMethod(IntEnum):
     Concurrent = 0
     PDLP = auto()
     DualSimplex = auto()
+    Barrier = auto()
 
     def __str__(self):
         """Convert the solver method to a string.

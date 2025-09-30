@@ -51,6 +51,11 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_SAVE_BEST_PRIMAL_SO_FAR,
     CUOPT_STRICT_INFEASIBILITY,
     CUOPT_TIME_LIMIT,
+    CUOPT_AUGMENTED,
+    CUOPT_FOLDING,
+    CUOPT_DUALIZE,
+    CUOPT_ELIMINATE_DENSE_COLUMNS,
+    CUOPT_CUDSS_DETERMINISTIC,
 )
 from cuopt.linear_programming.solver.solver_wrapper import (
     ErrorStatus,
@@ -426,6 +431,26 @@ def create_solver(LP_data, warmstart_data):
         if solver_config.log_file != "":
             solver_settings.set_parameter(
                 CUOPT_LOG_FILE, solver_config.log_file
+            )
+        if solver_config.augmented != "":
+            solver_settings.set_parameter(
+                CUOPT_AUGMENTED, solver_config.augmented
+            )
+        if solver_config.folding != "":
+            solver_settings.set_parameter(
+                CUOPT_FOLDING, solver_config.folding
+            )
+        if solver_config.dualize != "":
+            solver_settings.set_parameter(
+                CUOPT_DUALIZE, solver_config.dualize
+            )
+        if solver_config.eliminate_dense_columns is not None:
+            solver_settings.set_parameter(
+                CUOPT_ELIMINATE_DENSE_COLUMNS, solver_config.eliminate_dense_columns
+            )
+        if solver_config.cudss_deterministic is not None:
+            solver_settings.set_parameter(
+                CUOPT_CUDSS_DETERMINISTIC, solver_config.cudss_deterministic
             )
         if solver_config.solution_file != "":
             warnings.append(ignored_warning("solution_file"))
