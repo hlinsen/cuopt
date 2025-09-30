@@ -36,3 +36,14 @@
 #else
 #define benchmark_call(func) ;
 #endif
+
+// For CUDA Driver API
+#define CU_CHECK(expr_to_check)                                               \
+  do {                                                                        \
+    CUresult result = expr_to_check;                                          \
+    if (result != CUDA_SUCCESS) {                                             \
+      const char* pErrStr;                                                    \
+      cuGetErrorString(result, &pErrStr);                                     \
+      fprintf(stderr, "CUDA Error: %s:%i:%s\n", __FILE__, __LINE__, pErrStr); \
+    }                                                                         \
+  } while (0)

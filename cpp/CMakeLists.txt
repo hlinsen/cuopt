@@ -276,6 +276,7 @@ set(CUOPT_PRIVATE_CUDA_LIBS
   CUDA::curand
   CUDA::cusolver
   TBB::tbb
+  CUDA::cuda_driver
   OpenMP::OpenMP_CXX)
 
 list(PREPEND CUOPT_PRIVATE_CUDA_LIBS CUDA::cublasLt)
