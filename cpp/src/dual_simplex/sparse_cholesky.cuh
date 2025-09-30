@@ -305,7 +305,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     nnz               = Arow.row_start.element(Arow.m, Arow.row_start.stream());
     const f_t density = static_cast<f_t>(nnz) / (static_cast<f_t>(n) * static_cast<f_t>(n));
 
-    if (first_factor && density >= 0.01) {
+    if (first_factor && density >= 0.01 && n > 1) {
       settings_.log.printf("Reordering algorithm        : AMD\n");
       // Tell cuDSS to use AMD
       cudssAlgType_t reorder_alg = CUDSS_ALG_3;
