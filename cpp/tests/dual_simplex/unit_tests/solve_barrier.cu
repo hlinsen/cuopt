@@ -33,8 +33,7 @@
 
 namespace cuopt::linear_programming::dual_simplex::test {
 
-
-  // This serves as both a warm up but also a mandatory initial call to setup cuSparse and cuBLAS
+// This serves as both a warm up but also a mandatory initial call to setup cuSparse and cuBLAS
 static void init_handler(const raft::handle_t* handle_ptr)
 {
   // Init cuBlas / cuSparse context here to avoid having it during solving time
@@ -112,7 +111,6 @@ TEST(barrier, chess_set)
   EXPECT_NEAR(solution.x[0], 0.0, 1e-6);
   EXPECT_NEAR(solution.x[1], 66.6667, 1e-3);
 }
-
 
 TEST(barrier, dual_variable_greater_than)
 {

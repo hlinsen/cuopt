@@ -1535,8 +1535,6 @@ void folding(lp_problem_t<i_t, f_t>& problem,
   problem.rhs          = b_prime;
   problem.lower        = std::vector<f_t>(reduced_cols, 0.0);
   problem.upper        = std::vector<f_t>(reduced_cols, inf);
-  problem.obj_constant = 0.0;
-  problem.obj_scale    = 1.0;
 
   presolve_info.folding_info.c_tilde          = c_tilde;
   presolve_info.folding_info.A_tilde          = A_tilde;

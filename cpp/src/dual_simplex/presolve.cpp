@@ -783,7 +783,8 @@ template <typename i_t, typename f_t>
 void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
                           const simplex_solver_settings_t<i_t, f_t>& settings,
                           lp_problem_t<i_t, f_t>& problem,
-                          std::vector<i_t>& new_slacks)
+                          std::vector<i_t>& new_slacks,
+                          dualize_info_t<i_t, f_t>& dualize_info)
 {
   constexpr bool verbose = false;
   if (verbose) {
@@ -850,12 +851,12 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
     problem.A.transpose(Arow);
     bound_strengthening(row_sense, settings, problem, Arow);
   }
-  settings.log.printf(
+  settings.log.debug(
     "equality rows %d less rows %d columns %d\n", equal_rows, less_rows, problem.num_cols);
   if (settings.barrier && settings.dualize != 0 &&
       (settings.dualize == 1 ||
        (settings.dualize == -1 && less_rows > 1.2 * problem.num_cols && equal_rows < 2e4))) {
-    settings.log.printf("Dualizing in presolve\n");
+    settings.log.debug("Dualizing in presolve\n");
 
     i_t num_upper_bounds = 0;
     std::vector<i_t> vars_with_upper_bounds;
@@ -863,7 +864,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
     bool can_dualize = true;
     for (i_t j = 0; j < problem.num_cols; j++) {
       if (problem.lower[j] != 0.0) {
-        settings.log.printf("Variable %d has a nonzero lower bound %e\n", j, problem.lower[j]);
+        settings.log.debug("Variable %d has a nonzero lower bound %e\n", j, problem.lower[j]);
         can_dualize = false;
         break;
       }
@@ -892,13 +893,46 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
     for (i_t i = 0; i < problem.num_rows; i++) {
       max_row_nz = std::max(row_degree[i], max_row_nz);
     }
-    settings.log.printf("max row nz %d max col nz %d\n", max_row_nz, max_column_nz);
+    settings.log.debug("max row nz %d max col nz %d\n", max_row_nz, max_column_nz);
 
     if (settings.dualize == -1 && max_row_nz > 1e4 && max_column_nz < max_row_nz) {
       can_dualize = false;
     }
 
     if (can_dualize) {
+      // The problem is in the form
+      // minimize   c^T x
+      // subject to A_in * x <= b_in        : y_in
+      //            A_eq * x == b_eq        : y_eq
+      //            0 <= x                  : z_l
+      //            x_j <= u_j, for j in U  : z_u
+      // 
+      // The dual is of the form 
+      // maximize    -b_in^T y_in - b_eq^T y_eq + 0^T z_l - u^T z_u
+      // subject to  -A_in^T y_in - A_eq^T y_eq + z_l - z_u = c 
+      //             y_in >= 0
+      //             y_eq free
+      //             z_l >= 0
+      //             z_u >= 0
+      //
+      // Since the solvers expect the problem to be in minimization form, 
+      // we convert this to 
+      // 
+      // minimize    b_in^T y_in + b_eq^T y_eq - 0^T z_l + u^T z_u
+      // subject to  -A_in^T y_in - A_eq^T y_eq + z_l - z_u = c  : x
+      //             y_in >= 0 : x_in
+      //             y_eq free
+      //             z_l >= 0 : x_l
+      //             z_u >= 0 : x_u
+      //
+      // The dual of this problem is of the form
+      //
+      // maximize    -c^T x
+      // subject to   A_in * x + x_in = b_in   <=> A_in * x <= b_in
+      //              A_eq * x = b_eq          
+      //              x + x_u = u              <=> x <= u
+      //              x = x_l                  <=> x >= 0
+      //              x free, x_in >= 0, x_l >- 0, x_u >= 0
       i_t dual_rows = problem.num_cols;
       i_t dual_cols = problem.num_rows + problem.num_cols + num_upper_bounds;
       lp_problem_t<i_t, f_t> dual_problem(problem.handle_ptr, 1, 1, 0);
@@ -930,7 +964,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
         nnz++;
       }
       dual_constraint_matrix.col_start[dual_cols] = nnz;
-      settings.log.printf("dual_constraint_matrix nnz %d predicted %d\n", nnz, new_nnz);
+      settings.log.debug("dual_constraint_matrix nnz %d predicted %d\n", nnz, new_nnz);
       dual_problem.num_rows = dual_rows;
       dual_problem.num_cols = dual_cols;
       dual_problem.objective.resize(dual_cols, 0.0);
@@ -953,6 +987,13 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
 
       equal_rows = problem.num_cols;
       less_rows  = 0;
+
+      dualize_info.vars_with_upper_bounds = vars_with_upper_bounds;
+      dualize_info.zl_start       = problem.num_rows;
+      dualize_info.zu_start       = problem.num_rows + problem.num_cols;
+      dualize_info.equality_rows  = equality_rows;
+      dualize_info.primal_problem = problem;
+      dualize_info.solving_dual   = true;
 
       problem = dual_problem;
 
@@ -1172,7 +1213,8 @@ void convert_user_lp_with_guess(const user_problem_t<i_t, f_t>& user_problem,
 {
   std::vector<i_t> new_slacks;
   simplex_solver_settings_t<i_t, f_t> settings;
-  convert_user_problem(user_problem, settings, problem, new_slacks);
+  dualize_info_t<i_t, f_t> dualize_info;
+  convert_user_problem(user_problem, settings, problem, new_slacks, dualize_info);
   crush_primal_solution_with_slack(
     user_problem, problem, initial_solution.x, initial_slack, new_slacks, converted_solution.x);
   crush_dual_solution(user_problem,
@@ -1512,7 +1554,8 @@ template void convert_user_problem<int, double>(
   const user_problem_t<int, double>& user_problem,
   const simplex_solver_settings_t<int, double>& settings,
   lp_problem_t<int, double>& problem,
-  std::vector<int>& new_slacks);
+  std::vector<int>& new_slacks,
+  dualize_info_t<int, double>& dualize_info);
 
 template void convert_user_lp_with_guess<int, double>(
   const user_problem_t<int, double>& user_problem,

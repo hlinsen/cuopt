@@ -96,10 +96,30 @@ struct presolve_info_t {
 };
 
 template <typename i_t, typename f_t>
+struct dualize_info_t {
+  dualize_info_t() : 
+    solving_dual(false), 
+    primal_problem(nullptr, 0, 0, 0),
+    zl_start(0), 
+    zu_start(0),
+    equality_rows({}),
+    vars_with_upper_bounds({})
+  {
+  }
+  bool solving_dual;
+  lp_problem_t<i_t, f_t> primal_problem;
+  i_t zl_start;
+  i_t zu_start;
+  std::vector<i_t> equality_rows;
+  std::vector<i_t> vars_with_upper_bounds;
+};
+
+template <typename i_t, typename f_t>
 void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
                           const simplex_solver_settings_t<i_t, f_t>& settings,
                           lp_problem_t<i_t, f_t>& problem,
-                          std::vector<i_t>& new_slacks);
+                          std::vector<i_t>& new_slacks,
+                          dualize_info_t<i_t, f_t>& dualize_info);
 
 template <typename i_t, typename f_t>
 void convert_user_problem_with_guess(const user_problem_t<i_t, f_t>& user_problem,
