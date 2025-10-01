@@ -169,10 +169,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       CUdevResource initial_device_GPU_resources = {};
       CU_CHECK(cuDeviceGetDevResource(
         handle_ptr_->get_device(), &initial_device_GPU_resources, CU_DEV_RESOURCE_TYPE_SM));
-
+#ifdef DEBUG
       std::cout << "Initial GPU resources retrieved via cuDeviceGetDevResource() have type "
                 << initial_device_GPU_resources.type << " and SM count "
                 << initial_device_GPU_resources.sm.smCount << std::endl;
+#endif
 
       // 2. Partition the GPU resources
       auto total_SMs   = initial_device_GPU_resources.sm.smCount;
@@ -183,6 +184,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       auto use_flags = CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING;  // or 0
       CU_CHECK(cuDevSmResourceSplitByCount(
         &resource, &n_groups, &initial_device_GPU_resources, nullptr, use_flags, barrier_sms));
+#ifdef DEBUG
       printf(
         "   Resources were split into %d resource groups (had requested %d) with %d SMs each (had "
         "requested %d)\n",
@@ -190,17 +192,19 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
         n_groups,
         resource.sm.smCount,
         barrier_sms);
-
+#endif
       // 3. Create the resource descriptor
       auto constexpr const n_resource_desc = 1;
       CUdevResourceDesc resource_desc;
       CU_CHECK(cuDevResourceGenerateDesc(&resource_desc, &resource, n_resource_desc));
+#ifdef DEBUG
       printf(
         "   For the resource descriptor of barrier green context we will combine %d resources of "
         "%d "
         "SMs each\n",
         n_resource_desc,
         resource.sm.smCount);
+#endif
 
       // 4. Create the green context and stream for that green context
       // CUstream barrier_green_ctx_stream;
