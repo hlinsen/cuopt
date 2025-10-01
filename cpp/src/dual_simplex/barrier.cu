@@ -39,6 +39,7 @@
 
 #include <utilities/copy_helpers.hpp>
 #include <utilities/cuda_helpers.cuh>
+#include <utilities/macros.cuh>
 
 #include <numeric>
 
@@ -351,7 +352,7 @@ class iteration_data_t {
           augmented.x[q++] = A.x[p];
         }
       }
-      settings_.log.printf("augmented nz %d predicted %d\n", q, nnzA + n);
+      settings_.log.debug("augmented nz %d predicted %d\n", q, nnzA + n);
       for (i_t k = n; k < n + m; ++k) {
         augmented.col_start[k] = q;
         const i_t l            = k - n;
@@ -365,14 +366,8 @@ class iteration_data_t {
         augmented.x[q++] = primal_perturb;
       }
       augmented.col_start[n + m] = q;
-      if (q != 2 * nnzA + n + m) {
-        settings_.log.printf("augmented nnz %d predicted %d\n", q, 2 * nnzA + n + m);
-        exit(1);
-      }
-      if (A.col_start[n] != AT.col_start[m]) {
-        settings_.log.printf("A nz %d AT nz %d\n", A.col_start[n], AT.col_start[m]);
-        exit(1);
-      }
+      cuopt_assert(q == 2 * nnzA + n + m, "augmented nnz != predicted");
+      cuopt_assert(A.col_start[n] == AT.col_start[m], "A nz != AT nz");
 
 #ifdef CHECK_SYMMETRY
       csc_matrix_t<i_t, f_t> augmented_transpose(1, 1, 1);
@@ -385,7 +380,7 @@ class iteration_data_t {
       csc_matrix_t<i_t, f_t> error(m + n, m + n, 1);
       add(augmented, augmented_transpose, 1.0, -1.0, error);
       settings_.log.printf("|| Aug - Aug^T ||_1 %e\n", error.norm1());
-      if (error.norm1() > 1e-2) { exit(1); }
+      cuopt_assert(error.norm1() <= 1e-2, "|| Aug - Aug^T ||_1 > 1e-2");
 #endif
     } else {
       for (i_t j = 0; j < n; ++j) {
@@ -426,11 +421,7 @@ class iteration_data_t {
         raft::copy(d_inv_diag_prime.data(), d_inv_diag.data(), inv_diag.size(), stream_view_);
       }
 
-      if (static_cast<i_t>(d_inv_diag_prime.size()) != AD.n) {
-        settings_.log.printf(
-          "inv_diag_prime.size() = %ld, AD.n = %d\n", d_inv_diag_prime.size(), AD.n);
-        exit(1);
-      }
+      cuopt_assert(static_cast<i_t>(d_inv_diag_prime.size()) == AD.n, "inv_diag_prime.size() != AD.n");
 
       thrust::for_each_n(rmm::exec_policy(stream_view_),
                          thrust::make_counting_iterator<i_t>(0),
@@ -480,11 +471,7 @@ class iteration_data_t {
         inv_diag_prime = copy(inv_diag);
       }
 
-      if (inv_diag_prime.size() != AD.n) {
-        settings_.log.printf(
-          "inv_diag_prime.size() = %ld, AD.n = %d\n", inv_diag_prime.size(), AD.n);
-        exit(1);
-      }
+      cuopt_assert(static_cast<i_t>(inv_diag_prime.size()) == AD.n, "inv_diag_prime.size() != AD.n");
       AD.scale_columns(inv_diag_prime);
       multiply(AD, AT, ADAT);
 
@@ -1232,15 +1219,8 @@ class iteration_data_t {
     const i_t m = A.m;
     const i_t n = A.n;
 
-    if (static_cast<i_t>(y.size()) != m) {
-      printf("adat_multiply: y.size() %d != m %d\n", static_cast<i_t>(y.size()), m);
-      exit(1);
-    }
-
-    if (static_cast<i_t>(v.size()) != m) {
-      printf("adat_multiply: v.size() %d != m %d\n", static_cast<i_t>(v.size()), m);
-      exit(1);
-    }
+    cuopt_assert(static_cast<i_t>(y.size()) == m, "adat_multiply: y.size() != m");
+    cuopt_assert(static_cast<i_t>(v.size()) == m, "adat_multiply: v.size() != m");
 
     // v = alpha * A * Dinv * A^T * y + beta * v
 
@@ -1269,15 +1249,8 @@ class iteration_data_t {
     const i_t m = A.m;
     const i_t n = A.n;
 
-    if (static_cast<i_t>(y.size()) != m) {
-      printf("adat_multiply: y.size() %d != m %d\n", static_cast<i_t>(y.size()), m);
-      exit(1);
-    }
-
-    if (static_cast<i_t>(v.size()) != m) {
-      printf("adat_multiply: v.size() %d != m %d\n", static_cast<i_t>(v.size()), m);
-      exit(1);
-    }
+    cuopt_assert(static_cast<i_t>(y.size()) == m, "adat_multiply: y.size() != m");
+    cuopt_assert(static_cast<i_t>(v.size()) == m, "adat_multiply: v.size() != m");
 
     // v = alpha * A * Dinv * A^T * y + beta * v
 
