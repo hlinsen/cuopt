@@ -232,7 +232,8 @@ branch_and_bound_t<i_t, f_t>::branch_and_bound_t(
     pc_(1)
 {
   stats_.start_time = tic();
-  convert_user_problem(original_problem_, settings_, original_lp_, new_slacks_);
+  dualize_info_t<i_t, f_t> dualize_info;
+  convert_user_problem(original_problem_, settings_, original_lp_, new_slacks_, dualize_info);
   full_variable_types(original_problem_, original_lp_, var_types_);
 
   mutex_upper_.lock();

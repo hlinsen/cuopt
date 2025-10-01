@@ -257,7 +257,8 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
   std::vector<i_t> new_slacks;
   simplex_solver_settings_t<i_t, f_t> barrier_settings = settings;
   barrier_settings.barrier_presolve                    = true;
-  convert_user_problem(user_problem, barrier_settings, original_lp, new_slacks);
+  dualize_info_t<i_t, f_t> dualize_info;
+  convert_user_problem(user_problem, barrier_settings, original_lp, new_slacks, dualize_info);
   lp_solution_t<i_t, f_t> lp_solution(original_lp.num_rows, original_lp.num_cols);
 
   // Presolve the linear program
@@ -350,6 +351,75 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
       post_solve_dual_residual_norm,
       post_solve_dual_residual_norm / (1.0 + vector_norm_inf<i_t, f_t>(original_lp.objective)));
 
+    if (dualize_info.solving_dual) {
+      lp_solution_t<i_t, f_t> primal_solution(dualize_info.primal_problem.num_rows,
+                                              dualize_info.primal_problem.num_cols);
+      std::copy(lp_solution.y.begin(),
+                lp_solution.y.begin() + dualize_info.primal_problem.num_cols,
+                primal_solution.x.data());
+
+      // Negate x
+      for (i_t i = 0; i < dualize_info.primal_problem.num_cols; ++i) {
+        primal_solution.x[i] *= -1.0;
+      }
+      std::copy(lp_solution.x.begin(),
+                lp_solution.x.begin() + dualize_info.primal_problem.num_rows,
+                primal_solution.y.data());
+      // Negate y
+      for (i_t i = 0; i < dualize_info.primal_problem.num_rows; ++i) {
+        primal_solution.y[i] *= -1.0;
+      }
+
+      std::vector<f_t>& z = primal_solution.z;
+      for (i_t j = 0; j < dualize_info.primal_problem.num_cols; ++j) {
+        const i_t u = dualize_info.zl_start + j;
+        z[j]        = lp_solution.x[u];
+      }
+      i_t k = 0;
+      for (i_t j : dualize_info.vars_with_upper_bounds) {
+        const i_t v = dualize_info.zu_start + k;
+        z[j] -= lp_solution.x[v];
+        k++;
+      }
+
+      // Check the objective and residuals on the primal problem.
+      settings.log.printf("Primal objective: %e\n",
+                          dot<i_t, f_t>(dualize_info.primal_problem.objective, primal_solution.x));
+
+      std::vector<f_t> primal_residual = dualize_info.primal_problem.rhs;
+      matrix_vector_multiply(
+        dualize_info.primal_problem.A, 1.0, primal_solution.x, -1.0, primal_residual);
+      std::vector<i_t> inequality_rows(dualize_info.primal_problem.num_rows, 1);
+      for (i_t i : dualize_info.equality_rows) {
+        inequality_rows[i] = 0;
+      }
+      for (i_t i = 0; i < dualize_info.primal_problem.num_rows; ++i) {
+        if (inequality_rows[i] == 1) {
+          primal_residual[i] = std::max(primal_residual[i], 0.0);  // a_i^T x - b_i <= 0
+        }
+      }
+      f_t primal_residual_norm     = vector_norm_inf<i_t, f_t>(primal_residual);
+      const f_t norm_b             = vector_norm_inf<i_t, f_t>(dualize_info.primal_problem.rhs);
+      f_t primal_relative_residual = primal_residual_norm / (1.0 + norm_b);
+      settings.log.printf(
+        "Primal residual (abs/rel): %e/%e\n", primal_residual_norm, primal_relative_residual);
+
+      std::vector<f_t> dual_residual = dualize_info.primal_problem.objective;
+      for (i_t j = 0; j < dualize_info.primal_problem.num_cols; ++j) {
+        dual_residual[j] -= z[j];
+      }
+      matrix_transpose_vector_multiply(
+        dualize_info.primal_problem.A, 1.0, primal_solution.y, -1.0, dual_residual);
+      f_t dual_residual_norm     = vector_norm_inf<i_t, f_t>(dual_residual);
+      const f_t norm_c           = vector_norm_inf<i_t, f_t>(dualize_info.primal_problem.objective);
+      f_t dual_relative_residual = dual_residual_norm / (1.0 + norm_c);
+      settings.log.printf(
+        "Dual residual (abs/rel): %e/%e\n", dual_residual_norm, dual_relative_residual);
+
+      original_lp = dualize_info.primal_problem;
+      lp_solution = primal_solution;
+    }
+
     uncrush_primal_solution(user_problem, original_lp, lp_solution.x, solution.x);
     uncrush_dual_solution(
       user_problem, original_lp, lp_solution.y, lp_solution.z, solution.y, solution.z);
@@ -430,7 +500,8 @@ lp_status_t solve_linear_program(const user_problem_t<i_t, f_t>& user_problem,
   f_t start_time = tic();
   lp_problem_t<i_t, f_t> original_lp(user_problem.handle_ptr, 1, 1, 1);
   std::vector<i_t> new_slacks;
-  convert_user_problem(user_problem, settings, original_lp, new_slacks);
+  dualize_info_t<i_t, f_t> dualize_info;
+  convert_user_problem(user_problem, settings, original_lp, new_slacks, dualize_info);
   solution.resize(user_problem.num_rows, user_problem.num_cols);
   lp_solution_t<i_t, f_t> lp_solution(original_lp.num_rows, original_lp.num_cols);
   std::vector<variable_status_t> vstatus;
@@ -469,7 +540,8 @@ i_t solve(const user_problem_t<i_t, f_t>& problem,
     lp_problem_t<i_t, f_t> original_lp(
       problem.handle_ptr, problem.num_rows, problem.num_cols, problem.A.col_start[problem.A.n]);
     std::vector<i_t> new_slacks;
-    convert_user_problem(problem, settings, original_lp, new_slacks);
+    dualize_info_t<i_t, f_t> dualize_info;
+    convert_user_problem(problem, settings, original_lp, new_slacks, dualize_info);
     lp_solution_t<i_t, f_t> solution(original_lp.num_rows, original_lp.num_cols);
     std::vector<variable_status_t> vstatus;
     std::vector<f_t> edge_norms;
