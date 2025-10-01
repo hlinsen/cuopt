@@ -906,18 +906,18 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
       //            A_eq * x == b_eq        : y_eq
       //            0 <= x                  : z_l
       //            x_j <= u_j, for j in U  : z_u
-      // 
-      // The dual is of the form 
+      //
+      // The dual is of the form
       // maximize    -b_in^T y_in - b_eq^T y_eq + 0^T z_l - u^T z_u
-      // subject to  -A_in^T y_in - A_eq^T y_eq + z_l - z_u = c 
+      // subject to  -A_in^T y_in - A_eq^T y_eq + z_l - z_u = c
       //             y_in >= 0
       //             y_eq free
       //             z_l >= 0
       //             z_u >= 0
       //
-      // Since the solvers expect the problem to be in minimization form, 
-      // we convert this to 
-      // 
+      // Since the solvers expect the problem to be in minimization form,
+      // we convert this to
+      //
       // minimize    b_in^T y_in + b_eq^T y_eq - 0^T z_l + u^T z_u
       // subject to  -A_in^T y_in - A_eq^T y_eq + z_l - z_u = c  : x
       //             y_in >= 0 : x_in
@@ -929,7 +929,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
       //
       // maximize    -c^T x
       // subject to   A_in * x + x_in = b_in   <=> A_in * x <= b_in
-      //              A_eq * x = b_eq          
+      //              A_eq * x = b_eq
       //              x + x_u = u              <=> x <= u
       //              x = x_l                  <=> x >= 0
       //              x free, x_in >= 0, x_l >- 0, x_u >= 0
@@ -989,11 +989,11 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
       less_rows  = 0;
 
       dualize_info.vars_with_upper_bounds = vars_with_upper_bounds;
-      dualize_info.zl_start       = problem.num_rows;
-      dualize_info.zu_start       = problem.num_rows + problem.num_cols;
-      dualize_info.equality_rows  = equality_rows;
-      dualize_info.primal_problem = problem;
-      dualize_info.solving_dual   = true;
+      dualize_info.zl_start               = problem.num_rows;
+      dualize_info.zu_start               = problem.num_rows + problem.num_cols;
+      dualize_info.equality_rows          = equality_rows;
+      dualize_info.primal_problem         = problem;
+      dualize_info.solving_dual           = true;
 
       problem = dual_problem;
 

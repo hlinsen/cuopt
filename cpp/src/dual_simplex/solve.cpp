@@ -365,7 +365,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
       std::copy(lp_solution.x.begin(),
                 lp_solution.x.begin() + dualize_info.primal_problem.num_rows,
                 primal_solution.y.data());
-      // Negate y 
+      // Negate y
       for (i_t i = 0; i < dualize_info.primal_problem.num_rows; ++i) {
         primal_solution.y[i] *= -1.0;
       }
@@ -375,7 +375,7 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
         const i_t u = dualize_info.zl_start + j;
         z[j]        = lp_solution.x[u];
       }
-      i_t k = 0; 
+      i_t k = 0;
       for (i_t j : dualize_info.vars_with_upper_bounds) {
         const i_t v = dualize_info.zu_start + k;
         z[j] -= lp_solution.x[v];
@@ -383,11 +383,12 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
       }
 
       // Check the objective and residuals on the primal problem.
-      settings.log.printf("Primal objective: %e\n", dot<i_t, f_t>(dualize_info.primal_problem.objective, primal_solution.x));
+      settings.log.printf("Primal objective: %e\n",
+                          dot<i_t, f_t>(dualize_info.primal_problem.objective, primal_solution.x));
 
-      
       std::vector<f_t> primal_residual = dualize_info.primal_problem.rhs;
-      matrix_vector_multiply(dualize_info.primal_problem.A, 1.0, primal_solution.x, -1.0, primal_residual);
+      matrix_vector_multiply(
+        dualize_info.primal_problem.A, 1.0, primal_solution.x, -1.0, primal_residual);
       std::vector<i_t> inequality_rows(dualize_info.primal_problem.num_rows, 1);
       for (i_t i : dualize_info.equality_rows) {
         inequality_rows[i] = 0;
@@ -397,20 +398,23 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
           primal_residual[i] = std::max(primal_residual[i], 0.0);  // a_i^T x - b_i <= 0
         }
       }
-      f_t primal_residual_norm = vector_norm_inf<i_t, f_t>(primal_residual);
-      const f_t norm_b = vector_norm_inf<i_t, f_t>(dualize_info.primal_problem.rhs);
+      f_t primal_residual_norm     = vector_norm_inf<i_t, f_t>(primal_residual);
+      const f_t norm_b             = vector_norm_inf<i_t, f_t>(dualize_info.primal_problem.rhs);
       f_t primal_relative_residual = primal_residual_norm / (1.0 + norm_b);
-      settings.log.printf("Primal residual (abs/rel): %e/%e\n", primal_residual_norm, primal_relative_residual);
+      settings.log.printf(
+        "Primal residual (abs/rel): %e/%e\n", primal_residual_norm, primal_relative_residual);
 
       std::vector<f_t> dual_residual = dualize_info.primal_problem.objective;
       for (i_t j = 0; j < dualize_info.primal_problem.num_cols; ++j) {
         dual_residual[j] -= z[j];
       }
-      matrix_transpose_vector_multiply(dualize_info.primal_problem.A, 1.0, primal_solution.y, -1.0, dual_residual);
-      f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_residual);
-      const f_t norm_c = vector_norm_inf<i_t, f_t>(dualize_info.primal_problem.objective);
+      matrix_transpose_vector_multiply(
+        dualize_info.primal_problem.A, 1.0, primal_solution.y, -1.0, dual_residual);
+      f_t dual_residual_norm     = vector_norm_inf<i_t, f_t>(dual_residual);
+      const f_t norm_c           = vector_norm_inf<i_t, f_t>(dualize_info.primal_problem.objective);
       f_t dual_relative_residual = dual_residual_norm / (1.0 + norm_c);
-      settings.log.printf("Dual residual (abs/rel): %e/%e\n", dual_residual_norm, dual_relative_residual);
+      settings.log.printf(
+        "Dual residual (abs/rel): %e/%e\n", dual_residual_norm, dual_relative_residual);
 
       original_lp = dualize_info.primal_problem;
       lp_solution = primal_solution;

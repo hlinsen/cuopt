@@ -97,13 +97,13 @@ struct presolve_info_t {
 
 template <typename i_t, typename f_t>
 struct dualize_info_t {
-  dualize_info_t() : 
-    solving_dual(false), 
-    primal_problem(nullptr, 0, 0, 0),
-    zl_start(0), 
-    zu_start(0),
-    equality_rows({}),
-    vars_with_upper_bounds({})
+  dualize_info_t()
+    : solving_dual(false),
+      primal_problem(nullptr, 0, 0, 0),
+      zl_start(0),
+      zu_start(0),
+      equality_rows({}),
+      vars_with_upper_bounds({})
   {
   }
   bool solving_dual;

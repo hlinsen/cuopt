@@ -1528,13 +1528,13 @@ void folding(lp_problem_t<i_t, f_t>& problem,
     std::vector<variable_type_t>(reduced_cols, variable_type_t::CONTINUOUS);
 #endif
 
-  problem.num_rows     = reduced_rows;
-  problem.num_cols     = reduced_cols;
-  problem.objective    = c_prime;
-  problem.A            = A_prime;
-  problem.rhs          = b_prime;
-  problem.lower        = std::vector<f_t>(reduced_cols, 0.0);
-  problem.upper        = std::vector<f_t>(reduced_cols, inf);
+  problem.num_rows  = reduced_rows;
+  problem.num_cols  = reduced_cols;
+  problem.objective = c_prime;
+  problem.A         = A_prime;
+  problem.rhs       = b_prime;
+  problem.lower     = std::vector<f_t>(reduced_cols, 0.0);
+  problem.upper     = std::vector<f_t>(reduced_cols, inf);
 
   presolve_info.folding_info.c_tilde          = c_tilde;
   presolve_info.folding_info.A_tilde          = A_tilde;
