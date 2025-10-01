@@ -421,7 +421,8 @@ class iteration_data_t {
         raft::copy(d_inv_diag_prime.data(), d_inv_diag.data(), inv_diag.size(), stream_view_);
       }
 
-      cuopt_assert(static_cast<i_t>(d_inv_diag_prime.size()) == AD.n, "inv_diag_prime.size() != AD.n");
+      cuopt_assert(static_cast<i_t>(d_inv_diag_prime.size()) == AD.n,
+                   "inv_diag_prime.size() != AD.n");
 
       thrust::for_each_n(rmm::exec_policy(stream_view_),
                          thrust::make_counting_iterator<i_t>(0),
@@ -471,7 +472,8 @@ class iteration_data_t {
         inv_diag_prime = copy(inv_diag);
       }
 
-      cuopt_assert(static_cast<i_t>(inv_diag_prime.size()) == AD.n, "inv_diag_prime.size() != AD.n");
+      cuopt_assert(static_cast<i_t>(inv_diag_prime.size()) == AD.n,
+                   "inv_diag_prime.size() != AD.n");
       AD.scale_columns(inv_diag_prime);
       multiply(AD, AT, ADAT);
 
