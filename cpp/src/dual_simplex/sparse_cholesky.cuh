@@ -176,7 +176,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
       // 2. Partition the GPU resources
       auto total_SMs   = initial_device_GPU_resources.sm.smCount;
-      auto barrier_sms = raft::alignTo(static_cast<i_t>(total_SMs * 0.5f), 8);
+      auto barrier_sms = raft::alignTo(static_cast<i_t>(total_SMs * 0.75f), 8);
       CUdevResource input;
       CUdevResource resource;
       auto n_groups  = 1u;
