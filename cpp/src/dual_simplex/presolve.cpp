@@ -1007,7 +1007,6 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
 
   // Add artifical variables
   if (!settings.barrier_presolve) {
-    printf("Adding artifical variables\n");
     add_artifical_variables(problem, equality_rows, new_slacks);
   }
 }
