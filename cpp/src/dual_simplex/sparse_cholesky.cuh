@@ -26,11 +26,11 @@
 
 #include <raft/common/nvtx.hpp>
 
-// #if !defined(TEST_BARRIER_UNAVAILABLE) && CUDART_VERSION < 13000
+#if !defined(TEST_BARRIER_UNAVAILABLE) && CUDART_VERSION < 13000
 
 #include "cuda.h"
 #include "cudss.h"
-// #endif
+#endif
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -47,7 +47,7 @@ class sparse_cholesky_base_t {
   virtual void set_positive_definite(bool positive_definite)                        = 0;
 };
 
-// #if !defined(TEST_BARRIER_UNAVAILABLE) && CUDART_VERSION < 13000
+#if !defined(TEST_BARRIER_UNAVAILABLE) && CUDART_VERSION < 13000
 
 #define CUDSS_EXAMPLE_FREE \
   do {                     \
