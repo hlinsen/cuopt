@@ -52,7 +52,7 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
-auto constexpr use_gpu = true;
+auto constexpr use_gpu = false;
 
 template <typename i_t, typename f_t>
 class iteration_data_t {
@@ -2006,6 +2006,483 @@ f_t barrier_solver_t<i_t, f_t>::max_step_to_boundary(
 }
 
 template <typename i_t, typename f_t>
+i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f_t>& data,
+                                                         pinned_dense_vector_t<i_t, f_t>& dw,
+                                                         pinned_dense_vector_t<i_t, f_t>& dx,
+                                                         pinned_dense_vector_t<i_t, f_t>& dy,
+                                                         pinned_dense_vector_t<i_t, f_t>& dv,
+                                                         pinned_dense_vector_t<i_t, f_t>& dz,
+                                                         f_t& max_residual)
+
+{
+  raft::common::nvtx::range fun_scope("Barrier: compute_search_direction");
+
+  const bool debug = false;
+
+  // Solves the linear system
+  //
+  //  dw dx dy dv dz
+  // [ 0 A  0   0  0 ] [ dw ] = [ rp  ]
+  // [ I E' 0   0  0 ] [ dx ]   [ rw  ]
+  // [ 0 0  A' -E  I ] [ dy ]   [ rd  ]
+  // [ 0 Z  0   0  X ] [ dv ]   [ rxz ]
+  // [ V 0  0   W  0 ] [ dz ]   [ rwv ]
+
+  max_residual = 0.0;
+  {
+    raft::common::nvtx::range fun_scope("Barrier: CPU diag, inv diag and sqrt inv diag formation");
+
+    // diag = z ./ x
+    data.z.pairwise_divide(data.x, data.diag);
+    // diag = z ./ x + E * (v ./ w) * E'
+    if (data.n_upper_bounds > 0) {
+      for (i_t k = 0; k < data.n_upper_bounds; k++) {
+        i_t j = data.upper_bounds[k];
+        data.diag[j] += data.v[k] / data.w[k];
+      }
+    }
+
+    // inv_diag = 1.0 ./ diag
+    data.diag.inverse(data.inv_diag);
+
+    // inv_sqrt_diag <- sqrt(inv_diag)
+    data.inv_diag.sqrt(data.inv_sqrt_diag);
+
+    my_pop_range(debug);
+  }
+
+  // Form A*D*A'
+  if (!data.has_factorization) {
+    raft::common::nvtx::range fun_scope("Barrier: ADAT");
+
+    i_t status;
+    float64_t start_time = tic();
+    // compute ADAT = A Dinv * A^T
+    data.form_adat();
+    settings.log.printf("in loop form_adat: %.2fs\n", toc(start_time));
+    // factorize
+    if (use_gpu) {
+      status = data.chol->factorize(data.device_ADAT);
+    } else {
+      status = data.chol->factorize(data.ADAT);
+    }
+    if (status < 0) {
+      settings.log.printf("Factorization failed.\n");
+      return -1;
+    }
+    data.has_factorization = true;
+    data.num_factorizations++;
+
+    my_pop_range(debug);
+  }
+
+  // Compute h = primal_rhs + A*inv_diag*(dual_rhs - complementarity_xz_rhs ./ x +
+  // E*((complementarity_wv_rhs - v .* bound_rhs) ./ w) )
+  // TMP shouldn't be allocated when in GPU mode
+  dense_vector_t<i_t, f_t> tmp1(data.n_upper_bounds);
+  dense_vector_t<i_t, f_t> tmp2(data.n_upper_bounds);
+  dense_vector_t<i_t, f_t> tmp3(lp.num_cols);
+  dense_vector_t<i_t, f_t> tmp4(lp.num_cols);
+  dense_vector_t<i_t, f_t> r1(lp.num_cols);
+  dense_vector_t<i_t, f_t> r1_prime(lp.num_cols);
+  dense_vector_t<i_t, f_t> h(data.primal_rhs.size());
+  if (!use_gpu) {
+    raft::common::nvtx::range fun_scope("Barrier: CPU compute H");
+
+    // tmp2 <- v .* bound_rhs
+    data.v.pairwise_product(data.bound_rhs, tmp2);
+    // tmp2 <- complementarity_wv_rhs - v .* bound_rhs
+    tmp2.axpy(1.0, data.complementarity_wv_rhs, -1.0);
+    // tmp1 <- (complementarity_wv_rhs - v .* bound_rhs) ./ w
+    tmp2.pairwise_divide(data.w, tmp1);
+    tmp3.set_scalar(0.0);
+    // tmp3 <- E * tmp1
+    data.scatter_upper_bounds(tmp1, tmp3);
+
+    // tmp4 <- complementarity_xz_rhs ./ x
+    data.complementarity_xz_rhs.pairwise_divide(data.x, tmp4);
+    // tmp3 <- -(complementarity_xz_rhs ./ x) + E * ((complementarity_wv_rhs - v .* bound_rhs) ./
+    // w)
+    tmp3.axpy(-1.0, tmp4, 1.0);
+    // tmp3 <- dual_rhs + -(complementarity_xz_rhs ./ x) + E * ((complementarity_wv_rhs - v .*
+    // bound_rhs) ./ w)
+    tmp3.axpy(1.0, data.dual_rhs, 1.0);
+    // r1 <- dual_rhs -complementarity_xz_rhs ./ x +  E * ((complementarity_wv_rhs - v .*
+    // bound_rhs)
+    // ./ w)
+    r1       = tmp3;
+    r1_prime = r1;
+    // tmp4 <- inv_diag * ( dual_rhs -complementarity_xz_rhs ./ x + E *((complementarity_wv_rhs -
+    // v
+    // .* bound_rhs) ./ w))
+    data.inv_diag.pairwise_product(tmp3, tmp4);
+
+    h = data.primal_rhs;
+    // h <- 1.0 * A * tmp4 + primal_rhs
+    matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
+
+    my_pop_range(debug);
+  }
+
+  {
+    raft::common::nvtx::range fun_scope("Barrier: Solve A D^{-1} A^T dy = h");
+
+    // Solve A D^{-1} A^T dy = h
+    // i_t solve_status = data.chol->solve(h, dy);
+    i_t solve_status = data.solve_adat(h, dy);
+    // TMP until solve_adat is on the GPU
+    if (solve_status < 0) {
+      settings.log.printf("Linear solve failed\n");
+      return -1;
+    }
+
+  }  // Close NVTX range
+
+  // y_residual <- ADAT*dy - h
+  if (!use_gpu) {
+    raft::common::nvtx::range fun_scope("Barrier: CPU y_residual");
+
+    dense_vector_t<i_t, f_t> y_residual = h;
+    data.adat_multiply(1.0, dy, -1.0, y_residual);
+    const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual, stream_view_);
+    max_residual              = std::max(max_residual, y_residual_norm);
+    if (y_residual_norm > 1e-2) {
+      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h, stream_view_));
+      settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
+    }
+    if (y_residual_norm > 10) {
+      my_pop_range(debug);
+      return -1;
+    }
+
+    if (0 && y_residual_norm > 1e-10) {
+      settings.log.printf("Running PCG to improve residual 2-norm %e inf-norm %e\n",
+                          vector_norm2<i_t, f_t>(y_residual),
+                          y_residual_norm);
+      preconditioned_conjugate_gradient(settings, h, std::min(y_residual_norm / 100.0, 1e-6), dy);
+      y_residual = h;
+      matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
+      const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual, stream_view_);
+      settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n",
+                          y_residual_norm_pcg);
+    }
+
+    my_pop_range(debug);
+  }
+
+  // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
+  // v
+  // .* bound_rhs) ./ w))
+
+  // TMP should not be allocated if we are on the GPU
+  dense_vector_t<i_t, f_t> dx_residual(lp.num_cols);
+  {
+    raft::common::nvtx::range fun_scope("Barrier: dx formation CPU");
+
+    matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, r1);
+    // dx <- dinv .* r1
+    data.inv_diag.pairwise_product(r1, dx);
+
+    // dx_residual <- D*dx
+    data.diag.pairwise_product(dx, dx_residual);
+    // dx_residual <- -A'*dy + D*dx
+    matrix_transpose_vector_multiply(lp.A, -1.0, dy, 1.0, dx_residual);
+    // dx_residual <- D*dx - A'*dy + r1
+    dx_residual.axpy(1.0, r1_prime, 1.0);
+
+    my_pop_range(debug);
+  }
+
+  // Not put on the GPU since debug only
+  if (debug) {
+    const f_t dx_residual_norm = vector_norm_inf<i_t, f_t>(dx_residual, stream_view_);
+    max_residual               = std::max(max_residual, dx_residual_norm);
+    if (dx_residual_norm > 1e-2) {
+      settings.log.printf("|| D * dx - A'*y + r1 || = %.2e\n", dx_residual_norm);
+    }
+  }
+
+  if (debug) {
+    {
+      raft::common::nvtx::range fun_scope("Barrier: dx_residual_2 CPU");
+
+      dense_vector_t<i_t, f_t> dx_residual_2(lp.num_cols);
+      // dx_residual_2 <- D^-1 * (A'*dy - r1)
+      data.inv_diag.pairwise_product(r1, dx_residual_2);
+      // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
+      dx_residual_2.axpy(-1.0, dx, 1.0);
+
+      const f_t dx_residual_2_norm = vector_norm_inf<i_t, f_t>(dx_residual_2, stream_view_);
+      max_residual                 = std::max(max_residual, dx_residual_2_norm);
+      if (dx_residual_2_norm > 1e-2)
+        settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
+
+      my_pop_range(debug);
+    }
+  }
+
+  if (debug) {
+    dense_vector_t<i_t, f_t> dx_residual_5(lp.num_cols);
+    dense_vector_t<i_t, f_t> dx_residual_6(lp.num_rows);
+    {
+      raft::common::nvtx::range fun_scope("Barrier: CPU dx_residual_5_6");
+
+      // dx_residual_5 <- D^-1 * (A'*dy - r1)
+      data.inv_diag.pairwise_product(r1, dx_residual_5);
+      // dx_residual_6 <- A * D^-1 (A'*dy - r1)
+      matrix_vector_multiply(lp.A, 1.0, dx_residual_5, 0.0, dx_residual_6);
+      // dx_residual_6 <- A * D^-1 (A'*dy - r1) - A * dx
+      matrix_vector_multiply(lp.A, -1.0, dx, 1.0, dx_residual_6);
+
+      const f_t dx_residual_6_norm = vector_norm_inf<i_t, f_t>(dx_residual_6, stream_view_);
+      max_residual                 = std::max(max_residual, dx_residual_6_norm);
+      if (dx_residual_6_norm > 1e-2) {
+        settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
+      }
+
+      my_pop_range(debug);
+    }
+  }
+
+  if (debug) {
+    {
+      raft::common::nvtx::range fun_scope("Barrier: dx_residual_3_4");
+
+      dense_vector_t<i_t, f_t> dx_residual_3(lp.num_cols);
+      // dx_residual_3 <- D^-1 * r1
+      data.inv_diag.pairwise_product(r1_prime, dx_residual_3);
+      dense_vector_t<i_t, f_t> dx_residual_4(lp.num_rows);
+      // dx_residual_4 <- A * D^-1 * r1
+      matrix_vector_multiply(lp.A, 1.0, dx_residual_3, 0.0, dx_residual_4);
+      // dx_residual_4 <-  A * D^-1 * r1 + A * dx
+      matrix_vector_multiply(lp.A, 1.0, dx, 1.0, dx_residual_4);
+      // dx_residual_4 <- - A * D^-1 * r1 - A * dx + ADAT * dy
+
+      my_pop_range(debug);
+    }
+  }
+
+#if CHECK_FORM_ADAT
+  csc_matrix_t<i_t, f_t> ADinv = lp.A;
+  ADinv.scale_columns(data.inv_diag);
+  csc_matrix_t<i_t, f_t> ADinvAT(lp.num_rows, lp.num_rows, 1);
+  csc_matrix_t<i_t, f_t> Atranspose(1, 1, 0);
+  lp.A.transpose(Atranspose);
+  multiply(ADinv, Atranspose, ADinvAT);
+  matrix_vector_multiply(ADinvAT, 1.0, dy, -1.0, dx_residual_4);
+  const f_t dx_residual_4_norm = vector_norm_inf<i_t, f_t>(dx_residual_4, stream_view_);
+  max_residual                 = std::max(max_residual, dx_residual_4_norm);
+  if (dx_residual_4_norm > 1e-2) {
+    settings.log.printf("|| ADAT * dy - A * D^-1 * r1 - A * dx || = %.2e\n", dx_residual_4_norm);
+  }
+
+  csc_matrix_t<i_t, f_t> C(lp.num_rows, lp.num_rows, 1);
+  add(ADinvAT, data.ADAT, 1.0, -1.0, C);
+  const f_t matrix_residual = C.norm1();
+  max_residual              = std::max(max_residual, matrix_residual);
+  if (matrix_residual > 1e-2) {
+    settings.log.printf("|| AD^{-1/2} D^{-1} A^T + E - A D^{-1} A^T|| = %.2e\n", matrix_residual);
+  }
+#endif
+
+  if (debug) {
+    {
+      raft::common::nvtx::range fun_scope("Barrier: CPU dx_residual_7");
+
+      dense_vector_t<i_t, f_t> dx_residual_7 = h;
+      // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
+      data.adat_multiply(1.0, dy, -1.0, dx_residual_7);
+      const f_t dx_residual_7_norm = vector_norm_inf<i_t, f_t>(dx_residual_7);
+      max_residual                 = std::max(max_residual, dx_residual_7_norm);
+      if (dx_residual_7_norm > 1e-2) {
+        settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
+      }
+
+      my_pop_range(debug);
+    }
+  }
+
+  // Only debug so not ported to the GPU
+  if (debug) {
+    raft::common::nvtx::range fun_scope("Barrier: x_residual");
+
+    // x_residual <- A * dx - primal_rhs
+    // TMP data should only be on the GPU
+    dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
+    {
+      matrix_vector_multiply(lp.A, 1.0, dx, -1.0, x_residual);
+    }
+    const f_t x_residual_norm = vector_norm_inf<i_t, f_t>(x_residual, stream_view_);
+    max_residual              = std::max(max_residual, x_residual_norm);
+    if (x_residual_norm > 1e-2) {
+      settings.log.printf("|| A * dx - rp || = %.2e\n", x_residual_norm);
+    }
+
+    my_pop_range(debug);
+  }
+
+  {
+    raft::common::nvtx::range fun_scope("Barrier: dz formation CPU");
+
+    // dz = (complementarity_xz_rhs - z.* dx) ./ x;
+    // tmp3 <- z .* dx
+    data.z.pairwise_product(dx, tmp3);
+    // tmp3 <- 1.0 * complementarity_xz_rhs - tmp3
+    tmp3.axpy(1.0, data.complementarity_xz_rhs, -1.0);
+    // dz <- tmp3 ./ x
+    tmp3.pairwise_divide(data.x, dz);
+
+    my_pop_range(debug);
+  }
+
+  if (debug) {
+    {
+      raft::common::nvtx::range fun_scope("Barrier: xz_residual CPU");
+
+      // xz_residual <- z .* dx + x .* dz - complementarity_xz_rhs
+      dense_vector_t<i_t, f_t> xz_residual = data.complementarity_xz_rhs;
+      dense_vector_t<i_t, f_t> zdx(lp.num_cols);
+      dense_vector_t<i_t, f_t> xdz(lp.num_cols);
+      data.z.pairwise_product(dx, zdx);
+      data.x.pairwise_product(dz, xdz);
+      xz_residual.axpy(1.0, zdx, -1.0);
+      xz_residual.axpy(1.0, xdz, 1.0);
+      const f_t xz_residual_norm = vector_norm_inf<i_t, f_t>(xz_residual, stream_view_);
+      max_residual               = std::max(max_residual, xz_residual_norm);
+      if (xz_residual_norm > 1e-2)
+        settings.log.printf("|| Z dx + X dz - rxz || = %.2e\n", xz_residual_norm);
+
+      my_pop_range(debug);
+    }
+  }
+
+  {
+    raft::common::nvtx::range fun_scope("Barrier: dv formation CPU");
+
+    // dv = (v .* E' dx + complementarity_wv_rhs - v .* bound_rhs) ./ w
+    // tmp1 <- E' * dx
+    data.gather_upper_bounds(dx, tmp1);
+    // tmp2 <- v .* E' * dx
+    data.v.pairwise_product(tmp1, tmp2);
+    // tmp1 <- v .* bound_rhs
+    data.v.pairwise_product(data.bound_rhs, tmp1);
+    // tmp1 <- v .* E' * dx - v . * bound_rhs
+    tmp1.axpy(1.0, tmp2, -1.0);
+    // tmp1 <- v .* E' * dx + complementarity_wv_rhs - v .* bound_rhs
+    tmp1.axpy(1.0, data.complementarity_wv_rhs, 1.0);
+    // dv <- tmp1 ./ w
+    tmp1.pairwise_divide(data.w, dv);
+
+    my_pop_range(debug);
+  }
+
+  if (debug) {
+    {
+      raft::common::nvtx::range fun_scope("Barrier: dv_residual CPU");
+
+      dense_vector_t<i_t, f_t> dv_residual(data.n_upper_bounds);
+      dense_vector_t<i_t, f_t> dv_residual_2(data.n_upper_bounds);
+      // dv_residual <- E'*dx
+      data.gather_upper_bounds(dx, dv_residual);
+      // dv_residual_2 <- v .* E' * dx
+      data.v.pairwise_product(dv_residual, dv_residual_2);
+      // dv_residual_2 <- -v .* E' * dx
+      dv_residual_2.multiply_scalar(-1.0);
+      // dv_residual_ <- W .* dv
+      data.w.pairwise_product(dv, dv_residual);
+      // dv_residual <- -v .* E' * dx + w .* dv
+      dv_residual.axpy(1.0, dv_residual_2, 1.0);
+      // dv_residual <- -v .* E' * dx + w .* dv - complementarity_wv_rhs
+      dv_residual.axpy(-1.0, data.complementarity_wv_rhs, 1.0);
+      // dv_residual_2 <- V * bound_rhs
+      data.v.pairwise_product(data.bound_rhs, dv_residual_2);
+      // dv_residual <- -v .* E' * dx + w .* dv - complementarity_wv_rhs + v .* bound_rhs
+      dv_residual.axpy(1.0, dv_residual_2, 1.0);
+      const f_t dv_residual_norm = vector_norm_inf<i_t, f_t>(dv_residual, stream_view_);
+      max_residual               = std::max(max_residual, dv_residual_norm);
+      if (dv_residual_norm > 1e-2) {
+        settings.log.printf(
+          "|| -v .* E' * dx + w .* dv - complementarity_wv_rhs - v .* bound_rhs || = %.2e\n",
+          dv_residual_norm);
+      }
+
+      my_pop_range(debug);
+    }
+  }
+
+  if (debug) {
+    {
+      raft::common::nvtx::range fun_scope("Barrier: dual_residual CPU");
+
+      // dual_residual <- A' * dy - E * dv  + dz -  dual_rhs
+      dense_vector_t<i_t, f_t> dual_residual(lp.num_cols);
+      // dual_residual <- E * dv
+      data.scatter_upper_bounds(dv, dual_residual);
+      // dual_residual <- A' * dy - E * dv
+      matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, dual_residual);
+      // dual_residual <- A' * dy - E * dv + dz
+      dual_residual.axpy(1.0, dz, 1.0);
+      // dual_residual <- A' * dy - E * dv + dz - dual_rhs
+      dual_residual.axpy(-1.0, data.dual_rhs, 1.0);
+      const f_t dual_residual_norm = vector_norm_inf<i_t, f_t>(dual_residual, stream_view_);
+      max_residual                 = std::max(max_residual, dual_residual_norm);
+      if (dual_residual_norm > 1e-2) {
+        settings.log.printf("|| A' * dy - E * dv  + dz -  dual_rhs || = %.2e\n",
+                            dual_residual_norm);
+      }
+
+      my_pop_range(debug);
+    }
+  }
+
+  {
+    raft::common::nvtx::range fun_scope("Barrier: dw formation CPU");
+
+    // dw = bound_rhs - E'*dx
+    data.gather_upper_bounds(dx, tmp1);
+    dw = data.bound_rhs;
+    dw.axpy(-1.0, tmp1, 1.0);
+    if (debug) {
+      // dw_residual <- dw + E'*dx - bound_rhs
+      dense_vector_t<i_t, f_t> dw_residual(data.n_upper_bounds);
+      data.gather_upper_bounds(dx, dw_residual);
+      dw_residual.axpy(1.0, dw, 1.0);
+      dw_residual.axpy(-1.0, data.bound_rhs, 1.0);
+      const f_t dw_residual_norm = vector_norm_inf<i_t, f_t>(dw_residual, stream_view_);
+      max_residual               = std::max(max_residual, dw_residual_norm);
+      if (dw_residual_norm > 1e-2) {
+        settings.log.printf("|| dw + E'*dx - bound_rhs || = %.2e\n", dw_residual_norm);
+      }
+    }
+
+    my_pop_range(debug);
+  }
+
+  if (debug) {
+    {
+      raft::common::nvtx::range fun_scope("Barrier: wv_residual CPU");
+
+      // wv_residual <- v .* dw + w .* dv - complementarity_wv_rhs
+      dense_vector_t<i_t, f_t> wv_residual = data.complementarity_wv_rhs;
+      dense_vector_t<i_t, f_t> vdw(data.n_upper_bounds);
+      dense_vector_t<i_t, f_t> wdv(data.n_upper_bounds);
+      data.v.pairwise_product(dw, vdw);
+      data.w.pairwise_product(dv, wdv);
+      wv_residual.axpy(1.0, vdw, -1.0);
+      wv_residual.axpy(1.0, wdv, 1.0);
+      const f_t wv_residual_norm = vector_norm_inf<i_t, f_t>(wv_residual, stream_view_);
+      max_residual               = std::max(max_residual, wv_residual_norm);
+      if (wv_residual_norm > 1e-2)
+        settings.log.printf("|| V dw + W dv - rwv || = %.2e\n", wv_residual_norm);
+
+      my_pop_range(debug);
+    }
+  }
+
+  return 0;
+}
+
+template <typename i_t, typename f_t>
 i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                                              pinned_dense_vector_t<i_t, f_t>& dw,
                                                              pinned_dense_vector_t<i_t, f_t>& dx,
@@ -3388,8 +3865,20 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
     compute_affine_rhs(data);
     f_t max_affine_residual = 0.0;
 
-    i_t status = gpu_compute_search_direction(
-      data, data.dw_aff, data.dx_aff, data.dy_aff, data.dv_aff, data.dz_aff, max_affine_residual);
+    i_t status = use_gpu ? gpu_compute_search_direction(data,
+                                                        data.dw_aff,
+                                                        data.dx_aff,
+                                                        data.dy_aff,
+                                                        data.dv_aff,
+                                                        data.dz_aff,
+                                                        max_affine_residual)
+                         : compute_search_direction(data,
+                                                    data.dw_aff,
+                                                    data.dx_aff,
+                                                    data.dy_aff,
+                                                    data.dv_aff,
+                                                    data.dz_aff,
+                                                    max_affine_residual);
     if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
       settings.log.printf("Barrier solver halted\n");
       return lp_status_t::CONCURRENT_LIMIT;
@@ -3427,8 +3916,10 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
 
     f_t max_corrector_residual = 0.0;
 
-    status = gpu_compute_search_direction(
-      data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
+    status = use_gpu ? gpu_compute_search_direction(
+                         data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual)
+                     : compute_search_direction(
+                         data, data.dw, data.dx, data.dy, data.dv, data.dz, max_corrector_residual);
     if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
       settings.log.printf("Barrier solver halted\n");
       return lp_status_t::CONCURRENT_LIMIT;
