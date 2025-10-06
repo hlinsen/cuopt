@@ -29,6 +29,8 @@
 #include "cuda.h"
 #include "cudss.h"
 
+#define SPLIT_SM_FOR_BARRIER
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
