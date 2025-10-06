@@ -170,7 +170,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
 
 #ifdef DEBUG
-      printf(
+      settings_.log.printf(
         "   Initial GPU resources retrieved via "
         "cuDeviceGetDevResource() have type "
         "%d and SM count %d\n",
@@ -192,7 +192,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
           &resource, &n_groups, &initial_device_GPU_resources, nullptr, use_flags, barrier_sms),
         reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
 #ifdef DEBUG
-      printf(
+      settings_.log.printf(
         "   Resources were split into %d resource groups (had "
         "requested %d) with %d SMs each (had "
         "requested % d)\n",
@@ -210,7 +210,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                  cuDevResourceGenerateDesc_func)(&resource_desc, &resource, n_resource_desc),
                reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
 #ifdef DEBUG
-      printf(
+      settings_.log.printf(
         "   For the resource descriptor of barrier green context "
         "we will combine %d resources of "
         "%d SMs each\n",
@@ -491,7 +491,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
 
     auto d_nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
     if (nnz != d_nnz) {
-      printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, d_nnz);
+      settings_.log.printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, d_nnz);
       exit(1);
     }
 
