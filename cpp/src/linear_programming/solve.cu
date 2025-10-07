@@ -670,8 +670,16 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   // Initialize the dual simplex structures before we run PDLP.
   // Otherwise, CUDA API calls to the problem stream may occur in both threads and throw graph
   // capture off
+  auto barrier_handle = raft::handle_t(*op_problem.get_handle_ptr());
+  detail::problem_t<i_t, f_t> d_barrier_problem(problem);
+  rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
+  d_barrier_problem.handle_ptr         = &barrier_handle;
+  raft::resource::set_cuda_stream(barrier_handle, barrier_stream);
+  // Make sure allocations are done on the original stream
+  problem.handle_ptr->sync_stream();
+
   dual_simplex::user_problem_t<i_t, f_t> dual_simplex_problem =
-    cuopt_problem_to_simplex_problem<i_t, f_t>(problem);
+    cuopt_problem_to_simplex_problem<i_t, f_t>(d_barrier_problem);
   // Create a thread for dual simplex
   std::unique_ptr<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>
@@ -700,6 +708,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   dual_simplex_thread.join();
 
   // Wait for barrier thread to finish
+  barrier_handle.sync_stream();
   barrier_thread.join();
 
   // copy the dual simplex solution to the device
