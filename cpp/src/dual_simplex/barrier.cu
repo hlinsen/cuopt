@@ -2069,7 +2069,6 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
     float64_t start_time = tic();
     // compute ADAT = A Dinv * A^T
     data.form_adat();
-    settings.log.printf("in loop form_adat: %.2fs\n", toc(start_time));
     // factorize
     if (use_gpu) {
       status = data.chol->factorize(data.device_ADAT);
