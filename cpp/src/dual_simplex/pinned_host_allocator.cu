@@ -22,6 +22,7 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
+auto constexpr use_gpu = false;
 template <typename T>
 struct PinnedHostAllocator {
   using value_type = T;
@@ -35,11 +36,22 @@ struct PinnedHostAllocator {
   T* allocate(std::size_t n)
   {
     T* ptr = nullptr;
-    RAFT_CUDA_TRY(cudaMallocHost((void**)&ptr, n * sizeof(T)));
+    if (use_gpu) {
+      RAFT_CUDA_TRY(cudaMallocHost((void**)&ptr, n * sizeof(T)));
+    } else {
+      ptr = new T[n];
+    }
     return ptr;
   }
 
-  void deallocate(T* p, std::size_t) { RAFT_CUDA_TRY(cudaFreeHost(p)); }
+  void deallocate(T* p, std::size_t n)
+  {
+    if (use_gpu) {
+      RAFT_CUDA_TRY(cudaFreeHost(p));
+    } else {
+      delete[] p;
+    }
+  }
 };
 
 template <typename T, typename U>
