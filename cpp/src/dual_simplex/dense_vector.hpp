@@ -156,7 +156,9 @@ class dense_vector_t : public std::vector<f_t, Allocator> {
     }
   }
   // c <- a ./ b
-  void pairwise_divide(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& c) const
+  template <typename AllocatorA, typename AllocatorB>
+  void pairwise_divide(const dense_vector_t<i_t, f_t, AllocatorA>& b,
+                       dense_vector_t<i_t, f_t, AllocatorB>& c) const
   {
     const i_t n = this->size();
     for (i_t i = 0; i < n; i++) {
