@@ -100,13 +100,17 @@ class sparse_cholesky_base_t {
 template <typename mem_pool_t>
 int cudss_device_alloc(void* ctx, void** ptr, size_t size, cudaStream_t stream)
 {
-  return cudaMallocAsync(ptr, size, stream);
+  int status = cudaMallocAsync(ptr, size, stream);
+  if (status != cudaSuccess) { throw raft::cuda_error("Cuda error in cudss_device_alloc"); }
+  return status;
 }
 
 template <typename mem_pool_t>
 int cudss_device_dealloc(void* ctx, void* ptr, size_t size, cudaStream_t stream)
 {
-  return cudaFreeAsync(ptr, stream);
+  int status = cudaFreeAsync(ptr, stream);
+  if (status != cudaSuccess) { throw raft::cuda_error("Cuda error in cudss_device_dealloc"); }
+  return status;
 }
 
 template <class T>
