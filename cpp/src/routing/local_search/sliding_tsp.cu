@@ -44,25 +44,13 @@ DI thrust::pair<double, double> eval_move(
   auto original_window_dist =
     s_route.dimensions.distance_dim.distance_forward[intra_idx + window_size - 1] -
     s_route.dimensions.distance_dim.distance_forward[intra_idx];
-  // printf("original_window_dist[%i, %i]: %f\n",
-  //        intra_idx,
-  //        intra_idx + window_size - 1,
-  //        original_window_dist);
   auto new_window_dist = reverse ? sh_reverse_dist[route_max_window_size - 1] -
                                      sh_reverse_dist[route_max_window_size - window_size]
                                  : original_window_dist;
-  // printf("new_window_dist[%i, %i]: %f\n",
-  //        route_max_window_size - 1,
-  //        route_max_window_size - window_size,
-  //        new_window_dist);
 
   auto original_previous_intra_frag_next =
     s_route.dimensions.distance_dim.distance_forward[intra_idx + window_size] -
     s_route.dimensions.distance_dim.distance_forward[intra_idx - 1];
-  // printf("original_previous_intra_frag_next[%i, %i]: %f\n",
-  //        intra_idx - 1,
-  //        intra_idx + window_size,
-  //        original_previous_intra_frag_next);
 
   auto frag_begin = reverse ? intra_idx + window_size - 1 : intra_idx;
   auto frag_end   = reverse ? intra_idx : intra_idx + window_size - 1;
@@ -70,12 +58,6 @@ DI thrust::pair<double, double> eval_move(
     get_arc_of_dimension<i_t, f_t, dim_t::DIST>(s_route.get_node(insertion_pos).node_info(),
                                                 s_route.get_node(frag_begin).node_info(),
                                                 s_route.vehicle_info());
-  // printf("insertion_pos (%i, %i) -> frag_begin (%i, %i): %f\n",
-  //        s_route.get_node(insertion_pos).node_info().node(),
-  //        s_route.get_node(insertion_pos).node_info().location(),
-  //        s_route.get_node(frag_begin).node_info().node(),
-  //        s_route.get_node(frag_begin).node_info().location(),
-  //        insertion_pos_frag_begin);
 
   // in-place
   if (insertion_pos == intra_idx - 1) {
@@ -83,14 +65,6 @@ DI thrust::pair<double, double> eval_move(
       s_route.get_node(frag_end).node_info(),
       s_route.get_node(intra_idx + window_size).node_info(),
       s_route.vehicle_info());
-    // printf("frag_end (%i, %i) -> intra_idx + window_size (%i, %i): %f\n",
-    //        frag_end,
-    //        s_route.get_node(frag_end).node_info().node(),
-    //        s_route.get_node(frag_end).node_info().location(),
-    //        intra_idx + window_size,
-    //        s_route.get_node(intra_idx + window_size).node_info().node(),
-    //        s_route.get_node(intra_idx + window_size).node_info().location(),
-    //        frag_end_frag_next);
     auto delta = insertion_pos_frag_begin + new_window_dist + frag_end_frag_next -
                  original_previous_intra_frag_next;
     return {delta, delta};
@@ -100,33 +74,15 @@ DI thrust::pair<double, double> eval_move(
     get_arc_of_dimension<i_t, f_t, dim_t::DIST>(s_route.get_node(frag_end).node_info(),
                                                 s_route.get_node(insertion_pos + 1).node_info(),
                                                 s_route.vehicle_info());
-  // printf("frag_end (%i, %i) -> insertion_pos + 1 (%i, %i): %f\n",
-  //        s_route.get_node(frag_end).node_info().node(),
-  //        s_route.get_node(frag_end).node_info().location(),
-  //        s_route.get_node(insertion_pos + 1).node_info().node(),
-  //        s_route.get_node(insertion_pos + 1).node_info().location(),
-  //        frag_end_insertion_pos_next);
 
   auto previous_intra_frag_next = get_arc_of_dimension<i_t, f_t, dim_t::DIST>(
     s_route.get_node(intra_idx - 1).node_info(),
     s_route.get_node(intra_idx + window_size).node_info(),
     s_route.vehicle_info());
-  // printf("intra_idx - 1 (%i, %i) -> intra_idx + window_size (%i, %i): %f\n",
-  //        s_route.get_node(intra_idx - 1).node_info().node(),
-  //        s_route.get_node(intra_idx - 1).node_info().location(),
-  //        s_route.get_node(intra_idx + window_size).node_info().node(),
-  //        s_route.get_node(intra_idx + window_size).node_info().location(),
-  //        previous_intra_frag_next);
   auto insertion_pos_insertion_pos_next =
     get_arc_of_dimension<i_t, f_t, dim_t::DIST>(s_route.get_node(insertion_pos).node_info(),
                                                 s_route.get_node(insertion_pos + 1).node_info(),
                                                 s_route.vehicle_info());
-  // printf("insertion_pos (%i, %i) -> insertion_pos + 1 (%i, %i): %f\n",
-  //        s_route.get_node(insertion_pos).node_info().node(),
-  //        s_route.get_node(insertion_pos).node_info().location(),
-  //        s_route.get_node(insertion_pos + 1).node_info().node(),
-  //        s_route.get_node(insertion_pos + 1).node_info().location(),
-  //        insertion_pos_insertion_pos_next);
   auto delta = previous_intra_frag_next + insertion_pos_frag_begin + new_window_dist +
                frag_end_insertion_pos_next - insertion_pos_insertion_pos_next -
                original_previous_intra_frag_next;
@@ -231,7 +187,7 @@ __global__ void find_sliding_moves_tsp(
     if (reverse && insertion_pos >= intra_idx && insertion_pos < intra_idx + window_size) {
       continue;
     }
-    // if (window_size == 11 && reverse && intra_idx == 20 && insertion_pos == 59) {
+
     thrust::tie(cost_delta, selection_delta) = eval_move<i_t, f_t, REQUEST>(sol,
                                                                             move_candidates,
                                                                             s_route,
@@ -241,8 +197,6 @@ __global__ void find_sliding_moves_tsp(
                                                                             window_size,
                                                                             route_max_window_size,
                                                                             reverse);
-    // printf("cost_delta: %f, selection_delta: %f\n", cost_delta, selection_delta);
-    // }
 
     if (cost_delta > -EPSILON) { continue; }
 
@@ -367,30 +321,6 @@ __global__ void execute_sliding_moves_tsp(
     __syncthreads();
 
     if (threadIdx.x == 0) {
-      // printf("cand.selection_delta: %f\n", cand.selection_delta);
-      // printf(
-      //   "cand.window_start: %d, cand.window_size: %d, cand.insertion_pos: %d, cand.reverse:
-      //   %d\n", cand.window_start, cand.window_size, cand.insertion_pos, cand.reverse);
-
-      // printf("tsp_route_before=[");
-      // auto start = s_route.dimensions.requests.tsp_requests.start;
-      // printf("(%d, %d, %d), ", 0, start.node(), start.location());
-      // for (i_t i = 1; i <= s_route.get_num_nodes(); ++i) {
-      //   auto node = s_route.dimensions.requests.tsp_requests.succ[start.node()];
-      //   start     = node;
-      //   printf("(%d, %d, %d), ", i, node.node(), node.location());
-      // }
-      // printf("]\n");
-
-      // printf("pred tsp_route_before=[");
-      // auto start_pred = s_route.dimensions.requests.tsp_requests.end;
-      // printf("(%d, %d, %d), ", 0, start_pred.node(), start_pred.location());
-      // for (i_t i = 1; i <= s_route.get_num_nodes(); ++i) {
-      //   auto node  = s_route.dimensions.requests.tsp_requests.pred[start_pred.node()];
-      //   start_pred = node;
-      //   printf("(%d, %d, %d), ", i, node.node(), node.location());
-      // }
-      // printf("]\n");
       auto original_node_info =
         NodeInfo<i_t>(original_node_id,
                       sol.problem.order_info.get_order_location(original_node_id),
@@ -403,15 +333,6 @@ __global__ void execute_sliding_moves_tsp(
         NodeInfo<i_t>(original_node_insertion,
                       sol.problem.order_info.get_order_location(original_node_insertion),
                       node_type_t::DELIVERY);
-      // printf(
-      //   "original_node_info: (%d, %d), original_fragment_end_node_info: (%d, %d), "
-      //   "original_node_insertion_info: (%d, %d)\n",
-      //   original_node_info.node(),
-      //   original_node_info.location(),
-      //   original_fragment_end_node_info.node(),
-      //   original_fragment_end_node_info.location(),
-      //   original_node_insertion_info.node(),
-      //   original_node_insertion_info.location());
 
       auto node_before_fragment = s_route.dimensions.requests.tsp_requests.pred[original_node_id];
       auto node_after_fragment =
@@ -422,66 +343,18 @@ __global__ void execute_sliding_moves_tsp(
       auto node_after_insertion_pos =
         s_route.dimensions.requests.tsp_requests.succ[original_node_insertion];
 
-      // printf(
-      //   "node_before_fragment: (%d, %d), node_after_fragment: (%d, %d), fragment_start: (%d, %d),
-      //   " "fragment_end: (%d, %d), node_insertion_pos: (%d, %d), node_after_insertion_pos: (%d, "
-      //   "%d)\n",
-      //   node_before_fragment.node(),
-      //   node_before_fragment.location(),
-      //   node_after_fragment.node(),
-      //   node_after_fragment.location(),
-      //   fragment_start.node(),
-      //   fragment_start.location(),
-      //   fragment_end.node(),
-      //   fragment_end.location(),
-      //   node_insertion_pos.node(),
-      //   node_insertion_pos.location(),
-      //   node_after_insertion_pos.node(),
-      //   node_after_insertion_pos.location());
-
       s_route.dimensions.requests.tsp_requests.succ[node_before_fragment.node()] =
         node_after_fragment;
-      // printf("link node_before_fragment to node_after_fragment: (%d, %d) -> (%d, %d)\n",
-      //        node_before_fragment.node(),
-      //        node_before_fragment.location(),
-      //        node_after_fragment.node(),
-      //        node_after_fragment.location());
       s_route.dimensions.requests.tsp_requests.pred[node_after_fragment.node()] =
         node_before_fragment;
-      // printf("link node_after_fragment to node_before_fragment: (%d, %d) -> (%d, %d)\n",
-      //        node_after_fragment.node(),
-      //        node_after_fragment.location(),
-      //        node_before_fragment.node(),
-      //        node_before_fragment.location());
 
       s_route.dimensions.requests.tsp_requests.succ[node_insertion_pos.node()] = fragment_start;
       s_route.dimensions.requests.tsp_requests.pred[node_after_insertion_pos.node()] = fragment_end;
-      // printf("link node_insertion_pos to fragment_start: (%d, %d) -> (%d, %d)\n",
-      //        node_insertion_pos.node(),
-      //        node_insertion_pos.location(),
-      //        fragment_start.node(),
-      //        fragment_start.location());
-      // printf("link node_after_insertion_pos to fragment_end: (%d, %d) -> (%d, %d)\n",
-      //        node_after_insertion_pos.node(),
-      //        node_after_insertion_pos.location(),
-      //        fragment_end.node(),
-      //        fragment_end.location());
 
       s_route.dimensions.requests.tsp_requests.succ[fragment_end.node()] = node_after_insertion_pos;
       s_route.dimensions.requests.tsp_requests.pred[fragment_start.node()] = node_insertion_pos;
-      // printf("link fragment_end to node_after_insertion_pos: (%d, %d) -> (%d, %d)\n",
-      //        fragment_end.node(),
-      //        fragment_end.location(),
-      //        node_after_insertion_pos.node(),
-      //        node_after_insertion_pos.location());
-      // printf("link fragment_start to node_insertion_pos: (%d, %d) -> (%d, %d)\n",
-      //        fragment_start.node(),
-      //        fragment_start.location(),
-      //        node_insertion_pos.node(),
-      //        node_insertion_pos.location());
+
       if (cand.reverse) {
-        // printf("reverse\n");
-        // printf("cand.reverse: %d\n", cand.reverse);
         auto start = fragment_start;
         for (i_t i = 0; i < cand.window_size; ++i) {
           raft::swapVals(s_route.dimensions.requests.tsp_requests.pred[start.node()],
@@ -510,15 +383,6 @@ __global__ void execute_sliding_moves_tsp(
 
   if (threadIdx.x == 0) {
     auto start = s_route.dimensions.requests.tsp_requests.start;
-    // printf("tsp_route_after=[");
-    // printf("(%d, %d, %d), ", 0, start.node(), start.location());
-    // for (i_t i = 1; i <= s_route.get_num_nodes(); ++i) {
-    //   auto node = s_route.dimensions.requests.tsp_requests.succ[start.node()];
-    //   start     = node;
-    //   printf("(%d, %d, %d), ", i, node.node(), node.location());
-    // }
-    // printf("]\n");
-    start = s_route.dimensions.requests.tsp_requests.start;
     for (i_t i = 1; i < s_route.get_num_nodes(); ++i) {
       start          = s_route.dimensions.requests.tsp_requests.succ[start.node()];
       auto intra_idx = sol.route_node_map.get_intra_route_idx(start.node());
@@ -526,7 +390,7 @@ __global__ void execute_sliding_moves_tsp(
       s_route.set_node(i, node);
       sol.route_node_map.set_intra_route_idx(start, i);
     }
-    // printf("to route_t done\n");
+
     sol.routes_to_copy[route_id]   = 1;
     sol.routes_to_search[route_id] = 1;
   }
@@ -650,9 +514,6 @@ bool local_search_t<i_t, f_t, REQUEST>::perform_sliding_tsp(
   compute_cumulative_distances<i_t, f_t, REQUEST, true>(
     sol, move_candidates, n_nodes, n_threads, temp_storage_bytes);
 
-  compute_cumulative_distances<i_t, f_t, REQUEST, false>(
-    sol, move_candidates, n_nodes, n_threads, temp_storage_bytes);
-
   auto n_blocks = move_candidates.nodes_to_search.n_sampled_nodes;
   async_fill(sampled_tsp_data_,
              is_sliding_tsp_uinitialized_t<i_t>::init_data(),
@@ -720,9 +581,6 @@ bool local_search_t<i_t, f_t, REQUEST>::perform_sliding_tsp(
                      move_candidates.debug_delta.value(sol.sol_handle->get_stream()) <
                    EPSILON * (1 + abs(cost_before))),
                "Cost mismatch on sliding_tsp costs!");
-  // std::cout << "Debug delta: " << move_candidates.debug_delta.value(sol.sol_handle->get_stream())
-  //           << std::endl;
-  // std::cout << "cost_before: " << cost_before << ", cost_after: " << cost_after << std::endl;
   cuopt_assert(cost_before - cost_after >= EPSILON, "Cost should improve!");
 
   sol.global_runtime_checks(false, false, "sliding_tsp_end");
