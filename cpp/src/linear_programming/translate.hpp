@@ -51,8 +51,10 @@ static dual_simplex::user_problem_t<i_t, f_t> cuopt_problem_to_simplex_problem(
   user_problem.range_rows.clear();
   user_problem.range_value.clear();
 
-  auto model_constraint_lower_bounds = cuopt::host_copy(model.constraint_lower_bounds, handle_ptr->get_stream());
-  auto model_constraint_upper_bounds = cuopt::host_copy(model.constraint_upper_bounds, handle_ptr->get_stream());
+  auto model_constraint_lower_bounds =
+    cuopt::host_copy(model.constraint_lower_bounds, handle_ptr->get_stream());
+  auto model_constraint_upper_bounds =
+    cuopt::host_copy(model.constraint_upper_bounds, handle_ptr->get_stream());
 
   // All constraints have lower and upper bounds
   // lr <= a_i^T x <= ur
