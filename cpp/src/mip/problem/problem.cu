@@ -310,7 +310,6 @@ void problem_t<i_t, f_t>::compute_transpose_of_problem()
       handle_ptr->get_thrust_policy(), reverse_offsets.begin(), reverse_offsets.end(), 0);
     return;
   }
-  std::cout << "Computing transpose of problem" << std::endl;
 
   raft::sparse::linalg::csr_transpose(*handle_ptr,
                                       offsets.data(),
@@ -323,8 +322,6 @@ void problem_t<i_t, f_t>::compute_transpose_of_problem()
                                       n_variables,
                                       nnz,
                                       handle_ptr->get_stream());
-  handle_ptr->sync_stream();
-  std::cout << "Transpose of problem computed" << std::endl;
 }
 
 template <typename i_t, typename f_t>
