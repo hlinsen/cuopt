@@ -28,6 +28,8 @@ class third_party_presolve_t {
 
   std::pair<optimization_problem_t<i_t, f_t>, bool> apply(
     optimization_problem_t<i_t, f_t> const& op_problem,
+    std::tuple<rmm::device_uvector<i_t>&, rmm::device_uvector<i_t>&, rmm::device_uvector<f_t>&>
+      csr_data,
     problem_category_t category,
     bool dual_postsolve,
     f_t absolute_tolerance,

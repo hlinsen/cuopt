@@ -28,6 +28,7 @@
 #include <mip/presolve/third_party_presolve.hpp>
 #include <mip/presolve/trivial_presolve.cuh>
 #include <mip/solver.cuh>
+#include <mip/utilities/sort_csr.cuh>
 
 #include <cuopt/linear_programming/pdlp/pdlp_hyper_params.cuh>
 #include <cuopt/linear_programming/pdlp/solver_settings.hpp>
@@ -837,19 +838,22 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
     if (!run_presolve) { CUOPT_LOG_INFO("Third-party presolve is disabled, skipping"); }
 
     if (run_presolve) {
+      detail::sort_csr(problem);
       // allocate no more than 10% of the time limit to presolve.
       // Note that this is not the presolve time, but the time limit for presolve.
       // But no less than 1 second, to avoid early timeout triggering known crashes
       const double presolve_time_limit =
         std::max(1.0, std::min(0.1 * lp_timer.remaining_time(), 60.0));
       presolver = std::make_unique<detail::third_party_presolve_t<i_t, f_t>>();
-      auto [reduced_problem, feasible] =
-        presolver->apply(op_problem,
-                         cuopt::linear_programming::problem_category_t::LP,
-                         settings.dual_postsolve,
-                         settings.tolerances.absolute_primal_tolerance,
-                         settings.tolerances.relative_primal_tolerance,
-                         presolve_time_limit);
+      auto [reduced_problem, feasible] = presolver->apply(
+        op_problem,
+        std::make_tuple(
+          std::ref(problem.variables), std::ref(problem.offsets), std::ref(problem.coefficients)),
+        cuopt::linear_programming::problem_category_t::LP,
+        settings.dual_postsolve,
+        settings.tolerances.absolute_primal_tolerance,
+        settings.tolerances.relative_primal_tolerance,
+        presolve_time_limit);
       if (!feasible) {
         return optimization_problem_solution_t<i_t, f_t>(
           pdlp_termination_status_t::PrimalInfeasible, op_problem.get_handle_ptr()->get_stream());
