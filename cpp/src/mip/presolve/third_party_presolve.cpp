@@ -36,11 +36,8 @@ static papilo::PostsolveStorage<double> post_solve_storage_;
 static bool maximize_ = false;
 
 template <typename i_t, typename f_t>
-papilo::Problem<f_t> build_papilo_problem(
-  const optimization_problem_t<i_t, f_t>& op_problem,
-  problem_category_t category,
-  std::tuple<rmm::device_uvector<i_t>&, rmm::device_uvector<i_t>&, rmm::device_uvector<f_t>&>
-    csr_data)
+papilo::Problem<f_t> build_papilo_problem(const optimization_problem_t<i_t, f_t>& op_problem,
+                                          problem_category_t category)
 {
   raft::common::nvtx::range fun_scope("Build papilo problem");
   // Build papilo problem from optimization problem
@@ -69,14 +66,11 @@ papilo::Problem<f_t> build_papilo_problem(
   // Copy data to host
   std::vector<f_t> h_coefficients(coefficients.size());
   auto stream_view = op_problem.get_handle_ptr()->get_stream();
-  raft::copy(
-    h_coefficients.data(), std::get<2>(csr_data).data(), std::get<2>(csr_data).size(), stream_view);
+  raft::copy(h_coefficients.data(), coefficients.data(), coefficients.size(), stream_view);
   std::vector<i_t> h_offsets(offsets.size());
-  raft::copy(
-    h_offsets.data(), std::get<1>(csr_data).data(), std::get<1>(csr_data).size(), stream_view);
+  raft::copy(h_offsets.data(), offsets.data(), offsets.size(), stream_view);
   std::vector<i_t> h_variables(variables.size());
-  raft::copy(
-    h_variables.data(), std::get<0>(csr_data).data(), std::get<0>(csr_data).size(), stream_view);
+  raft::copy(h_variables.data(), variables.data(), variables.size(), stream_view);
   std::vector<f_t> h_obj_coeffs(obj_coeffs.size());
   raft::copy(h_obj_coeffs.data(), obj_coeffs.data(), obj_coeffs.size(), stream_view);
   std::vector<f_t> h_var_lb(var_lb.size());
@@ -399,8 +393,6 @@ void set_presolve_parameters(papilo::Presolve<f_t>& presolver,
 template <typename i_t, typename f_t>
 std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_t>::apply(
   optimization_problem_t<i_t, f_t> const& op_problem,
-  std::tuple<rmm::device_uvector<i_t>&, rmm::device_uvector<i_t>&, rmm::device_uvector<f_t>&>
-    csr_data,
   problem_category_t category,
   bool dual_postsolve,
   f_t absolute_tolerance,
@@ -408,7 +400,7 @@ std::pair<optimization_problem_t<i_t, f_t>, bool> third_party_presolve_t<i_t, f_
   double time_limit,
   i_t num_cpu_threads)
 {
-  papilo::Problem<f_t> papilo_problem = build_papilo_problem(op_problem, category, csr_data);
+  papilo::Problem<f_t> papilo_problem = build_papilo_problem(op_problem, category);
 
   CUOPT_LOG_INFO("Original problem: %d constraints, %d variables, %d nonzeros",
                  papilo_problem.getNRows(),
