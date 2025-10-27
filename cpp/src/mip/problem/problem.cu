@@ -89,6 +89,11 @@ void problem_t<i_t, f_t>::op_problem_cstr_body(const optimization_problem_t<i_t,
   // If maximization problem, convert the problem
   if (maximize) convert_to_maximization_problem(*this);
   if (is_mip) {
+    presolve_data.var_flags.resize(n_variables, handle_ptr->get_stream());
+    thrust::fill(handle_ptr->get_thrust_policy(),
+                 presolve_data.var_flags.begin(),
+                 presolve_data.var_flags.end(),
+                 0);
     integer_indices.resize(n_variables, handle_ptr->get_stream());
     is_binary_variable.resize(n_variables, handle_ptr->get_stream());
     compute_n_integer_vars();
@@ -190,9 +195,11 @@ problem_t<i_t, f_t>::problem_t(const problem_t<i_t, f_t>& problem_)
     objective_name(problem_.objective_name),
     is_scaled_(problem_.is_scaled_),
     preprocess_called(problem_.preprocess_called),
+    objective_is_integral(problem_.objective_is_integral),
     lp_state(problem_.lp_state),
     fixing_helpers(problem_.fixing_helpers, handle_ptr),
-    vars_with_objective_coeffs(problem_.vars_with_objective_coeffs)
+    vars_with_objective_coeffs(problem_.vars_with_objective_coeffs),
+    expensive_to_fix_vars(problem_.expensive_to_fix_vars)
 {
 }
 
@@ -283,15 +290,18 @@ problem_t<i_t, f_t>::problem_t(const problem_t<i_t, f_t>& problem_, bool no_deep
     objective_name(problem_.objective_name),
     is_scaled_(problem_.is_scaled_),
     preprocess_called(problem_.preprocess_called),
+    objective_is_integral(problem_.objective_is_integral),
     lp_state(problem_.lp_state),
     fixing_helpers(problem_.fixing_helpers, handle_ptr),
-    vars_with_objective_coeffs(problem_.vars_with_objective_coeffs)
+    vars_with_objective_coeffs(problem_.vars_with_objective_coeffs),
+    expensive_to_fix_vars(problem_.expensive_to_fix_vars)
 {
 }
 
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_transpose_of_problem()
 {
+  raft::common::nvtx::range fun_scope("compute_transpose_of_problem");
   RAFT_CUBLAS_TRY(raft::linalg::detail::cublassetpointermode(
     handle_ptr->get_cublas_handle(), CUBLAS_POINTER_MODE_DEVICE, handle_ptr->get_stream()));
   RAFT_CUSPARSE_TRY(raft::sparse::detail::cusparsesetpointermode(
@@ -339,6 +349,7 @@ template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
                                                        bool check_mip_related_data)
 {
+  raft::common::nvtx::range fun_scope("check_problem_representation");
   raft::common::nvtx::range scope("check_problem_representation");
 
   cuopt_assert(!offsets.is_empty(), "A_offsets must never be empty.");
@@ -593,6 +604,7 @@ void problem_t<i_t, f_t>::check_problem_representation(bool check_transposed,
 template <typename i_t, typename f_t>
 bool problem_t<i_t, f_t>::pre_process_assignment(rmm::device_uvector<f_t>& assignment)
 {
+  raft::common::nvtx::range fun_scope("pre_process_assignment");
   auto has_nans = cuopt::linear_programming::detail::has_nans(handle_ptr, assignment);
   if (has_nans) {
     CUOPT_LOG_DEBUG("Solution discarded due to nans");
@@ -660,6 +672,7 @@ template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::post_process_assignment(rmm::device_uvector<f_t>& current_assignment,
                                                   bool resize_to_original_problem)
 {
+  raft::common::nvtx::range fun_scope("post_process_assignment");
   cuopt_assert(current_assignment.size() == presolve_data.variable_mapping.size(), "size mismatch");
   auto assgn       = make_span(current_assignment);
   auto fixed_assgn = make_span(presolve_data.fixed_var_assignment);
@@ -696,6 +709,7 @@ void problem_t<i_t, f_t>::post_process_assignment(rmm::device_uvector<f_t>& curr
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::post_process_solution(solution_t<i_t, f_t>& solution)
 {
+  raft::common::nvtx::range fun_scope("post_process_solution");
   post_process_assignment(solution.assignment);
   // this is for resizing other fields such as excess, slack so that we can compute the feasibility
   solution.resize_to_original_problem();
@@ -706,6 +720,7 @@ void problem_t<i_t, f_t>::post_process_solution(solution_t<i_t, f_t>& solution)
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::recompute_auxilliary_data(bool check_representation)
 {
+  raft::common::nvtx::range fun_scope("recompute_auxilliary_data");
   compute_n_integer_vars();
   compute_binary_var_table();
   compute_vars_with_objective_coeffs();
@@ -718,6 +733,7 @@ void problem_t<i_t, f_t>::recompute_auxilliary_data(bool check_representation)
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_n_integer_vars()
 {
+  raft::common::nvtx::range fun_scope("compute_n_integer_vars");
   cuopt_assert(n_variables == variable_types.size(), "size mismatch");
   integer_indices.resize(n_variables, handle_ptr->get_stream());
   auto end =
@@ -750,6 +766,7 @@ bool problem_t<i_t, f_t>::integer_equal(f_t val1, f_t val2) const
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_binary_var_table()
 {
+  raft::common::nvtx::range fun_scope("compute_binary_var_table");
   auto pb_view = view();
 
   is_binary_variable.resize(n_variables, handle_ptr->get_stream());
@@ -791,6 +808,7 @@ void problem_t<i_t, f_t>::compute_binary_var_table()
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_related_variables(double time_limit)
 {
+  raft::common::nvtx::range fun_scope("compute_related_variables");
   if (n_variables == 0) {
     related_variables.resize(0, handle_ptr->get_stream());
     related_variables_offsets.resize(0, handle_ptr->get_stream());
@@ -922,6 +940,8 @@ typename problem_t<i_t, f_t>::view_t problem_t<i_t, f_t>::view()
   v.variable_types = raft::device_span<var_t>{variable_types.data(), variable_types.size()};
   v.is_binary_variable =
     raft::device_span<i_t>{is_binary_variable.data(), is_binary_variable.size()};
+  v.var_flags =
+    raft::device_span<i_t>{presolve_data.var_flags.data(), presolve_data.var_flags.size()};
   v.related_variables = raft::device_span<i_t>{related_variables.data(), related_variables.size()};
   v.related_variables_offsets =
     raft::device_span<i_t>{related_variables_offsets.data(), related_variables_offsets.size()};
@@ -937,10 +957,12 @@ typename problem_t<i_t, f_t>::view_t problem_t<i_t, f_t>::view()
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::resize_variables(size_t size)
 {
+  raft::common::nvtx::range fun_scope("resize_variables");
   variable_bounds.resize(size, handle_ptr->get_stream());
   variable_types.resize(size, handle_ptr->get_stream());
   objective_coefficients.resize(size, handle_ptr->get_stream());
   is_binary_variable.resize(size, handle_ptr->get_stream());
+  presolve_data.var_flags.resize(size, handle_ptr->get_stream());  // 0 is default - no flag
   related_variables_offsets.resize(size, handle_ptr->get_stream());
 }
 
@@ -949,6 +971,7 @@ void problem_t<i_t, f_t>::resize_constraints(size_t matrix_size,
                                              size_t constraint_size,
                                              size_t n_variables)
 {
+  raft::common::nvtx::range fun_scope("resize_constraints");
   coefficients.resize(matrix_size, handle_ptr->get_stream());
   variables.resize(matrix_size, handle_ptr->get_stream());
   reverse_constraints.resize(matrix_size, handle_ptr->get_stream());
@@ -966,6 +989,7 @@ void problem_t<i_t, f_t>::resize_constraints(size_t matrix_size,
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::insert_variables(variables_delta_t<i_t, f_t>& h_vars)
 {
+  raft::common::nvtx::range fun_scope("insert_variables");
   CUOPT_LOG_DEBUG("problem added variable size %d prev %d", h_vars.size(), n_variables);
   // resize the variable arrays if it can't fit the variables
   resize_variables(n_variables + h_vars.size());
@@ -997,6 +1021,7 @@ void problem_t<i_t, f_t>::insert_variables(variables_delta_t<i_t, f_t>& h_vars)
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::insert_constraints(constraints_delta_t<i_t, f_t>& h_constraints)
 {
+  raft::common::nvtx::range fun_scope("insert_constraints");
   CUOPT_LOG_DEBUG(
     "added nnz %d constraints %d  offset size %d prev nnz %d prev cstr %d prev offset size%d ",
     h_constraints.matrix_size(),
@@ -1046,11 +1071,38 @@ void problem_t<i_t, f_t>::insert_constraints(constraints_delta_t<i_t, f_t>& h_co
 }
 
 template <typename i_t, typename f_t>
+void problem_t<i_t, f_t>::set_implied_integers(const std::vector<i_t>& implied_integer_indices)
+{
+  raft::common::nvtx::range fun_scope("set_implied_integers");
+  auto d_indices = cuopt::device_copy(implied_integer_indices, handle_ptr->get_stream());
+  print("implied integer indices", d_indices);
+  thrust::for_each(handle_ptr->get_thrust_policy(),
+                   d_indices.begin(),
+                   d_indices.end(),
+                   [var_flags = make_span(presolve_data.var_flags),
+                    var_types = make_span(variable_types)] __device__(i_t idx) {
+                     cuopt_assert(idx < var_flags.size(), "Index out of bounds");
+                     cuopt_assert(var_types[idx] == var_t::CONTINUOUS, "Variable is integer");
+                     var_flags[idx] |= (i_t)VAR_IMPLIED_INTEGER;
+                   });
+  objective_is_integral = thrust::all_of(handle_ptr->get_thrust_policy(),
+                                         thrust::make_counting_iterator(0),
+                                         thrust::make_counting_iterator(n_variables),
+                                         [v = view()] __device__(i_t var_idx) {
+                                           if (v.objective_coefficients[var_idx] == 0) return true;
+                                           return v.is_integer(v.objective_coefficients[var_idx]) &&
+                                                  (v.variable_types[var_idx] == var_t::INTEGER ||
+                                                   (v.var_flags[var_idx] & VAR_IMPLIED_INTEGER));
+                                         });
+}
+
+template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::fix_given_variables(problem_t<i_t, f_t>& original_problem,
                                               rmm::device_uvector<f_t>& assignment,
                                               const rmm::device_uvector<i_t>& variables_to_fix,
                                               const raft::handle_t* handle_ptr)
 {
+  raft::common::nvtx::range fun_scope("fix_given_variables");
   fixing_helpers.reduction_in_rhs.resize(n_constraints, handle_ptr->get_stream());
   fixing_helpers.variable_fix_mask.resize(original_problem.n_variables, handle_ptr->get_stream());
   thrust::fill(handle_ptr->get_thrust_policy(),
@@ -1136,6 +1188,7 @@ problem_t<i_t, f_t> problem_t<i_t, f_t>::get_problem_after_fixing_vars(
   rmm::device_uvector<i_t>& variable_map,
   const raft::handle_t* handle_ptr)
 {
+  raft::common::nvtx::range fun_scope("get_problem_after_fixing_vars");
   auto start_time = std::chrono::high_resolution_clock::now();
   cuopt_assert(n_variables == assignment.size(), "Assignment size issue");
   problem_t<i_t, f_t> problem(*this, true);
@@ -1188,6 +1241,10 @@ problem_t<i_t, f_t> problem_t<i_t, f_t>::get_problem_after_fixing_vars(
     time_taken,
     total_time_taken / total_calls,
     total_time_taken);
+  // if the fixing is greater than 150, mark this as expensive.
+  // this way we can avoid frequent fixings for this problem
+  constexpr double expensive_time_threshold = 150;
+  if (time_taken > expensive_time_threshold) { expensive_to_fix_vars = true; }
   return problem;
 }
 
@@ -1197,6 +1254,7 @@ void problem_t<i_t, f_t>::remove_given_variables(problem_t<i_t, f_t>& original_p
                                                  rmm::device_uvector<i_t>& variable_map,
                                                  const raft::handle_t* handle_ptr)
 {
+  raft::common::nvtx::range fun_scope("remove_given_variables");
   thrust::fill(handle_ptr->get_thrust_policy(), offsets.begin(), offsets.end(), 0);
   cuopt_assert(assignment.size() == n_variables, "Variable size mismatch");
   cuopt_assert(variable_map.size() < n_variables, "Too many variables to fix");
@@ -1227,6 +1285,13 @@ void problem_t<i_t, f_t>::remove_given_variables(problem_t<i_t, f_t>& original_p
                  original_problem.variable_types.begin(),
                  variable_types.begin());
   variable_types.resize(variable_map.size(), handle_ptr->get_stream());
+  // keep implied-integer and other flags consistent with new variable set
+  thrust::gather(handle_ptr->get_thrust_policy(),
+                 variable_map.begin(),
+                 variable_map.end(),
+                 original_problem.presolve_data.var_flags.begin(),
+                 presolve_data.var_flags.begin());
+  presolve_data.var_flags.resize(variable_map.size(), handle_ptr->get_stream());
   const i_t TPB = 64;
   // compute new offsets
   compute_new_offsets<i_t, f_t><<<variable_map.size(), TPB, 0, handle_ptr->get_stream()>>>(
@@ -1258,6 +1323,7 @@ template <typename i_t, typename f_t>
 rmm::device_uvector<f_t> problem_t<i_t, f_t>::get_fixed_assignment_from_integer_fixed_problem(
   const rmm::device_uvector<f_t>& assignment)
 {
+  raft::common::nvtx::range fun_scope("get_fixed_assignment_from_integer_fixed_problem");
   rmm::device_uvector<f_t> fixed_assignment(integer_fixed_variable_map.size(),
                                             handle_ptr->get_stream());
   // first remove the assignment and variable related vectors
@@ -1270,11 +1336,24 @@ rmm::device_uvector<f_t> problem_t<i_t, f_t>::get_fixed_assignment_from_integer_
 }
 
 template <typename i_t, typename f_t>
+void problem_t<i_t, f_t>::test_problem_fixing_time()
+{
+  rmm::device_uvector<f_t> assignment(n_variables, handle_ptr->get_stream());
+  i_t n_vars_to_test = std::min(n_variables - 1, 200);
+  rmm::device_uvector<i_t> indices(n_vars_to_test, handle_ptr->get_stream());
+  thrust::fill(handle_ptr->get_thrust_policy(), assignment.begin(), assignment.end(), 0.);
+  thrust::sequence(handle_ptr->get_thrust_policy(), indices.begin(), indices.end(), 0);
+  get_problem_after_fixing_vars(assignment, indices, integer_fixed_variable_map, handle_ptr);
+}
+
+template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_integer_fixed_problem()
 {
+  raft::common::nvtx::range fun_scope("compute_integer_fixed_problem");
   cuopt_assert(integer_fixed_problem == nullptr, "Integer fixed problem already computed");
   if (n_variables == n_integer_vars) {
     integer_fixed_problem = nullptr;
+    test_problem_fixing_time();
     return;
   }
   rmm::device_uvector<f_t> assignment(n_variables, handle_ptr->get_stream());
@@ -1301,6 +1380,7 @@ template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::fill_integer_fixed_problem(rmm::device_uvector<f_t>& assignment,
                                                      const raft::handle_t* handle_ptr)
 {
+  raft::common::nvtx::range fun_scope("fill_integer_fixed_problem");
   cuopt_assert(integer_fixed_problem->n_variables > 0, "Integer fixed problem not computed");
   copy_rhs_from_problem(handle_ptr);
   integer_fixed_problem->fix_given_variables(*this, assignment, integer_indices, handle_ptr);
@@ -1313,6 +1393,7 @@ template <typename i_t, typename f_t>
 std::vector<std::vector<std::pair<i_t, f_t>>> compute_var_to_constraint_map(
   const problem_t<i_t, f_t>& pb)
 {
+  raft::common::nvtx::range fun_scope("compute_var_to_constraint_map");
   std::vector<std::vector<std::pair<i_t, f_t>>> variable_constraint_map(pb.n_variables);
   auto h_variables    = cuopt::host_copy(pb.variables);
   auto h_coefficients = cuopt::host_copy(pb.coefficients);
@@ -1332,6 +1413,7 @@ template <typename i_t, typename f_t>
 void standardize_bounds(std::vector<std::vector<std::pair<i_t, f_t>>>& variable_constraint_map,
                         problem_t<i_t, f_t>& pb)
 {
+  raft::common::nvtx::range fun_scope("standardize_bounds");
   auto handle_ptr               = pb.handle_ptr;
   auto h_var_bounds             = cuopt::host_copy(pb.variable_bounds);
   auto h_objective_coefficients = cuopt::host_copy(pb.objective_coefficients);
@@ -1402,6 +1484,7 @@ template <typename i_t, typename f_t>
 void compute_csr(const std::vector<std::vector<std::pair<i_t, f_t>>>& variable_constraint_map,
                  problem_t<i_t, f_t>& pb)
 {
+  raft::common::nvtx::range fun_scope("compute_csr");
   auto handle_ptr = pb.handle_ptr;
   std::vector<std::vector<i_t>> vars_per_constraint(pb.n_constraints);
   std::vector<std::vector<f_t>> coefficient_per_constraint(pb.n_constraints);
@@ -1441,6 +1524,7 @@ void compute_csr(const std::vector<std::vector<std::pair<i_t, f_t>>>& variable_c
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::preprocess_problem()
 {
+  raft::common::nvtx::range fun_scope("preprocess_problem");
   auto variable_constraint_map = compute_var_to_constraint_map(*this);
   standardize_bounds(variable_constraint_map, *this);
   compute_csr(variable_constraint_map, *this);
@@ -1463,6 +1547,7 @@ template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::get_host_user_problem(
   cuopt::linear_programming::dual_simplex::user_problem_t<i_t, f_t>& user_problem) const
 {
+  raft::common::nvtx::range fun_scope("get_host_user_problem");
   i_t m                  = n_constraints;
   i_t n                  = n_variables;
   i_t nz                 = nnz;
@@ -1561,6 +1646,7 @@ f_t problem_t<i_t, f_t>::get_user_obj_from_solver_obj(f_t solver_obj) const
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::compute_vars_with_objective_coeffs()
 {
+  raft::common::nvtx::range fun_scope("compute_vars_with_objective_coeffs");
   auto h_objective_coefficients = cuopt::host_copy(objective_coefficients);
   std::vector<i_t> vars_with_objective_coeffs_;
   std::vector<f_t> objective_coeffs_;
@@ -1576,6 +1662,7 @@ void problem_t<i_t, f_t>::compute_vars_with_objective_coeffs()
 template <typename i_t, typename f_t>
 void problem_t<i_t, f_t>::add_cutting_plane_at_objective(f_t objective)
 {
+  raft::common::nvtx::range fun_scope("add_cutting_plane_at_objective");
   CUOPT_LOG_DEBUG("Adding cutting plane at objective %f", objective);
   if (cutting_plane_added) {
     // modify the RHS
