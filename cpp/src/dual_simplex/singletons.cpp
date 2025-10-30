@@ -18,6 +18,8 @@
 #include <dual_simplex/singletons.hpp>
 #include <dual_simplex/triangle_solve.hpp>
 
+#include <raft/common/nvtx.hpp>
+
 #include <cstdio>
 
 namespace cuopt::linear_programming::dual_simplex {
@@ -39,6 +41,7 @@ i_t order_singletons(std::queue<i_t>& singleton_queue,
                      i_t& singletons_found,
                      row_col_graph_t<i_t>& G)
 {
+  raft::common::nvtx::range fun_scope("order_singletons");
   constexpr i_t kEmpty = -1;
   while (!singleton_queue.empty()) {
 #ifdef PARANOID
@@ -111,6 +114,7 @@ void create_row_representation(const csc_matrix_t<i_t, f_t>& A,
                                std::vector<i_t>& col_index,
                                std::vector<i_t>& workspace)
 {
+  raft::common::nvtx::range fun_scope("create_row_representation");
   // row counts
   i_t n  = A.n;
   i_t m  = A.m;
@@ -141,6 +145,7 @@ void create_row_representation(const csc_matrix_t<i_t, f_t>& A,
 template <typename i_t>
 i_t complete_permutation(i_t singletons, std::vector<i_t>& Xdeg, std::vector<i_t>& Xperm)
 {
+  raft::common::nvtx::range fun_scope("complete_permutation");
   i_t n = Xdeg.size();
   assert(Xperm.size() == n);
   i_t num_empty = 0;
@@ -171,6 +176,7 @@ i_t find_singletons(const csc_matrix_t<i_t, f_t>& A,
                     i_t& col_singletons,
                     std::vector<i_t>& col_perm)
 {
+  raft::common::nvtx::range fun_scope("find_singletons");
   i_t n  = A.n;
   i_t m  = A.m;
   i_t nz = A.col_start[n];
@@ -185,12 +191,15 @@ i_t find_singletons(const csc_matrix_t<i_t, f_t>& A,
   std::queue<i_t> singleton_queue;
 
   // Compute Cdeg and Rdeg
-  for (i_t j = 0; j < n; ++j) {
-    const i_t col_start = A.col_start[j];
-    const i_t col_end   = A.col_start[j + 1];
-    Cdeg[j]             = col_end - col_start;
-    for (i_t p = col_start; p < col_end; ++p) {
-      Rdeg[A.i[p]]++;
+  {
+    raft::common::nvtx::range compute_degrees_scope("compute_degrees");
+    for (i_t j = 0; j < n; ++j) {
+      const i_t col_start = A.col_start[j];
+      const i_t col_end   = A.col_start[j + 1];
+      Cdeg[j]             = col_end - col_start;
+      for (i_t p = col_start; p < col_end; ++p) {
+        Rdeg[A.i[p]]++;
+      }
     }
   }
 
@@ -203,6 +212,7 @@ i_t find_singletons(const csc_matrix_t<i_t, f_t>& A,
   i_t singletons_found = 0;
   col_singletons       = 0;
   if (!singleton_queue.empty()) {
+    raft::common::nvtx::range find_col_singletons_scope("find_col_singletons");
     // Don't create the row representation unless we found a singleton
     create_row_representation(A, Rp, Rj, workspace);
     row_form = true;
@@ -233,6 +243,7 @@ i_t find_singletons(const csc_matrix_t<i_t, f_t>& A,
 
   row_singletons = 0;
   if (!singleton_queue.empty()) {
+    raft::common::nvtx::range find_row_singletons_scope("find_row_singletons");
     if (!row_form) {
       // If we haven't created the row representation yet, we need to
       create_row_representation(A, Rp, Rj, workspace);  // use Rdeg as workspace

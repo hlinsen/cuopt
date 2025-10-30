@@ -186,15 +186,22 @@ i_t factorize_basis(const csc_matrix_t<i_t, f_t>& A,
   const bool eliminate_singletons = settings.eliminate_singletons;
   constexpr bool verbose          = false;
   if (eliminate_singletons) {
+    raft::common::nvtx::range eliminate_scope("eliminate_singletons");
     // TODO: We should see if we can find the singletons without explictly forming the matrix B
     f_t fact_start = tic();
     csc_matrix_t<i_t, f_t> B(A.m, A.m, 1);
-    form_b(A, basic_list, B);
+    {
+      raft::common::nvtx::range form_b_scope("form_b");
+      form_b(A, basic_list, B);
+    }
     std::vector<i_t> row_perm(m);
     std::vector<i_t> col_perm(m);
     i_t row_singletons;
     i_t col_singletons;
-    find_singletons(B, row_singletons, row_perm, col_singletons, col_perm);
+    {
+      raft::common::nvtx::range find_singletons_scope("find_singletons");
+      find_singletons(B, row_singletons, row_perm, col_singletons, col_perm);
+    }
     std::vector<i_t> row_perm_inv(m);
     inverse_permutation(row_perm, row_perm_inv);
 
@@ -228,6 +235,7 @@ i_t factorize_basis(const csc_matrix_t<i_t, f_t>& A,
     // where L_33 * U_33 = S
 
     if ((col_singletons + row_singletons) > 0) {
+      raft::common::nvtx::range build_lu_scope("build_LU_from_singletons");
       const i_t Bnz = B.col_start[m];
       L.reallocate(Bnz);
       U.reallocate(Bnz);
@@ -333,28 +341,32 @@ i_t factorize_basis(const csc_matrix_t<i_t, f_t>& A,
       i_t Srank          = 0;
       f_t actual_factor  = 0;
       if (Sdim > 0) {
+        raft::common::nvtx::range factorize_S_scope("factorize_S");
         csc_matrix_t<i_t, f_t> S(Sdim, Sdim, Snz_max);
 
         // Build S
         i_t Snz = 0;
-        for (i_t k = num_singletons; k < m; ++k) {
-          S.col_start[k - num_singletons] = Snz;
-          const i_t j                     = col_perm[k];
-          const i_t col_start             = B.col_start[j];
-          const i_t col_end               = B.col_start[j + 1];
-          for (i_t p = col_start; p < col_end; ++p) {
-            const i_t i = row_perm_inv[B.i[p]];
-            if (i >= num_singletons) {
-              const i_t row_i = i - num_singletons;
-              assert(row_i < Sdim);
-              S.i[Snz] = row_i;
-              S.x[Snz] = B.x[p];
-              Snz++;
-              assert(Snz <= Snz_max);
+        {
+          raft::common::nvtx::range build_S_scope("build_S");
+          for (i_t k = num_singletons; k < m; ++k) {
+            S.col_start[k - num_singletons] = Snz;
+            const i_t j                     = col_perm[k];
+            const i_t col_start             = B.col_start[j];
+            const i_t col_end               = B.col_start[j + 1];
+            for (i_t p = col_start; p < col_end; ++p) {
+              const i_t i = row_perm_inv[B.i[p]];
+              if (i >= num_singletons) {
+                const i_t row_i = i - num_singletons;
+                assert(row_i < Sdim);
+                S.i[Snz] = row_i;
+                S.x[Snz] = B.x[p];
+                Snz++;
+                assert(Snz <= Snz_max);
+              }
             }
           }
+          S.col_start[Sdim] = Snz;  // Finalize S
         }
-        S.col_start[Sdim] = Snz;  // Finalize S
 
         csc_matrix_t<i_t, f_t> SL(Sdim, Sdim, Snz);
         csc_matrix_t<i_t, f_t> SU(Sdim, Sdim, Snz);
@@ -368,8 +380,11 @@ i_t factorize_basis(const csc_matrix_t<i_t, f_t>& A,
         for (i_t h = 0; h < Sdim; ++h) {
           identity[h] = h;
         }
-        Srank = right_looking_lu(
-          S, settings.threshold_partial_pivoting_tol, identity, S_col_perm, SL, SU, S_perm_inv);
+        {
+          raft::common::nvtx::range right_looking_lu_scope("right_looking_lu_S");
+          Srank = right_looking_lu(
+            S, settings.threshold_partial_pivoting_tol, identity, S_col_perm, SL, SU, S_perm_inv);
+        }
         if (Srank != Sdim) {
           // Get the rank deficient columns
           deficient.clear();
