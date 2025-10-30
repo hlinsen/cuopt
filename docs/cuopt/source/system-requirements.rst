@@ -56,7 +56,7 @@ Dependencies are installed automatically when using the pip and Conda installati
        - ARM64
 
    * GPU:
-      - NVIDIA H100 SXM (compute capability >= 9.0) and above
+      - NVIDIA H100 SXM (compute capability >= 9.0)
 
    * CPU:
       - 32+ cores
