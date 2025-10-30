@@ -18,6 +18,8 @@
 #include <dual_simplex/right_looking_lu.hpp>
 #include <dual_simplex/tic_toc.hpp>
 
+#include <raft/common/nvtx.hpp>
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -46,6 +48,7 @@ i_t initialize_degree_data(const csc_matrix_t<i_t, f_t>& A,
                            std::vector<std::vector<i_t>>& col_count,
                            std::vector<std::vector<i_t>>& row_count)
 {
+  raft::common::nvtx::range fun_scope("initialize_degree_data");
   const i_t n = column_list.size();
   const i_t m = A.m;
   std::fill(Rdegree.begin(), Rdegree.end(), 0);
@@ -85,6 +88,7 @@ i_t load_elements(const csc_matrix_t<i_t, f_t>& A,
                   std::vector<i_t>& first_in_row,
                   std::vector<i_t>& first_in_col)
 {
+  raft::common::nvtx::range fun_scope("load_elements");
   const i_t m = A.m;
   const i_t n = column_list.size();
   std::vector<i_t> last_element_in_row(m, kNone);
@@ -143,6 +147,7 @@ f_t maximum_in_column(i_t j,
                       const std::vector<i_t>& first_in_col,
                       std::vector<element_t<i_t, f_t>>& elements)
 {
+  raft::common::nvtx::range fun_scope("maximum_in_column");
   f_t max_in_col = 0.0;
   for (i_t p = first_in_col[j]; p != kNone; p = elements[p].next_in_column) {
     element_t<i_t, f_t>* entry = &elements[p];
@@ -157,6 +162,7 @@ void initialize_max_in_column(const std::vector<i_t>& first_in_col,
                               std::vector<element_t<i_t, f_t>>& elements,
                               std::vector<f_t>& max_in_column)
 {
+  raft::common::nvtx::range fun_scope("initialize_max_in_column");
   const i_t n = first_in_col.size();
   for (i_t j = 0; j < n; ++j) {
     max_in_column[j] = maximum_in_column(j, first_in_col, elements);
@@ -168,6 +174,7 @@ f_t maximum_in_row(i_t i,
                    const std::vector<i_t>& first_in_row,
                    std::vector<element_t<i_t, f_t>>& elements)
 {
+  raft::common::nvtx::range fun_scope("maximum_in_row");
   f_t max_in_row = 0.0;
   for (i_t p = first_in_row[i]; p != kNone; p = elements[p].next_in_row) {
     element_t<i_t, f_t>* entry = &elements[p];
@@ -182,6 +189,7 @@ void initialize_max_in_row(const std::vector<i_t>& first_in_row,
                            std::vector<element_t<i_t, f_t>>& elements,
                            std::vector<f_t>& max_in_row)
 {
+  raft::common::nvtx::range fun_scope("initialize_max_in_row");
   const i_t m = first_in_row.size();
   for (i_t i = 0; i < m; ++i) {
     max_in_row[i] = maximum_in_row(i, first_in_row, elements);
@@ -207,6 +215,7 @@ i_t markowitz_search(const std::vector<i_t>& Cdegree,
                      i_t& pivot_j,
                      i_t& pivot_p)
 {
+  raft::common::nvtx::range fun_scope("markowitz_search");
   i_t nz      = 1;
   const i_t m = Rdegree.size();
   const i_t n = Cdegree.size();
@@ -308,6 +317,7 @@ void update_Cdegree_and_col_count(i_t pivot_i,
                                   std::vector<std::vector<i_t>>& col_count,
                                   std::vector<element_t<i_t, f_t>>& elements)
 {
+  raft::common::nvtx::range fun_scope("update_Cdegree_and_col_count");
   // Update Cdegree and col_count
   for (i_t p = first_in_row[pivot_i]; p != kNone; p = elements[p].next_in_row) {
     element_t<i_t, f_t>* entry = &elements[p];
@@ -340,6 +350,7 @@ void update_Rdegree_and_row_count(i_t pivot_i,
                                   std::vector<std::vector<i_t>>& row_count,
                                   std::vector<element_t<i_t, f_t>>& elements)
 {
+  raft::common::nvtx::range fun_scope("update_Rdegree_and_row_count");
   // Update Rdegree and row_count
   for (i_t p = first_in_col[pivot_j]; p != kNone; p = elements[p].next_in_column) {
     element_t<i_t, f_t>* entry = &elements[p];
@@ -382,6 +393,7 @@ void schur_complement(i_t pivot_i,
                       std::vector<std::vector<i_t>>& col_count,
                       std::vector<element_t<i_t, f_t>>& elements)
 {
+  raft::common::nvtx::range fun_scope("schur_complement");
   for (i_t p1 = first_in_col[pivot_j]; p1 != kNone; p1 = elements[p1].next_in_column) {
     element_t<i_t, f_t>* e = &elements[p1];
     const i_t i            = e->i;
@@ -501,6 +513,7 @@ void remove_pivot_row(i_t pivot_i,
                       std::vector<f_t>& max_in_column,
                       std::vector<element_t<i_t, f_t>>& elements)
 {
+  raft::common::nvtx::range fun_scope("remove_pivot_row");
   // Remove the pivot row
 
   for (i_t p0 = first_in_row[pivot_i]; p0 != kNone; p0 = elements[p0].next_in_row) {
@@ -540,6 +553,7 @@ void remove_pivot_col(i_t pivot_i,
                       std::vector<f_t>& max_in_row,
                       std::vector<element_t<i_t, f_t>>& elements)
 {
+  raft::common::nvtx::range fun_scope("remove_pivot_col");
   // Remove the pivot col
   for (i_t p1 = first_in_col[pivot_j]; p1 != kNone; p1 = elements[p1].next_in_column) {
     element_t<i_t, f_t>* e = &elements[p1];
@@ -579,6 +593,7 @@ void remove_pivot_col(i_t pivot_i,
 
 template <typename i_t, typename f_t>
 i_t right_looking_lu(const csc_matrix_t<i_t, f_t>& A,
+                     const simplex_solver_settings_t<i_t, f_t>& settings,
                      f_t tol,
                      const std::vector<i_t>& column_list,
                      std::vector<i_t>& q,
@@ -586,6 +601,7 @@ i_t right_looking_lu(const csc_matrix_t<i_t, f_t>& A,
                      csc_matrix_t<i_t, f_t>& U,
                      std::vector<i_t>& pinv)
 {
+  raft::common::nvtx::range fun_scope("right_looking_lu");
   const i_t n = column_list.size();
   const i_t m = A.m;
 
@@ -637,6 +653,7 @@ i_t right_looking_lu(const csc_matrix_t<i_t, f_t>& A,
 
   i_t pivots = 0;
   for (i_t k = 0; k < n; ++k) {
+    if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) { return -1; }
     // Find pivot that satisfies
     // abs(pivot) >= abstol,
     // abs(pivot) >= threshold_tol * max abs[pivot column]
@@ -927,6 +944,7 @@ i_t right_looking_lu_row_permutation_only(const csc_matrix_t<i_t, f_t>& A,
                                           std::vector<i_t>& q,
                                           std::vector<i_t>& pinv)
 {
+  raft::common::nvtx::range fun_scope("right_looking_lu_row_permutation_only");
   // Factorize PAQ = LU, where A is m x n with m >= n, and P and Q are permutation matrices
   // We return the inverser row permutation vector pinv and the column permutation vector q
 
@@ -1152,6 +1170,7 @@ i_t right_looking_lu_row_permutation_only(const csc_matrix_t<i_t, f_t>& A,
 #ifdef DUAL_SIMPLEX_INSTANTIATE_DOUBLE
 
 template int right_looking_lu<int, double>(const csc_matrix_t<int, double>& A,
+                                           const simplex_solver_settings_t<int, double>& settings,
                                            double tol,
                                            const std::vector<int>& column_list,
                                            std::vector<int>& q,

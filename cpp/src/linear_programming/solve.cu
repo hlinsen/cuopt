@@ -486,7 +486,7 @@ run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   dual_simplex_settings.concurrent_halt = settings.concurrent_halt;
   if (dual_simplex_settings.concurrent_halt != nullptr) {
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
-    dual_simplex_settings.log.log = true;
+    dual_simplex_settings.log.log = false;
   }
 
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
