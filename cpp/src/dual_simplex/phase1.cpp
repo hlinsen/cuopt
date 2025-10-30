@@ -25,11 +25,14 @@
 #include <cstdio>
 #include <limits>
 
+#include <raft/common/nvtx.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
 i_t create_phase1_problem(const lp_problem_t<i_t, f_t>& lp, lp_problem_t<i_t, f_t>& out)
 {
+  raft::common::nvtx::range fun_scope("create_phase1_problem");
   const i_t m = lp.num_rows;
   const i_t n = lp.num_cols;
   std::vector<i_t> positive_infeasible;

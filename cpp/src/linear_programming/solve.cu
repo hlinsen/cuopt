@@ -486,7 +486,7 @@ run_dual_simplex(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   dual_simplex_settings.concurrent_halt = settings.concurrent_halt;
   if (dual_simplex_settings.concurrent_halt != nullptr) {
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
-    dual_simplex_settings.log.log = false;
+    dual_simplex_settings.log.log = true;
   }
 
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
@@ -709,6 +709,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   barrier_handle.sync_stream();
   barrier_thread.join();
 
+  std::cout << "concurrent finished" << std::endl;
   // copy the dual simplex solution to the device
   auto sol_dual_simplex = convert_dual_simplex_sol(problem,
                                                    std::get<0>(*sol_dual_simplex_ptr),
@@ -717,6 +718,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
                                                    std::get<3>(*sol_dual_simplex_ptr),
                                                    std::get<4>(*sol_dual_simplex_ptr),
                                                    0);
+  std::cout << "sol_dual_simplex finished" << std::endl;
 
   // copy the barrier solution to the device
   auto sol_barrier = convert_dual_simplex_sol(problem,

@@ -22,12 +22,15 @@
 #include <algorithm>
 #include <cmath>
 
+#include <raft/common/nvtx.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
 i_t bound_flipping_ratio_test_t<i_t, f_t>::compute_breakpoints(std::vector<i_t>& indicies,
                                                                std::vector<f_t>& ratios)
 {
+  raft::common::nvtx::range fun_scope("bfrt::compute_breakpoints");
   i_t n                  = n_;
   i_t m                  = m_;
   constexpr bool verbose = false;
@@ -121,6 +124,7 @@ template <typename i_t, typename f_t>
 i_t bound_flipping_ratio_test_t<i_t, f_t>::compute_step_length(f_t& step_length,
                                                                i_t& nonbasic_entering)
 {
+  raft::common::nvtx::range fun_scope("bfrt::compute_step_length");
   const i_t m            = m_;
   const i_t n            = n_;
   const i_t nz           = delta_z_indices_.size();

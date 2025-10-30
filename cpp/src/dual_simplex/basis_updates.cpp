@@ -21,11 +21,14 @@
 #include <cmath>
 #include <limits>
 
+#include <raft/common/nvtx.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
 i_t basis_update_t<i_t, f_t>::b_solve(const std::vector<f_t>& rhs, std::vector<f_t>& solution) const
 {
+  raft::common::nvtx::range fun_scope("basis_update::b_solve");
   std::vector<f_t> Lsol;
   return b_solve(rhs, solution, Lsol);
 }
@@ -34,6 +37,7 @@ template <typename i_t, typename f_t>
 i_t basis_update_t<i_t, f_t>::b_solve(const sparse_vector_t<i_t, f_t>& rhs,
                                       sparse_vector_t<i_t, f_t>& solution) const
 {
+  raft::common::nvtx::range fun_scope("basis_update::b_solve_sparse");
   sparse_vector_t<i_t, f_t> Lsol(rhs.n, 0);
   return b_solve(rhs, solution, Lsol);
 }
@@ -43,6 +47,7 @@ i_t basis_update_t<i_t, f_t>::b_solve(const std::vector<f_t>& rhs,
                                       std::vector<f_t>& solution,
                                       std::vector<f_t>& Lsol) const
 {
+  raft::common::nvtx::range fun_scope("basis_update::b_solve_full");
   const i_t m = L0_.m;
   assert(row_permutation_.size() == m);
   assert(rhs.size() == m);
@@ -94,6 +99,7 @@ template <typename i_t, typename f_t>
 i_t basis_update_t<i_t, f_t>::b_transpose_solve(const std::vector<f_t>& rhs,
                                                 std::vector<f_t>& solution) const
 {
+  raft::common::nvtx::range fun_scope("basis_update::b_transpose_solve");
   // Observe that
   // P*B = L*U
   // B'*P' = U'*L'
@@ -232,6 +238,7 @@ i_t basis_update_t<i_t, f_t>::b_transpose_solve(const sparse_vector_t<i_t, f_t>&
 template <typename i_t, typename f_t>
 i_t basis_update_t<i_t, f_t>::l_solve(std::vector<f_t>& rhs) const
 {
+  raft::common::nvtx::range fun_scope("basis_update::l_solve");
   // L = L0 * R1^{-1} * R2^{-1} * ... * Rk^{-1}
   //
   // where Ri = I + e_r d^T
@@ -852,6 +859,7 @@ i_t basis_update_t<i_t, f_t>::update_upper(const std::vector<i_t>& ind,
 template <typename i_t, typename f_t>
 i_t basis_update_t<i_t, f_t>::update(std::vector<f_t>& utilde, i_t leaving_index)
 {
+  raft::common::nvtx::range fun_scope("basis_update::update");
   // Solve L*utilde = abar
   // TODO: We should already have utilde from computing delta_x update
   // TODO: Take into account sparsity of abar

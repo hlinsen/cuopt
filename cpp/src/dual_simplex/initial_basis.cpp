@@ -24,6 +24,8 @@
 #include <cassert>
 #include <cmath>
 
+#include <raft/common/nvtx.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
@@ -34,6 +36,7 @@ i_t initial_basis_selection(const lp_problem_t<i_t, f_t>& problem,
                             std::vector<variable_status_t>& vstatus,
                             std::vector<i_t>& dependent_rows)
 {
+  raft::common::nvtx::range fun_scope("initial_basis_selection");
   i_t m  = problem.num_rows;
   i_t n  = problem.num_cols;
   i_t nz = problem.A.col_start[n];

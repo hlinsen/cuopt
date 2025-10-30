@@ -20,6 +20,8 @@
 
 #include <cmath>
 
+#include <raft/common/nvtx.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
@@ -28,6 +30,7 @@ i_t column_scaling(const lp_problem_t<i_t, f_t>& unscaled,
                    lp_problem_t<i_t, f_t>& scaled,
                    std::vector<f_t>& column_scaling)
 {
+  raft::common::nvtx::range fun_scope("column_scaling");
   scaled = unscaled;
   i_t m  = scaled.num_rows;
   i_t n  = scaled.num_cols;
@@ -83,6 +86,7 @@ void unscale_solution(const std::vector<f_t>& column_scaling,
                       std::vector<f_t>& unscaled_x,
                       std::vector<f_t>& unscaled_z)
 {
+  raft::common::nvtx::range fun_scope("unscale_solution");
   const i_t n = scaled_x.size();
   unscaled_x.resize(n);
   unscaled_z.resize(n);

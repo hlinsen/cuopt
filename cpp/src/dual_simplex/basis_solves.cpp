@@ -23,11 +23,14 @@
 #include <dual_simplex/tic_toc.hpp>
 #include <dual_simplex/triangle_solve.hpp>
 
+#include <raft/common/nvtx.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t>
 i_t reorder_basic_list(const std::vector<i_t>& q, std::vector<i_t>& basic_list)
 {
+  raft::common::nvtx::range fun_scope("reorder_basic_list");
   const i_t m                     = basic_list.size();
   std::vector<i_t> basic_list_old = basic_list;
   for (i_t k = 0; k < m; k++) {
@@ -43,6 +46,7 @@ void get_basis_from_vstatus(i_t m,
                             std::vector<i_t>& nonbasic_list,
                             std::vector<i_t>& superbasic_list)
 {
+  raft::common::nvtx::range fun_scope("get_basis_from_vstatus");
   i_t n             = vstatus.size();
   i_t num_basic     = 0;
   i_t num_non_basic = 0;
@@ -175,6 +179,7 @@ i_t factorize_basis(const csc_matrix_t<i_t, f_t>& A,
                     std::vector<i_t>& deficient,
                     std::vector<i_t>& slacks_needed)
 {
+  raft::common::nvtx::range fun_scope("factorize_basis");
   const i_t m              = basic_list.size();
   constexpr f_t medium_tol = 1e-12;
 
@@ -602,6 +607,7 @@ i_t basis_repair(const csc_matrix_t<i_t, f_t>& A,
                  std::vector<i_t>& nonbasic_list,
                  std::vector<variable_status_t>& vstatus)
 {
+  raft::common::nvtx::range fun_scope("basis_repair");
   const i_t m = A.m;
   const i_t n = A.n;
   assert(basis_list.size() == m);
@@ -652,6 +658,7 @@ i_t form_b(const csc_matrix_t<i_t, f_t>& A,
            const std::vector<i_t>& basic_list,
            csc_matrix_t<i_t, f_t>& B)
 {
+  raft::common::nvtx::range fun_scope("form_b");
   const i_t m = A.m;
   i_t Bnz     = 0;
   for (i_t k = 0; k < m; ++k) {
@@ -686,6 +693,7 @@ i_t b_multiply(const lp_problem_t<i_t, f_t>& lp,
                const std::vector<f_t>& x,
                std::vector<f_t>& y)
 {
+  raft::common::nvtx::range fun_scope("b_multiply");
   const i_t m = lp.num_rows;
   std::fill(y.begin(), y.end(), 0.0);
   for (i_t k = 0; k < m; ++k) {
@@ -707,6 +715,7 @@ i_t b_transpose_multiply(const lp_problem_t<i_t, f_t>& lp,
                          const std::vector<f_t>& x,
                          std::vector<f_t>& y)
 {
+  raft::common::nvtx::range fun_scope("b_transpose_multiply");
   const i_t m = lp.num_rows;
   std::fill(y.begin(), y.end(), 0.0);
   for (i_t k = 0; k < m; ++k) {
@@ -730,6 +739,7 @@ i_t b_transpose_solve(const csc_matrix_t<i_t, f_t>& L,
                       const std::vector<f_t>& rhs,
                       std::vector<f_t>& solution)
 {
+  raft::common::nvtx::range fun_scope("b_transpose_solve");
   // P*B = L*U
   // B'*P' = U'*L'
   // B'*y = c
@@ -775,6 +785,7 @@ i_t b_solve(const csc_matrix_t<i_t, f_t>& L,
             const std::vector<f_t>& rhs,
             std::vector<f_t>& solution)
 {
+  raft::common::nvtx::range fun_scope("b_solve");
   const i_t m = L.m;
   assert(p.size() == m);
   assert(rhs.size() == m);
