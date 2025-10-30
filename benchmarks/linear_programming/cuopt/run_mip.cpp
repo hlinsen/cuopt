@@ -22,8 +22,8 @@
 #include <cuopt/linear_programming/mip/solver_solution.hpp>
 #include <cuopt/linear_programming/optimization_problem.hpp>
 #include <cuopt/linear_programming/solve.hpp>
-#include <cuopt/logger.hpp>
 #include <mps_parser/parser.hpp>
+#include <utilities/logger.hpp>
 
 #include <raft/core/handle.hpp>
 
@@ -347,7 +347,7 @@ int main(int argc, char* argv[])
   program.add_argument("--time-limit")
     .help("time limit")
     .scan<'g', double>()
-    .default_value(std::numeric_limits<double>::max());
+    .default_value(std::numeric_limits<double>::infinity());
 
   program.add_argument("--memory-limit")
     .help("memory limit in MB")

@@ -20,6 +20,7 @@
 #include <cuopt/linear_programming/optimization_problem.hpp>
 
 #include <thrust/sequence.h>
+#include <thrust/uninitialized_fill.h>
 #include <rmm/device_uvector.hpp>
 
 namespace cuopt {
@@ -38,7 +39,8 @@ class presolve_data_t {
       objective_offset(problem.get_objective_offset()),
       objective_scaling_factor(problem.get_objective_scaling_factor()),
       variable_mapping(0, stream),
-      fixed_var_assignment(0, stream)
+      fixed_var_assignment(0, stream),
+      var_flags(0, stream)
   {
   }
 
@@ -49,7 +51,8 @@ class presolve_data_t {
       objective_offset(other.objective_offset),
       objective_scaling_factor(other.objective_scaling_factor),
       variable_mapping(other.variable_mapping, stream),
-      fixed_var_assignment(other.fixed_var_assignment, stream)
+      fixed_var_assignment(other.fixed_var_assignment, stream),
+      var_flags(other.var_flags, stream)
   {
   }
 
@@ -85,6 +88,7 @@ class presolve_data_t {
 
   rmm::device_uvector<i_t> variable_mapping;
   rmm::device_uvector<f_t> fixed_var_assignment;
+  rmm::device_uvector<i_t> var_flags;
 };
 
 }  // namespace linear_programming::detail
