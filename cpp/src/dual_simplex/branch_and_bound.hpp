@@ -128,6 +128,18 @@ class branch_and_bound_t {
   // Set an initial guess based on the user_problem. This should be called before solve.
   void set_initial_guess(const std::vector<f_t>& user_guess) { guess_ = user_guess; }
 
+  // Set the root solution found by PDLP
+  void set_root_relaxation_solution(const std::vector<f_t>& primal,
+                                    const std::vector<f_t>& dual,
+                                    f_t objective,
+                                    i_t iterations)
+  {
+    root_relax_soln_.x          = primal;
+    root_relax_soln_.y          = dual;
+    root_objective_             = objective;
+    root_relax_soln_.iterations = iterations;
+  }
+
   // Set a solution based on the user problem during the course of the solve
   void set_new_solution(const std::vector<f_t>& solution);
 

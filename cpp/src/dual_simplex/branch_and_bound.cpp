@@ -18,6 +18,7 @@
 #include <omp.h>
 #include <algorithm>
 #include <dual_simplex/branch_and_bound.hpp>
+#include <dual_simplex/crossover.hpp>
 #include <dual_simplex/initial_basis.hpp>
 #include <dual_simplex/logger.hpp>
 #include <dual_simplex/mip_node.hpp>
@@ -1046,12 +1047,45 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   root_relax_soln_.resize(original_lp_.num_rows, original_lp_.num_cols);
 
   settings_.log.printf("Solving LP root relaxation\n");
-  simplex_solver_settings_t lp_settings = settings_;
-  lp_settings.inside_mip                = 1;
-  lp_status_t root_status               = solve_linear_program_advanced(
-    original_lp_, stats_.start_time, lp_settings, root_relax_soln_, root_vstatus_, edge_norms_);
+  // simplex_solver_settings_t lp_settings = settings_;
+  // lp_settings.inside_mip                = 1;
+  // lp_status_t root_status               = solve_linear_program_advanced(
+  //   original_lp_, stats_.start_time, lp_settings, root_relax_soln_, root_vstatus_, edge_norms_);
+
+  // FIXME: Figure out correct status mapping
+  lp_status_t root_status = lp_status_t::INFEASIBLE;
+
+  // Wait for the root relaxation solution to be set by diversity manager
+  while (root_relax_soln_.iterations == 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    continue;
+  }
   stats_.total_lp_iters      = root_relax_soln_.iterations;
   stats_.total_lp_solve_time = toc(stats_.start_time);
+
+  // TODO: Crush the root relaxation solution on converted user problem
+  std::vector<f_t> crushed_root_x;
+  crush_primal_solution(
+    original_problem_, original_lp_, root_relax_soln_.x, new_slacks_, crushed_root_x);
+  std::vector<f_t> crushed_root_dual;
+  std::vector<f_t> crushed_root_z;
+  crush_dual_solution(original_problem_,
+                      original_lp_,
+                      new_slacks_,
+                      root_relax_soln_.y,
+                      root_relax_soln_.z,
+                      crushed_root_dual,
+                      crushed_root_z);
+
+  // TODO: Call crossover on the crushed solution
+  lp_solution_t<i_t, f_t> crossover_solution(original_lp_.num_rows, original_lp_.num_cols);
+  std::vector<variable_status_t> vstatus(original_lp_.num_cols);
+  crossover_status_t crossover_status = crossover(
+    original_lp_, settings_, root_relax_soln_, stats_.start_time, crossover_solution, vstatus);
+  settings_.log.printf("Crossover status: %d\n", crossover_status);
+
+  // TODO: Call dual simplex phase 2 to verify basis
+
   if (root_status == lp_status_t::INFEASIBLE) {
     settings_.log.printf("MIP Infeasible\n");
     // FIXME: rarely dual simplex detects infeasible whereas it is feasible.

@@ -44,6 +44,7 @@ std::vector<recombiner_enum_t> recombiner_t<i_t, f_t>::enabled_recombiners;
 template <typename i_t, typename f_t>
 diversity_manager_t<i_t, f_t>::diversity_manager_t(mip_solver_context_t<i_t, f_t>& context_)
   : context(context_),
+    branch_and_bound_ptr(nullptr),
     problem_ptr(context.problem_ptr),
     diversity_config(),
     population("population",
@@ -390,6 +391,28 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       // note to developer, in debug mode the LP run might be too slow and it might cause PDLP not
       // to bring variables within the bounds
     }
+
+    // Send PDLP relaxed solution to branch and bound before it solves the root node
+    if (problem_ptr->set_root_relaxation_solution_callback != nullptr) {
+      // Copy solution from device to host
+      std::vector<f_t> host_primal(lp_optimal_solution.size());
+      std::vector<f_t> host_dual(lp_dual_optimal_solution.size());
+      raft::copy(host_primal.data(),
+                 lp_optimal_solution.data(),
+                 lp_optimal_solution.size(),
+                 problem_ptr->handle_ptr->get_stream());
+      raft::copy(host_dual.data(),
+                 lp_dual_optimal_solution.data(),
+                 lp_dual_optimal_solution.size(),
+                 problem_ptr->handle_ptr->get_stream());
+      problem_ptr->handle_ptr->sync_stream();
+
+      auto user_obj   = problem_ptr->get_user_obj_from_solver_obj(lp_result.get_objective_value());
+      auto iterations = lp_result.get_additional_termination_information().number_of_steps_taken;
+      problem_ptr->set_root_relaxation_solution_callback(
+        host_primal, host_dual, user_obj, iterations);
+    }
+
     // in case the pdlp returned var boudns that are out of bounds
     clamp_within_var_bounds(lp_optimal_solution, problem_ptr, problem_ptr->handle_ptr);
   }

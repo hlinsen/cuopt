@@ -204,12 +204,20 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
     // Create the branch and bound object
     branch_and_bound = std::make_unique<dual_simplex::branch_and_bound_t<i_t, f_t>>(
       branch_and_bound_problem, branch_and_bound_settings);
+    dm.branch_and_bound_ptr = branch_and_bound.get();
 
     // Set the primal heuristics -> branch and bound callback
     context.problem_ptr->branch_and_bound_callback =
       std::bind(&dual_simplex::branch_and_bound_t<i_t, f_t>::set_new_solution,
                 branch_and_bound.get(),
                 std::placeholders::_1);
+    context.problem_ptr->set_root_relaxation_solution_callback =
+      std::bind(&dual_simplex::branch_and_bound_t<i_t, f_t>::set_root_relaxation_solution,
+                branch_and_bound.get(),
+                std::placeholders::_1,
+                std::placeholders::_2,
+                std::placeholders::_3,
+                std::placeholders::_4);
 
     // Fork a thread for branch and bound
     // std::async and std::future allow us to get the return value of bb::solve()
