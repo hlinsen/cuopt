@@ -345,6 +345,13 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   if (bb_thread_solution_exists) {
     ls.lp_optimal_exists = true;
   } else if (!fj_only_run) {
+    // Convert greater-than constraints to less-than constraints before calling LP solver
+    // This standardizes the constraint representation: a^T x >= lb becomes -a^T x <= -lb
+    // Note: This modifies the problem in-place, so all subsequent operations will use <= form
+    std::cout
+      << "Converting greater-than constraints to less-than constraints before calling LP solver"
+      << std::endl;
+    convert_greater_to_less(*problem_ptr);
     relaxed_lp_settings_t lp_settings;
     lp_settings.time_limit            = lp_time_limit;
     lp_settings.tolerance             = context.settings.tolerances.absolute_tolerance;

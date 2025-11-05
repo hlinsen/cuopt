@@ -26,6 +26,7 @@
 #include <utilities/copy_helpers.hpp>
 
 #include <cuda_runtime_api.h>
+#include <thrust/count.h>
 #include <thrust/functional.h>
 #include <thrust/logical.h>
 #include <thrust/sort.h>
@@ -319,6 +320,64 @@ static bool check_bounds_sanity(const detail::problem_t<i_t, f_t>& problem)
 {
   return check_var_bounds_sanity<i_t, f_t>(problem) &&
          check_constraint_bounds_sanity<i_t, f_t>(problem);
+}
+
+// Kernel to negate coefficients for greater-than constraints
+template <typename i_t, typename f_t>
+__global__ void kernel_convert_greater_to_less(raft::device_span<f_t> coefficients,
+                                               raft::device_span<const i_t> offsets,
+                                               raft::device_span<f_t> constraint_lower_bounds,
+                                               raft::device_span<f_t> constraint_upper_bounds)
+{
+  const i_t constraint_id = blockIdx.x;
+
+  const f_t lb = constraint_lower_bounds[constraint_id];
+  const f_t ub = constraint_upper_bounds[constraint_id];
+
+  // Check if this is a greater-than constraint (lb is finite and ub is infinite)
+  if (!isfinite(lb) || isfinite(ub)) return;
+
+  auto row_start = offsets[constraint_id];
+  auto row_end   = offsets[constraint_id + 1];
+  auto row_size  = row_end - row_start;
+
+  // Negate all coefficients in this constraint row
+  for (i_t tid = threadIdx.x; tid < row_size; tid += blockDim.x) {
+    coefficients[row_start + tid] = -coefficients[row_start + tid];
+  }
+
+  // Negate the bounds for this constraint
+  if (threadIdx.x == 0) {
+    constraint_lower_bounds[constraint_id] = -ub;
+    constraint_upper_bounds[constraint_id] = -lb;
+  }
+}
+
+// Function to convert greater-than constraints to less-than constraints
+// This modifies the problem in-place by negating coefficient matrices and swapping bounds
+template <typename i_t, typename f_t>
+static void convert_greater_to_less(detail::problem_t<i_t, f_t>& problem)
+{
+  raft::common::nvtx::range scope("convert_greater_to_less");
+
+  auto* handle_ptr = problem.handle_ptr;
+
+  // Negate coefficients and bounds for all greater-than constraints
+  constexpr i_t TPB = 256;
+  kernel_convert_greater_to_less<i_t, f_t>
+    <<<problem.n_constraints, TPB, 0, handle_ptr->get_stream()>>>(
+      raft::device_span<f_t>(problem.coefficients.data(), problem.coefficients.size()),
+      raft::device_span<const i_t>(problem.offsets.data(), problem.offsets.size()),
+      raft::device_span<f_t>(problem.constraint_lower_bounds.data(),
+                             problem.constraint_lower_bounds.size()),
+      raft::device_span<f_t>(problem.constraint_upper_bounds.data(),
+                             problem.constraint_upper_bounds.size()));
+  RAFT_CHECK_CUDA(handle_ptr->get_stream());
+
+  // Recompute the transpose since we modified the coefficients
+  problem.compute_transpose_of_problem();
+
+  handle_ptr->sync_stream();
 }
 
 }  // namespace cuopt::linear_programming::detail
