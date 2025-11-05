@@ -838,6 +838,8 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
       user_problem, row_sense, problem, less_rows, equal_rows, greater_rows, new_slacks);
   }
 
+  std::cout << "greater_rows " << greater_rows << std::endl;
+  std::cout << "less_rows " << less_rows << std::endl;
   if (greater_rows > 0) {
     convert_greater_to_less(user_problem, row_sense, problem, greater_rows, less_rows);
   }
@@ -1344,9 +1346,9 @@ void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
   }
   matrix_transpose_vector_multiply(problem.A, 1.0, y, 1.0, dual_residual);
   constexpr bool verbose = false;
-  if (verbose) {
-    printf("Converted solution || A^T y + z - c || %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
-  }
+  // if (verbose) {
+  printf("Converted solution || A^T y + z - c || %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
+  // }
   for (i_t j = 0; j < problem.num_cols; ++j) {
     if (std::abs(dual_residual[j]) > 1e-6) {
       f_t ajty            = 0;
@@ -1370,6 +1372,7 @@ void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
     }
   }
   const f_t dual_res_inf = vector_norm_inf<i_t, f_t>(dual_residual);
+  std::cout << "dual_res_inf " << dual_res_inf << std::endl;
   assert(dual_res_inf < 1e-6);
 }
 

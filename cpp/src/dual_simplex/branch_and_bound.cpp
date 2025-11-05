@@ -1049,11 +1049,10 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   settings_.log.printf("Solving LP root relaxation\n");
   // simplex_solver_settings_t lp_settings = settings_;
   // lp_settings.inside_mip                = 1;
+  // auto copy_root_relax_soln             = root_relax_soln_;
   // lp_status_t root_status               = solve_linear_program_advanced(
-  //   original_lp_, stats_.start_time, lp_settings, root_relax_soln_, root_vstatus_, edge_norms_);
-
-  // FIXME: Figure out correct status mapping
-  lp_status_t root_status = lp_status_t::INFEASIBLE;
+  //   original_lp_, stats_.start_time, lp_settings, copy_root_relax_soln, root_vstatus_,
+  //   edge_norms_);
 
   // Wait for the root relaxation solution to be set by diversity manager
   while (root_relax_soln_.iterations == 0) {
@@ -1062,23 +1061,66 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   }
   stats_.total_lp_iters      = root_relax_soln_.iterations;
   stats_.total_lp_solve_time = toc(stats_.start_time);
+  // root_relax_soln_           = copy_root_relax_soln;
 
+  std::cout << "Root relaxation solution: " << root_relax_soln_.objective << std::endl;
+  std::cout << "Root relaxation primal solution: ";
+  for (auto x : root_relax_soln_.x) {
+    std::cout << x << " ";
+  }
+  std::cout << std::endl;
+  std::cout << "Root relaxation dual solution: ";
+  for (auto y : root_relax_soln_.y) {
+    std::cout << y << " ";
+  }
+  std::cout << std::endl;
+  std::cout << "Root relaxation reduced costs: ";
+  for (auto z : root_relax_soln_.z) {
+    std::cout << z << " ";
+  }
+  std::cout << std::endl;
+
+  // std::cout << "copy_root_relax_soln.objective " << copy_root_relax_soln.objective << std::endl;
+  // std::cout << "copy_root_relax_soln.x ";
+  // for (auto x : copy_root_relax_soln.x) {
+  //   std::cout << x << " ";
+  // }
+  // std::cout << std::endl;
+  // std::cout << "copy_root_relax_soln.y ";
+  // for (auto y : copy_root_relax_soln.y) {
+  //   std::cout << y << " ";
+  // }
+  // std::cout << std::endl;
+  // std::cout << "copy_root_relax_soln.z ";
+  // for (auto z : copy_root_relax_soln.z) {
+  //   std::cout << z << " ";
+  // }
+  // std::cout << std::endl;
+
+  // std::cout << "new_slacks.size() " << new_slacks_.size() << std::endl;
   // Crush the root relaxation solution on converted user problem
   std::vector<f_t> crushed_root_x;
   crush_primal_solution(
     original_problem_, original_lp_, root_relax_soln_.x, new_slacks_, crushed_root_x);
-  std::vector<f_t> crushed_root_dual;
+  std::vector<f_t> crushed_root_y;
   std::vector<f_t> crushed_root_z;
+  // crush_dual_solution(original_problem_,
+  //                     original_lp_,
+  //                     new_slacks_,
+  //                     copy_root_relax_soln.y,
+  //                     copy_root_relax_soln.z,
+  //                     crushed_root_y,
+  //                     crushed_root_z);
   crush_dual_solution(original_problem_,
                       original_lp_,
                       new_slacks_,
                       root_relax_soln_.y,
                       root_relax_soln_.z,
-                      crushed_root_dual,
+                      crushed_root_y,
                       crushed_root_z);
 
   root_relax_soln_.x = crushed_root_x;
-  root_relax_soln_.y = crushed_root_dual;
+  root_relax_soln_.y = crushed_root_y;
   root_relax_soln_.z = crushed_root_z;
 
   // Call crossover on the crushed solution
@@ -1103,7 +1145,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     // }
     return mip_status_t::INFEASIBLE;
   }
-  if (root_status == lp_status_t::UNBOUNDED) {
+  if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
     settings_.log.printf("MIP Unbounded\n");
     if (settings_.heuristic_preemption_callback != nullptr) {
       settings_.heuristic_preemption_callback();
