@@ -1063,19 +1063,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   stats_.total_lp_iters      = root_relax_soln_.iterations;
   stats_.total_lp_solve_time = toc(stats_.start_time);
 
-  // std::cout << "Root objective: " << root_objective_ << std::endl;
-  // std::cout << "Root primal solution: ";
-  // for (auto x : root_relax_soln_.x) {
-  //   std::cout << x << " ";
-  // }
-  // std::cout << std::endl;
-  // std::cout << "Root dual solution: ";
-  // for (auto y : root_relax_soln_.y) {
-  //   std::cout << y << " ";
-  // }
-  // std::cout << std::endl;
-
-  // TODO: Crush the root relaxation solution on converted user problem
+  // Crush the root relaxation solution on converted user problem
   std::vector<f_t> crushed_root_x;
   crush_primal_solution(
     original_problem_, original_lp_, root_relax_soln_.x, new_slacks_, crushed_root_x);
@@ -1092,16 +1080,20 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   root_relax_soln_.x = crushed_root_x;
   root_relax_soln_.y = crushed_root_dual;
   root_relax_soln_.z = crushed_root_z;
-  // TODO: Call crossover on the crushed solution
+
+  // Call crossover on the crushed solution
   lp_solution_t<i_t, f_t> crossover_solution(original_lp_.num_rows, original_lp_.num_cols);
-  std::vector<variable_status_t> vstatus(original_lp_.num_cols);
-  crossover_status_t crossover_status = crossover(
-    original_lp_, settings_, root_relax_soln_, stats_.start_time, crossover_solution, vstatus);
+  crossover_status_t crossover_status = crossover(original_lp_,
+                                                  settings_,
+                                                  root_relax_soln_,
+                                                  stats_.start_time,
+                                                  crossover_solution,
+                                                  root_vstatus_);
   settings_.log.printf("Crossover status: %d\n", crossover_status);
 
   // TODO: Call dual simplex phase 2 to verify basis
 
-  if (root_status == lp_status_t::INFEASIBLE) {
+  if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
     settings_.log.printf("MIP Infeasible\n");
     // FIXME: rarely dual simplex detects infeasible whereas it is feasible.
     // to add a small safety net, check if there is a primal solution already.
@@ -1119,7 +1111,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     return mip_status_t::UNBOUNDED;
   }
 
-  if (root_status == lp_status_t::TIME_LIMIT) {
+  if (crossover_status == crossover_status_t::TIME_LIMIT ||
+      crossover_status == crossover_status_t::CONCURRENT_LIMIT) {
     status_ = mip_exploration_status_t::TIME_LIMIT;
     return set_final_solution(solution, -inf);
   }
