@@ -1063,6 +1063,18 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   stats_.total_lp_iters      = root_relax_soln_.iterations;
   stats_.total_lp_solve_time = toc(stats_.start_time);
 
+  // std::cout << "Root objective: " << root_objective_ << std::endl;
+  // std::cout << "Root primal solution: ";
+  // for (auto x : root_relax_soln_.x) {
+  //   std::cout << x << " ";
+  // }
+  // std::cout << std::endl;
+  // std::cout << "Root dual solution: ";
+  // for (auto y : root_relax_soln_.y) {
+  //   std::cout << y << " ";
+  // }
+  // std::cout << std::endl;
+
   // TODO: Crush the root relaxation solution on converted user problem
   std::vector<f_t> crushed_root_x;
   crush_primal_solution(
@@ -1077,6 +1089,9 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                       crushed_root_dual,
                       crushed_root_z);
 
+  root_relax_soln_.x = crushed_root_x;
+  root_relax_soln_.y = crushed_root_dual;
+  root_relax_soln_.z = crushed_root_z;
   // TODO: Call crossover on the crushed solution
   lp_solution_t<i_t, f_t> crossover_solution(original_lp_.num_rows, original_lp_.num_cols);
   std::vector<variable_status_t> vstatus(original_lp_.num_cols);

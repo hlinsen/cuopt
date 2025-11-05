@@ -217,7 +217,9 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                 std::placeholders::_1,
                 std::placeholders::_2,
                 std::placeholders::_3,
-                std::placeholders::_4);
+                std::placeholders::_4,
+                std::placeholders::_5,
+                std::placeholders::_6);
 
     // Fork a thread for branch and bound
     // std::async and std::future allow us to get the return value of bb::solve()

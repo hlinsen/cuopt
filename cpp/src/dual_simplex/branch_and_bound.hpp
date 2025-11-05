@@ -131,13 +131,18 @@ class branch_and_bound_t {
   // Set the root solution found by PDLP
   void set_root_relaxation_solution(const std::vector<f_t>& primal,
                                     const std::vector<f_t>& dual,
+                                    const std::vector<f_t>& reduced_costs,
                                     f_t objective,
+                                    f_t user_objective,
                                     i_t iterations)
   {
-    root_relax_soln_.x          = primal;
-    root_relax_soln_.y          = dual;
-    root_objective_             = objective;
-    root_relax_soln_.iterations = iterations;
+    root_relax_soln_.x              = primal;
+    root_relax_soln_.y              = dual;
+    root_relax_soln_.z              = reduced_costs;
+    root_objective_                 = objective;
+    root_relax_soln_.objective      = objective;
+    root_relax_soln_.user_objective = user_objective;
+    root_relax_soln_.iterations     = iterations;
   }
 
   // Set a solution based on the user problem during the course of the solve

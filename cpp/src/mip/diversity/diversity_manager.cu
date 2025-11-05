@@ -392,25 +392,42 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       // to bring variables within the bounds
     }
 
+    CUOPT_LOG_INFO(
+      "Optimal solution exists: %i, PDLP relaxed solution: objective %f, iterations %d",
+      ls.lp_optimal_exists,
+      lp_result.get_objective_value(),
+      lp_result.get_additional_termination_information().number_of_steps_taken);
+
     // Send PDLP relaxed solution to branch and bound before it solves the root node
     if (problem_ptr->set_root_relaxation_solution_callback != nullptr) {
-      // Copy solution from device to host
-      std::vector<f_t> host_primal(lp_optimal_solution.size());
-      std::vector<f_t> host_dual(lp_dual_optimal_solution.size());
+      auto& d_primal_solution = lp_result.get_primal_solution();
+      auto& d_dual_solution   = lp_result.get_dual_solution();
+      auto& d_reduced_costs   = lp_result.get_reduced_cost();
+      std::vector<f_t> host_primal(d_primal_solution.size());
+      std::vector<f_t> host_dual(d_dual_solution.size());
+      std::vector<f_t> host_reduced_costs(d_reduced_costs.size());
       raft::copy(host_primal.data(),
-                 lp_optimal_solution.data(),
-                 lp_optimal_solution.size(),
+                 d_primal_solution.data(),
+                 d_primal_solution.size(),
                  problem_ptr->handle_ptr->get_stream());
       raft::copy(host_dual.data(),
-                 lp_dual_optimal_solution.data(),
-                 lp_dual_optimal_solution.size(),
+                 d_dual_solution.data(),
+                 d_dual_solution.size(),
+                 problem_ptr->handle_ptr->get_stream());
+      raft::copy(host_reduced_costs.data(),
+                 d_reduced_costs.data(),
+                 d_reduced_costs.size(),
                  problem_ptr->handle_ptr->get_stream());
       problem_ptr->handle_ptr->sync_stream();
 
       auto user_obj   = problem_ptr->get_user_obj_from_solver_obj(lp_result.get_objective_value());
       auto iterations = lp_result.get_additional_termination_information().number_of_steps_taken;
-      problem_ptr->set_root_relaxation_solution_callback(
-        host_primal, host_dual, user_obj, iterations);
+      problem_ptr->set_root_relaxation_solution_callback(host_primal,
+                                                         host_dual,
+                                                         host_reduced_costs,
+                                                         lp_result.get_objective_value(),
+                                                         user_obj,
+                                                         iterations);
     }
 
     // in case the pdlp returned var boudns that are out of bounds
