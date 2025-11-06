@@ -25,6 +25,7 @@
 #include <dual_simplex/simplex_solver_settings.hpp>
 #include <dual_simplex/solution.hpp>
 #include <dual_simplex/types.hpp>
+#include <utilities/macros.cuh>
 #include <utilities/omp_helpers.hpp>
 
 #include <omp.h>

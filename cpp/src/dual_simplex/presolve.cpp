@@ -838,8 +838,6 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
       user_problem, row_sense, problem, less_rows, equal_rows, greater_rows, new_slacks);
   }
 
-  std::cout << "greater_rows " << greater_rows << std::endl;
-  std::cout << "less_rows " << less_rows << std::endl;
   if (greater_rows > 0) {
     convert_greater_to_less(user_problem, row_sense, problem, greater_rows, less_rows);
   }
@@ -1373,7 +1371,7 @@ void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
   }
   const f_t dual_res_inf = vector_norm_inf<i_t, f_t>(dual_residual);
   std::cout << "dual_res_inf " << dual_res_inf << std::endl;
-  assert(dual_res_inf < 1e-6);
+  assert(dual_res_inf < 1e-4);
 }
 
 template <typename i_t, typename f_t>

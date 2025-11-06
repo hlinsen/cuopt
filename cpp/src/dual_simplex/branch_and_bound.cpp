@@ -1047,6 +1047,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   root_relax_soln_.resize(original_lp_.num_rows, original_lp_.num_cols);
 
   settings_.log.printf("Solving LP root relaxation\n");
+
   // simplex_solver_settings_t lp_settings = settings_;
   // lp_settings.inside_mip                = 1;
   // auto copy_root_relax_soln             = root_relax_soln_;
@@ -1063,41 +1064,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   stats_.total_lp_solve_time = toc(stats_.start_time);
   // root_relax_soln_           = copy_root_relax_soln;
 
-  std::cout << "Root relaxation solution: " << root_relax_soln_.objective << std::endl;
-  std::cout << "Root relaxation primal solution: ";
-  for (auto x : root_relax_soln_.x) {
-    std::cout << x << " ";
-  }
-  std::cout << std::endl;
-  std::cout << "Root relaxation dual solution: ";
-  for (auto y : root_relax_soln_.y) {
-    std::cout << y << " ";
-  }
-  std::cout << std::endl;
-  std::cout << "Root relaxation reduced costs: ";
-  for (auto z : root_relax_soln_.z) {
-    std::cout << z << " ";
-  }
-  std::cout << std::endl;
-
-  // std::cout << "copy_root_relax_soln.objective " << copy_root_relax_soln.objective << std::endl;
-  // std::cout << "copy_root_relax_soln.x ";
-  // for (auto x : copy_root_relax_soln.x) {
-  //   std::cout << x << " ";
-  // }
-  // std::cout << std::endl;
-  // std::cout << "copy_root_relax_soln.y ";
-  // for (auto y : copy_root_relax_soln.y) {
-  //   std::cout << y << " ";
-  // }
-  // std::cout << std::endl;
-  // std::cout << "copy_root_relax_soln.z ";
-  // for (auto z : copy_root_relax_soln.z) {
-  //   std::cout << z << " ";
-  // }
-  // std::cout << std::endl;
-
-  // std::cout << "new_slacks.size() " << new_slacks_.size() << std::endl;
   // Crush the root relaxation solution on converted user problem
   std::vector<f_t> crushed_root_x;
   crush_primal_solution(
@@ -1134,6 +1100,19 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   settings_.log.printf("Crossover status: %d\n", crossover_status);
 
   // TODO: Call dual simplex phase 2 to verify basis
+  i_t validation_iters = 0;
+  // should probably set the cut off here lp_settings.cut_off
+  dual::status_t lp_status = dual_phase2(2,
+                                         0,
+                                         stats_.start_time,
+                                         original_lp_,
+                                         settings_,
+                                         root_vstatus_,
+                                         root_relax_soln_,
+                                         validation_iters,
+                                         edge_norms_);
+  cuopt_assert(validation_iters < 100, "Validation iterations exceeded 10");
+  std::cout << "Validation iterations: " << validation_iters << std::endl;
 
   if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
     settings_.log.printf("MIP Infeasible\n");
