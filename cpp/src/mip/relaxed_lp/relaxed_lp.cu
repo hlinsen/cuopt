@@ -99,7 +99,7 @@ optimization_problem_solution_t<i_t, f_t> get_relaxed_lp_solution(
   cuopt::default_logger().flush();
   // temporarily add timer
   auto start_time = timer_t(pdlp_settings.time_limit);
-  lp_solver.set_inside_mip(true);
+  lp_solver.set_inside_mip(false);
   auto solver_response = lp_solver.run_solver(start_time);
 
   if (solver_response.get_primal_solution().size() != 0 &&

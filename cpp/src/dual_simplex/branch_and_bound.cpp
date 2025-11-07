@@ -1102,6 +1102,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   // TODO: Call dual simplex phase 2 to verify basis
   i_t validation_iters = 0;
   // should probably set the cut off here lp_settings.cut_off
+  settings_.set_log(true);
   dual::status_t lp_status = dual_phase2(2,
                                          0,
                                          stats_.start_time,
@@ -1111,8 +1112,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                          root_relax_soln_,
                                          validation_iters,
                                          edge_norms_);
-  cuopt_assert(validation_iters < 100, "Validation iterations exceeded 10");
   std::cout << "Validation iterations: " << validation_iters << std::endl;
+  cuopt_assert(validation_iters < 100, "Validation iterations exceeded 10");
 
   if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
     settings_.log.printf("MIP Infeasible\n");

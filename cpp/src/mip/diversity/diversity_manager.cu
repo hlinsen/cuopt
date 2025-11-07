@@ -348,12 +348,12 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     // Convert greater-than constraints to less-than constraints before calling LP solver
     // This standardizes the constraint representation: a^T x >= lb becomes -a^T x <= -lb
     // Note: This modifies the problem in-place, so all subsequent operations will use <= form
-    std::cout
-      << "Converting greater-than constraints to less-than constraints before calling LP solver"
-      << std::endl;
-    convert_greater_to_less(*problem_ptr);
+    // std::cout
+    //   << "Converting greater-than constraints to less-than constraints before calling LP solver"
+    //   << std::endl;
+    // convert_greater_to_less(*problem_ptr);
     relaxed_lp_settings_t lp_settings;
-    lp_settings.time_limit            = lp_time_limit;
+    lp_settings.time_limit            = 3600;  // lp_time_limit;
     lp_settings.tolerance             = context.settings.tolerances.absolute_tolerance;
     lp_settings.return_first_feasible = false;
     lp_settings.save_state            = true;
@@ -363,6 +363,8 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
                                                       problem_ptr->handle_ptr->get_stream());
     auto lp_result =
       get_relaxed_lp_solution(*problem_ptr, lp_optimal_solution_copy, lp_state, lp_settings);
+
+    std::cout << "LP enum: " << lp_result.get_termination_status_string() << std::endl;
     {
       std::lock_guard<std::mutex> guard(relaxed_solution_mutex);
       if (!simplex_solution_exists.load()) {
