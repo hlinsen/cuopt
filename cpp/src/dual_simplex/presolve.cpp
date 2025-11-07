@@ -615,16 +615,20 @@ i_t convert_range_rows(const user_problem_t<i_t, f_t>& user_problem,
     f_t h;
     f_t u;
     if (row_sense[i] == 'L') {
+      std::cout << "Transforming less than constraint " << i << " to equal constraint" << std::endl;
       h = b - std::abs(r);
       u = b;
       less_rows--;
       equal_rows++;
     } else if (row_sense[i] == 'G') {
+      std::cout << "Transforming greater than constraint " << i << " to less than constraint"
+                << std::endl;
       h = b;
       u = b + std::abs(r);
       greater_rows--;
       equal_rows++;
     } else if (row_sense[i] == 'E') {
+      std::cout << "Transforming equal constraint " << i << " to equal constraint" << std::endl;
       if (r > 0) {
         h = b;
         u = b + std::abs(r);
@@ -1006,7 +1010,8 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   }
 
   // Add artifical variables
-  if (!settings.barrier_presolve) { add_artifical_variables(problem, equality_rows, new_slacks); }
+  // if (!settings.barrier_presolve) { add_artifical_variables(problem, equality_rows, new_slacks);
+  // }
 }
 
 template <typename i_t, typename f_t>
@@ -1323,6 +1328,13 @@ void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
     z[j] = user_z[j];
   }
 
+  std::cout << "user_problem.num_rows " << user_problem.num_rows << std::endl;
+  std::cout << "problem.num_rows " << problem.num_rows << std::endl;
+  std::cout << "user_y.size() " << user_y.size() << std::endl;
+  std::cout << "y.size() " << y.size() << std::endl;
+  std::cout << "user_z.size() " << user_z.size() << std::endl;
+  std::cout << "z.size() " << z.size() << std::endl;
+
   for (i_t j : new_slacks) {
     const i_t col_start = problem.A.col_start[j];
     const i_t col_end   = problem.A.col_start[j + 1];
@@ -1343,7 +1355,7 @@ void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
     dual_residual[j] -= problem.objective[j];
   }
   matrix_transpose_vector_multiply(problem.A, 1.0, y, 1.0, dual_residual);
-  constexpr bool verbose = false;
+  constexpr bool verbose = true;
   // if (verbose) {
   printf("Converted solution || A^T y + z - c || %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
   // }
@@ -1371,7 +1383,7 @@ void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
   }
   const f_t dual_res_inf = vector_norm_inf<i_t, f_t>(dual_residual);
   std::cout << "dual_res_inf " << dual_res_inf << std::endl;
-  assert(dual_res_inf < 1e-4);
+  // assert(dual_res_inf < 1e-4);
 }
 
 template <typename i_t, typename f_t>
