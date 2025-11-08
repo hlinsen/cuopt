@@ -605,20 +605,16 @@ i_t convert_range_rows(const user_problem_t<i_t, f_t>& user_problem,
     f_t h;
     f_t u;
     if (row_sense[i] == 'L') {
-      std::cout << "Transforming less than constraint " << i << " to equal constraint" << std::endl;
       h = b - std::abs(r);
       u = b;
       less_rows--;
       equal_rows++;
     } else if (row_sense[i] == 'G') {
-      std::cout << "Transforming greater than constraint " << i << " to less than constraint"
-                << std::endl;
       h = b;
       u = b + std::abs(r);
       greater_rows--;
       equal_rows++;
     } else if (row_sense[i] == 'E') {
-      std::cout << "Transforming equal constraint " << i << " to equal constraint" << std::endl;
       if (r > 0) {
         h = b;
         u = b + std::abs(r);
@@ -774,7 +770,7 @@ i_t add_artifical_variables(lp_problem_t<i_t, f_t>& problem,
   problem.A.col_start[num_cols] = p;
   assert(j == num_cols);
   assert(p == nnz);
-  constexpr bool verbose = true;
+  constexpr bool verbose = false;
   if (verbose) { printf("Added %d artificial variables\n", num_artificial_vars); }
   problem.A.n      = num_cols;
   problem.num_cols = num_cols;
@@ -1326,13 +1322,6 @@ f_t crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
   for (i_t j = 0; j < user_problem.num_cols; j++) {
     z[j] = user_z[j];
   }
-
-  std::cout << "user_problem.num_rows " << user_problem.num_rows << std::endl;
-  std::cout << "problem.num_rows " << problem.num_rows << std::endl;
-  std::cout << "user_y.size() " << user_y.size() << std::endl;
-  std::cout << "y.size() " << y.size() << std::endl;
-  std::cout << "user_z.size() " << user_z.size() << std::endl;
-  std::cout << "z.size() " << z.size() << std::endl;
 
   std::vector<bool> is_range_row(problem.num_rows, false);
   for (i_t i = 0; i < user_problem.range_rows.size(); i++) {

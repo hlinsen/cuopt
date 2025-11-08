@@ -354,7 +354,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     auto lp_result =
       get_relaxed_lp_solution(*problem_ptr, lp_optimal_solution_copy, lp_state, lp_settings);
 
-    std::cout << "LP enum: " << lp_result.get_termination_status_string() << std::endl;
+    CUOPT_LOG_INFO("LP enum: %s", lp_result.get_termination_status_string().c_str());
     {
       std::lock_guard<std::mutex> guard(relaxed_solution_mutex);
       if (!simplex_solution_exists.load()) {

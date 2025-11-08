@@ -1097,6 +1097,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                          edge_norms_);
   settings_.log.printf("Validation iterations: %d\n", validation_iters);
   cuopt_assert(validation_iters < 100, "Validation iterations exceeded 10");
+  exit(0);
 
   if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
     settings_.log.printf("MIP Infeasible\n");
