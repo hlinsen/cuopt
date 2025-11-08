@@ -1320,13 +1320,13 @@ void crush_primal_solution_with_slack(const user_problem_t<i_t, f_t>& user_probl
 }
 
 template <typename i_t, typename f_t>
-void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
-                         const lp_problem_t<i_t, f_t>& problem,
-                         const std::vector<i_t>& new_slacks,
-                         const std::vector<f_t>& user_y,
-                         const std::vector<f_t>& user_z,
-                         std::vector<f_t>& y,
-                         std::vector<f_t>& z)
+f_t crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
+                        const lp_problem_t<i_t, f_t>& problem,
+                        const std::vector<i_t>& new_slacks,
+                        const std::vector<f_t>& user_y,
+                        const std::vector<f_t>& user_z,
+                        std::vector<f_t>& y,
+                        std::vector<f_t>& z)
 {
   y.resize(problem.num_rows);
   for (i_t i = 0; i < user_problem.num_rows; i++) {
@@ -1374,10 +1374,10 @@ void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
     dual_residual[j] -= problem.objective[j];
   }
   matrix_transpose_vector_multiply(problem.A, 1.0, y, 1.0, dual_residual);
-  constexpr bool verbose = true;
-  // if (verbose) {
-  printf("Converted solution || A^T y + z - c || %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
-  // }
+  constexpr bool verbose = false;
+  if (verbose) {
+    printf("Converted solution || A^T y + z - c || %e\n", vector_norm_inf<i_t, f_t>(dual_residual));
+  }
   for (i_t j = 0; j < problem.num_cols; ++j) {
     if (std::abs(dual_residual[j]) > 1e-6) {
       f_t ajty            = 0;
@@ -1401,8 +1401,8 @@ void crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
     }
   }
   const f_t dual_res_inf = vector_norm_inf<i_t, f_t>(dual_residual);
-  std::cout << "dual_res_inf " << dual_res_inf << std::endl;
   // assert(dual_res_inf < 1e-4);
+  return dual_res_inf;
 }
 
 template <typename i_t, typename f_t>
@@ -1618,6 +1618,14 @@ template void crush_primal_solution<int, double>(const user_problem_t<int, doubl
                                                  const std::vector<double>& user_solution,
                                                  const std::vector<int>& new_slacks,
                                                  std::vector<double>& solution);
+
+template double crush_dual_solution<int, double>(const user_problem_t<int, double>& user_problem,
+                                                 const lp_problem_t<int, double>& problem,
+                                                 const std::vector<int>& new_slacks,
+                                                 const std::vector<double>& user_y,
+                                                 const std::vector<double>& user_z,
+                                                 std::vector<double>& y,
+                                                 std::vector<double>& z);
 
 template void uncrush_primal_solution<int, double>(const user_problem_t<int, double>& user_problem,
                                                    const lp_problem_t<int, double>& problem,

@@ -1046,7 +1046,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 
   root_relax_soln_.resize(original_lp_.num_rows, original_lp_.num_cols);
 
-  settings_.log.printf("Solving LP root relaxation\n");
+  settings_.log.printf("Waiting for PDLP root relaxation\n");
 
   // simplex_solver_settings_t lp_settings = settings_;
   // lp_settings.inside_mip                = 1;
@@ -1062,28 +1062,21 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   }
   stats_.total_lp_iters      = root_relax_soln_.iterations;
   stats_.total_lp_solve_time = toc(stats_.start_time);
-  // root_relax_soln_           = copy_root_relax_soln;
-
   // Crush the root relaxation solution on converted user problem
   std::vector<f_t> crushed_root_x;
   crush_primal_solution(
     original_problem_, original_lp_, root_relax_soln_.x, new_slacks_, crushed_root_x);
   std::vector<f_t> crushed_root_y;
   std::vector<f_t> crushed_root_z;
-  // crush_dual_solution(original_problem_,
-  //                     original_lp_,
-  //                     new_slacks_,
-  //                     copy_root_relax_soln.y,
-  //                     copy_root_relax_soln.z,
-  //                     crushed_root_y,
-  //                     crushed_root_z);
-  crush_dual_solution(original_problem_,
-                      original_lp_,
-                      new_slacks_,
-                      root_relax_soln_.y,
-                      root_relax_soln_.z,
-                      crushed_root_y,
-                      crushed_root_z);
+
+  f_t dual_res_inf = crush_dual_solution(original_problem_,
+                                         original_lp_,
+                                         new_slacks_,
+                                         root_relax_soln_.y,
+                                         root_relax_soln_.z,
+                                         crushed_root_y,
+                                         crushed_root_z);
+  settings_.log.printf("Dual residual inf: %e\n", dual_res_inf);
 
   root_relax_soln_.x = crushed_root_x;
   root_relax_soln_.y = crushed_root_y;
@@ -1112,7 +1105,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                          root_relax_soln_,
                                          validation_iters,
                                          edge_norms_);
-  std::cout << "Validation iterations: " << validation_iters << std::endl;
+  settings_.log.printf("Validation iterations: %d\n", validation_iters);
   cuopt_assert(validation_iters < 100, "Validation iterations exceeded 10");
 
   if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {

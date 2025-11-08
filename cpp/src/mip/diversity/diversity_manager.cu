@@ -351,9 +351,9 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     // std::cout
     //   << "Converting greater-than constraints to less-than constraints before calling LP solver"
     //   << std::endl;
-    // convert_greater_to_less(*problem_ptr);
+    convert_greater_to_less(*problem_ptr);
     relaxed_lp_settings_t lp_settings;
-    lp_settings.time_limit            = 3600;  // lp_time_limit;
+    lp_settings.time_limit            = lp_time_limit;
     lp_settings.tolerance             = context.settings.tolerances.absolute_tolerance;
     lp_settings.return_first_feasible = false;
     lp_settings.save_state            = true;
