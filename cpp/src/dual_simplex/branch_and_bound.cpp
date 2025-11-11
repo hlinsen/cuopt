@@ -1095,7 +1095,18 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                          root_relax_soln_,
                                          validation_iters,
                                          edge_norms_);
-  settings_.log.printf("Validation iterations: %d\n", validation_iters);
+  settings_.log.printf("Validation iterations first call: %d\n", validation_iters);
+  validation_iters = 0;
+  lp_status        = dual_phase2(2,
+                          0,
+                          stats_.start_time,
+                          original_lp_,
+                          settings_,
+                          root_vstatus_,
+                          root_relax_soln_,
+                          validation_iters,
+                          edge_norms_);
+  settings_.log.printf("Validation iterations second call: %d\n", validation_iters);
   cuopt_assert(validation_iters < 100, "Validation iterations exceeded 10");
   exit(0);
 
