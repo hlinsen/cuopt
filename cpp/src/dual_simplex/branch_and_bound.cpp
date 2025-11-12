@@ -1038,12 +1038,27 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 
   settings_.log.printf("Waiting for PDLP root relaxation\n");
 
-  // simplex_solver_settings_t lp_settings = settings_;
-  // lp_settings.inside_mip                = 1;
+  simplex_solver_settings_t lp_settings = settings_;
+  lp_settings.inside_mip                = 1;
   // auto copy_root_relax_soln             = root_relax_soln_;
   // lp_status_t root_status               = solve_linear_program_advanced(
   //   original_lp_, stats_.start_time, lp_settings, copy_root_relax_soln, root_vstatus_,
   //   edge_norms_);
+
+  i_t validation_iters = 0;
+  // edge_norms_.clear();
+  // settings_.set_log(true);
+  // dual::status_t lp_status = dual_phase2(2,
+  //                                        0,
+  //                                        stats_.start_time,
+  //                                        original_lp_,
+  //                                        settings_,
+  //                                        root_vstatus_,
+  //                                        root_relax_soln_,
+  //                                        validation_iters,
+  //                                        edge_norms_);
+  // settings_.log.printf("Validation iterations root relaxation: %d\n", validation_iters);
+  // exit(0);
 
   // Wait for the root relaxation solution to be set by diversity manager
   while (root_relax_soln_.iterations == 0) {
@@ -1083,7 +1098,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   settings_.log.printf("Crossover status: %d\n", crossover_status);
 
   // TODO: Call dual simplex phase 2 to verify basis
-  i_t validation_iters = 0;
+  validation_iters = 0;
   // should probably set the cut off here lp_settings.cut_off
   settings_.set_log(true);
   dual::status_t lp_status = dual_phase2(2,
@@ -1096,6 +1111,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                          validation_iters,
                                          edge_norms_);
   settings_.log.printf("Validation iterations first call: %d\n", validation_iters);
+
   validation_iters = 0;
   lp_status        = dual_phase2(2,
                           0,
