@@ -127,8 +127,7 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
     auto lp_timer       = timer_t(settings.time_limit);
     settings.method     = method_t::Concurrent;
 
-    auto opt_sol = solve_lp_with_method<i_t, f_t>(
-      *context.problem_ptr->original_problem_ptr, *context.problem_ptr, settings, lp_timer);
+    auto opt_sol = solve_lp_with_method<i_t, f_t>(*context.problem_ptr, settings, lp_timer);
 
     solution_t<i_t, f_t> sol(*context.problem_ptr);
     sol.copy_new_assignment(host_copy(opt_sol.get_primal_solution()));

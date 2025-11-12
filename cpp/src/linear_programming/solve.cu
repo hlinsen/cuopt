@@ -642,7 +642,6 @@ void run_dual_simplex_thread(
 
 template <typename i_t, typename f_t>
 optimization_problem_solution_t<i_t, f_t> run_concurrent(
-  const optimization_problem_t<i_t, f_t>& op_problem,
   detail::problem_t<i_t, f_t>& problem,
   pdlp_solver_settings_t<i_t, f_t> const& settings,
   const timer_t& timer,
@@ -652,8 +651,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   timer_t timer_concurrent(timer.remaining_time());
 
   // Copy the settings so that we can set the concurrent halt pointer
-  pdlp_solver_settings_t<i_t, f_t> settings_pdlp(settings,
-                                                 op_problem.get_handle_ptr()->get_stream());
+  pdlp_solver_settings_t<i_t, f_t> settings_pdlp(settings, problem.handle_ptr->get_stream());
 
   // Set the concurrent halt pointer
   global_concurrent_halt        = 0;
@@ -726,7 +724,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
       sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible ||
       sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::DualInfeasible) {
     CUOPT_LOG_INFO("Solved with dual simplex");
-    sol_pdlp.copy_from(op_problem.get_handle_ptr(), sol_dual_simplex);
+    sol_pdlp.copy_from(problem.handle_ptr, sol_dual_simplex);
     sol_pdlp.set_solve_time(end_time);
     CUOPT_LOG_INFO("Status: %s   Objective: %.8e  Iterations: %d  Time: %.3fs",
                    sol_pdlp.get_termination_status_string().c_str(),
@@ -736,7 +734,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     return sol_pdlp;
   } else if (sol_barrier.get_termination_status() == pdlp_termination_status_t::Optimal) {
     CUOPT_LOG_INFO("Solved with barrier");
-    sol_pdlp.copy_from(op_problem.get_handle_ptr(), sol_barrier);
+    sol_pdlp.copy_from(problem.handle_ptr, sol_barrier);
     sol_pdlp.set_solve_time(end_time);
     CUOPT_LOG_INFO("Status: %s   Objective: %.8e  Iterations: %d  Time: %.3fs",
                    sol_pdlp.get_termination_status_string().c_str(),
@@ -758,7 +756,6 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
 
 template <typename i_t, typename f_t>
 optimization_problem_solution_t<i_t, f_t> solve_lp_with_method(
-  const optimization_problem_t<i_t, f_t>& op_problem,
   detail::problem_t<i_t, f_t>& problem,
   pdlp_solver_settings_t<i_t, f_t> const& settings,
   const timer_t& timer,
@@ -769,7 +766,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_with_method(
   } else if (settings.method == method_t::Barrier) {
     return run_barrier(problem, settings, timer);
   } else if (settings.method == method_t::Concurrent) {
-    return run_concurrent(op_problem, problem, settings, timer, is_batch_mode);
+    return run_concurrent(problem, settings, timer, is_batch_mode);
   } else {
     return run_pdlp(problem, settings, timer, is_batch_mode);
   }
@@ -861,7 +858,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
 
     setup_device_symbols(op_problem.get_handle_ptr()->get_stream());
 
-    auto solution = solve_lp_with_method(op_problem, problem, settings, lp_timer, is_batch_mode);
+    auto solution = solve_lp_with_method(problem, settings, lp_timer, is_batch_mode);
 
     if (run_presolve) {
       auto primal_solution = cuopt::device_copy(solution.get_primal_solution(),
@@ -1017,7 +1014,6 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(
     bool use_pdlp_solver_mode);                                                        \
                                                                                        \
   template optimization_problem_solution_t<int, F_TYPE> solve_lp_with_method(          \
-    const optimization_problem_t<int, F_TYPE>& op_problem,                             \
     detail::problem_t<int, F_TYPE>& problem,                                           \
     pdlp_solver_settings_t<int, F_TYPE> const& settings,                               \
     const timer_t& timer,                                                              \
