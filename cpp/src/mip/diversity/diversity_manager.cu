@@ -5,15 +5,17 @@
  */
 /* clang-format on */
 
+#include "cuda_profiler_api.h"
+#include "diversity_manager.cuh"
+
 #include <mip/mip_constants.hpp>
 #include <mip/presolve/probing_cache.cuh>
 #include <mip/presolve/trivial_presolve.cuh>
 #include <mip/problem/problem_helpers.cuh>
-#include "diversity_manager.cuh"
+
+#include <linear_programming/solve.cuh>
 
 #include <utilities/scope_guard.hpp>
-
-#include "cuda_profiler_api.h"
 
 constexpr bool fj_only_run = false;
 
@@ -342,17 +344,35 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     //   << "Converting greater-than constraints to less-than constraints before calling LP solver"
     //   << std::endl;
     convert_greater_to_less(*problem_ptr);
-    relaxed_lp_settings_t lp_settings;
-    lp_settings.time_limit            = lp_time_limit;
-    lp_settings.tolerance             = context.settings.tolerances.absolute_tolerance;
-    lp_settings.return_first_feasible = false;
-    lp_settings.save_state            = true;
-    lp_settings.concurrent_halt       = &global_concurrent_halt;
-    lp_settings.has_initial_primal    = false;
+    // relaxed_lp_settings_t lp_settings;
+    // lp_settings.time_limit            = lp_time_limit;
+    // lp_settings.tolerance             = context.settings.tolerances.absolute_tolerance;
+    // lp_settings.return_first_feasible = false;
+    // lp_settings.save_state            = true;
+    // lp_settings.concurrent_halt       = &global_concurrent_halt;
+    // lp_settings.has_initial_primal    = false;
+    // rmm::device_uvector<f_t> lp_optimal_solution_copy(lp_optimal_solution.size(),
+    //                                                   problem_ptr->handle_ptr->get_stream());
+    // auto lp_result =
+    //   get_relaxed_lp_solution(*problem_ptr, lp_optimal_solution_copy, lp_state, lp_settings);
+    f_t tolerance_divisor =
+      problem_ptr->tolerances.absolute_tolerance / problem_ptr->tolerances.relative_tolerance;
+    if (tolerance_divisor == 0) { tolerance_divisor = 1; }
+    f_t absolute_tolerance = context.settings.tolerances.absolute_tolerance;
+
+    pdlp_solver_settings_t<i_t, f_t> pdlp_settings{};
+    pdlp_settings.tolerances.relative_primal_tolerance = absolute_tolerance / tolerance_divisor;
+    pdlp_settings.tolerances.relative_dual_tolerance   = absolute_tolerance / tolerance_divisor;
+    pdlp_settings.time_limit                           = lp_time_limit;
+    pdlp_settings.first_primal_feasible                = false;
+    pdlp_settings.concurrent_halt                      = &global_concurrent_halt;
+    pdlp_settings.method                               = method_t::PDLP;
+    pdlp_settings.pdlp_solver_mode                     = pdlp_solver_mode_t::Stable2;
+
     rmm::device_uvector<f_t> lp_optimal_solution_copy(lp_optimal_solution.size(),
                                                       problem_ptr->handle_ptr->get_stream());
-    auto lp_result =
-      get_relaxed_lp_solution(*problem_ptr, lp_optimal_solution_copy, lp_state, lp_settings);
+    timer_t lp_timer(lp_time_limit);
+    auto lp_result = solve_lp_with_method<i_t, f_t>(*problem_ptr, pdlp_settings, lp_timer);
 
     CUOPT_LOG_INFO("LP enum: %s", lp_result.get_termination_status_string().c_str());
     {
