@@ -1197,12 +1197,12 @@ class iteration_data_t {
   // v = alpha * A * Dinv * A^T * y + beta * v
   void gpu_adat_multiply(f_t alpha,
                          const rmm::device_uvector<f_t>& y,
-                         cuoptdnvector_t<i_t, f_t> const& cusparse_y,
+                         cuopt_cusparse_dnvector_t<i_t, f_t> const& cusparse_y,
                          f_t beta,
                          rmm::device_uvector<f_t>& v,
-                         cuoptdnvector_t<i_t, f_t> const& cusparse_v,
+                         cuopt_cusparse_dnvector_t<i_t, f_t> const& cusparse_v,
                          rmm::device_uvector<f_t>& u,
-                         cuoptdnvector_t<i_t, f_t> const& cusparse_u,
+                         cuopt_cusparse_dnvector_t<i_t, f_t> const& cusparse_u,
                          cusparse_view_t<i_t, f_t>& cusparse_view,
                          const rmm::device_uvector<f_t>& d_inv_diag) const
   {
@@ -1386,20 +1386,20 @@ class iteration_data_t {
   pinned_dense_vector_t<i_t, f_t> dz;
   cusparse_info_t<i_t, f_t> cusparse_info;
   cusparse_view_t<i_t, f_t> cusparse_view_;
-  cuoptdnvector_t<i_t, f_t> cusparse_tmp4_;
-  cuoptdnvector_t<i_t, f_t> cusparse_h_;
-  cuoptdnvector_t<i_t, f_t> cusparse_dx_residual_;
-  cuoptdnvector_t<i_t, f_t> cusparse_dy_;
-  cuoptdnvector_t<i_t, f_t> cusparse_dx_residual_5_;
-  cuoptdnvector_t<i_t, f_t> cusparse_dx_residual_6_;
-  cuoptdnvector_t<i_t, f_t> cusparse_dx_;
-  cuoptdnvector_t<i_t, f_t> cusparse_dx_residual_3_;
-  cuoptdnvector_t<i_t, f_t> cusparse_dx_residual_4_;
-  cuoptdnvector_t<i_t, f_t> cusparse_r1_;
-  cuoptdnvector_t<i_t, f_t> cusparse_dual_residual_;
-  cuoptdnvector_t<i_t, f_t> cusparse_y_residual_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_tmp4_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_h_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_dx_residual_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_dy_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_dx_residual_5_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_dx_residual_6_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_dx_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_dx_residual_3_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_dx_residual_4_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_r1_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_dual_residual_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_y_residual_;
   // GPU ADAT multiply
-  cuoptdnvector_t<i_t, f_t> cusparse_u_;
+  cuopt_cusparse_dnvector_t<i_t, f_t> cusparse_u_;
 
   // Device vectors
 

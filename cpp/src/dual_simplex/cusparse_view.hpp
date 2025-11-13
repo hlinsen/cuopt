@@ -28,7 +28,7 @@ class cusparse_view_t {
   cusparse_view_t(raft::handle_t const* handle_ptr, const csc_matrix_t<i_t, f_t>& A);
   ~cusparse_view_t();
 
-  cuoptdnvector_t<i_t, f_t> create_vector(const rmm::device_uvector<f_t>& vec);
+  cuopt_cusparse_dnvector_t<i_t, f_t> create_vector(const rmm::device_uvector<f_t>& vec);
 
   template <typename AllocatorA, typename AllocatorB>
   void spmv(f_t alpha,
@@ -36,18 +36,18 @@ class cusparse_view_t {
             f_t beta,
             std::vector<f_t, AllocatorB>& y);
   void spmv(f_t alpha,
-            cuoptdnvector_t<i_t, f_t> const& x,
+            cuopt_cusparse_dnvector_t<i_t, f_t> const& x,
             f_t beta,
-            cuoptdnvector_t<i_t, f_t> const& y);
+            cuopt_cusparse_dnvector_t<i_t, f_t> const& y);
   template <typename AllocatorA, typename AllocatorB>
   void transpose_spmv(f_t alpha,
                       const std::vector<f_t, AllocatorA>& x,
                       f_t beta,
                       std::vector<f_t, AllocatorB>& y);
   void transpose_spmv(f_t alpha,
-                      cuoptdnvector_t<i_t, f_t> const& x,
+                      cuopt_cusparse_dnvector_t<i_t, f_t> const& x,
                       f_t beta,
-                      cuoptdnvector_t<i_t, f_t> const& y);
+                      cuopt_cusparse_dnvector_t<i_t, f_t> const& y);
 
   raft::handle_t const* handle_ptr_{nullptr};
 
