@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <utilities/macros.cuh>
+
 #include <raft/sparse/detail/cusparse_macros.h>
 #include <raft/sparse/detail/cusparse_wrappers.h>
 #include <raft/core/handle.hpp>

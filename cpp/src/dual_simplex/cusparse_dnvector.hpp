@@ -5,9 +5,12 @@
 
 #pragma once
 
+#include <utilities/macros.cuh>
+
 #include <raft/sparse/detail/cusparse_wrappers.h>
 
 #include <rmm/device_uvector.hpp>
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
