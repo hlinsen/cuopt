@@ -232,17 +232,22 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
                              CUSPARSE_SPMV_CSR_ALG2,
                              spmv_buffer_transpose_.data(),
                              handle_ptr->get_stream());
+  RAFT_CUSPARSE_TRY(cusparseDestroyDnVec(x));
+  RAFT_CUSPARSE_TRY(cusparseDestroyDnVec(y));
 }
 
 template <typename i_t, typename f_t>
-cusparseDnVecDescr_t cusparse_view_t<i_t, f_t>::create_vector(const rmm::device_uvector<f_t>& vec)
+cusparse_view_t<i_t, f_t>::~cusparse_view_t()
 {
-  // TODO add to RAFT a const version
-  // No RAFT version without the const so you will get a linktime issuen hence the const_cast
-  cusparseDnVecDescr_t cusparse_h;
-  RAFT_CUSPARSE_TRY(raft::sparse::detail::cusparsecreatednvec(
-    &cusparse_h, vec.size(), const_cast<f_t*>(vec.data())));
-  return cusparse_h;
+  RAFT_CUSPARSE_TRY(cusparseDestroySpMat(A_));
+  RAFT_CUSPARSE_TRY(cusparseDestroySpMat(A_T_));
+}
+
+template <typename i_t, typename f_t>
+cuoptdnvector_t<i_t, f_t> cusparse_view_t<i_t, f_t>::create_vector(
+  const rmm::device_uvector<f_t>& vec)
+{
+  return cuoptdnvector_t<i_t, f_t>(vec);
 }
 
 template <typename i_t, typename f_t>
@@ -252,19 +257,19 @@ void cusparse_view_t<i_t, f_t>::spmv(f_t alpha,
                                      f_t beta,
                                      std::vector<f_t, AllocatorB>& y)
 {
-  auto d_x                        = device_copy(x, handle_ptr_->get_stream());
-  auto d_y                        = device_copy(y, handle_ptr_->get_stream());
-  cusparseDnVecDescr_t x_cusparse = create_vector(d_x);
-  cusparseDnVecDescr_t y_cusparse = create_vector(d_y);
+  auto d_x                             = device_copy(x, handle_ptr_->get_stream());
+  auto d_y                             = device_copy(y, handle_ptr_->get_stream());
+  cuoptdnvector_t<i_t, f_t> x_cusparse = create_vector(d_x);
+  cuoptdnvector_t<i_t, f_t> y_cusparse = create_vector(d_y);
   spmv(alpha, x_cusparse, beta, y_cusparse);
   y = cuopt::host_copy<f_t, AllocatorB>(d_y, handle_ptr_->get_stream());
 }
 
 template <typename i_t, typename f_t>
 void cusparse_view_t<i_t, f_t>::spmv(f_t alpha,
-                                     cusparseDnVecDescr_t x,
+                                     cuoptdnvector_t<i_t, f_t> const& x,
                                      f_t beta,
-                                     cusparseDnVecDescr_t y)
+                                     cuoptdnvector_t<i_t, f_t> const& y)
 {
   // Would be simpler if we could pass host data direclty but other cusparse calls with the same
   // handler depend on device data
@@ -280,9 +285,9 @@ void cusparse_view_t<i_t, f_t>::spmv(f_t alpha,
                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
                                      (alpha == 1) ? d_one_.data() : d_minus_one_.data(),
                                      A_,
-                                     x,
+                                     x.vec_descr,
                                      d_beta->data(),
-                                     y,
+                                     y.vec_descr,
                                      CUSPARSE_SPMV_CSR_ALG2,
                                      (f_t*)spmv_buffer_.data(),
                                      handle_ptr_->get_stream());
@@ -295,19 +300,19 @@ void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
                                                f_t beta,
                                                std::vector<f_t, AllocatorB>& y)
 {
-  auto d_x                        = device_copy(x, handle_ptr_->get_stream());
-  auto d_y                        = device_copy(y, handle_ptr_->get_stream());
-  cusparseDnVecDescr_t x_cusparse = create_vector(d_x);
-  cusparseDnVecDescr_t y_cusparse = create_vector(d_y);
+  auto d_x                             = device_copy(x, handle_ptr_->get_stream());
+  auto d_y                             = device_copy(y, handle_ptr_->get_stream());
+  cuoptdnvector_t<i_t, f_t> x_cusparse = create_vector(d_x);
+  cuoptdnvector_t<i_t, f_t> y_cusparse = create_vector(d_y);
   transpose_spmv(alpha, x_cusparse, beta, y_cusparse);
   y = cuopt::host_copy<f_t, AllocatorB>(d_y, handle_ptr_->get_stream());
 }
 
 template <typename i_t, typename f_t>
 void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
-                                               cusparseDnVecDescr_t x,
+                                               cuoptdnvector_t<i_t, f_t> const& x,
                                                f_t beta,
-                                               cusparseDnVecDescr_t y)
+                                               cuoptdnvector_t<i_t, f_t> const& y)
 {
   // Would be simpler if we could pass host data direct;y but other cusparse calls with the same
   // handler depend on device data
@@ -323,9 +328,9 @@ void cusparse_view_t<i_t, f_t>::transpose_spmv(f_t alpha,
                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
                                      (alpha == 1) ? d_one_.data() : d_minus_one_.data(),
                                      A_T_,
-                                     x,
+                                     x.vec_descr,
                                      d_beta->data(),
-                                     y,
+                                     y.vec_descr,
                                      CUSPARSE_SPMV_CSR_ALG2,
                                      (f_t*)spmv_buffer_transpose_.data(),
                                      handle_ptr_->get_stream());
