@@ -239,8 +239,8 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
 template <typename i_t, typename f_t>
 cusparse_view_t<i_t, f_t>::~cusparse_view_t()
 {
-  RAFT_CUSPARSE_TRY(cusparseDestroySpMat(A_));
-  RAFT_CUSPARSE_TRY(cusparseDestroySpMat(A_T_));
+  CUOPT_CUSPARSE_TRY_NO_THROW(cusparseDestroySpMat(A_));
+  CUOPT_CUSPARSE_TRY_NO_THROW(cusparseDestroySpMat(A_T_));
 }
 
 template <typename i_t, typename f_t>
