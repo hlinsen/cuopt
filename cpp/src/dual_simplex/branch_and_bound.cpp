@@ -1060,9 +1060,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   // settings_.log.printf("Validation iterations root relaxation: %d\n", validation_iters);
   // exit(0);
 
-  // Wait for the root relaxation solution to be set by diversity manager
-  while (root_relax_soln_.iterations == 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  // Wait for the root relaxation solution to be sent by the diversity manager
+  while (!root_relaxation_solution_set_.load(std::memory_order_acquire)) {
     continue;
   }
   stats_.total_lp_iters      = root_relax_soln_.iterations;
