@@ -831,7 +831,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   if (verbose) { printf("Constraints < %d = %d > %d\n", less_rows, equal_rows, greater_rows); }
 
   if (user_problem.num_range_rows > 0) {
-    if (1 || verbose) { printf("Problem has %d range rows\n", user_problem.num_range_rows); }
+    if (verbose) { printf("Problem has %d range rows\n", user_problem.num_range_rows); }
     convert_range_rows(
       user_problem, row_sense, problem, less_rows, equal_rows, greater_rows, new_slacks);
   }
