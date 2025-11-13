@@ -37,3 +37,18 @@
       fprintf(stderr, "CUDA Error: %s:%i:%s\n", __FILE__, __LINE__, pErrStr); \
     }                                                                         \
   } while (0)
+
+// Will not throw an error, just print a message
+#define CUOPT_CUSPARSE_TRY_NO_THROW(call)                                    \
+  do {                                                                       \
+    cusparseStatus_t const status = (call);                                  \
+    if (CUSPARSE_STATUS_SUCCESS != status) {                                 \
+      std::string msg{};                                                     \
+      SET_ERROR_MSG(msg,                                                     \
+                    "cuSparse error encountered at: ",                       \
+                    "call='%s', Reason=%d:%s",                               \
+                    #call,                                                   \
+                    status,                                                  \
+                    raft::sparse::detail::cusparse_error_to_string(status)); \
+    }                                                                        \
+  } while (0)
