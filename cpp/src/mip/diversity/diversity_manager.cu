@@ -453,13 +453,6 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
                                                          lp_result.get_objective_value(),
                                                          user_obj,
                                                          iterations);
-      // Set for RINS new B&B object
-      rins.set_root_relaxation_solution(host_primal,
-                                        host_dual,
-                                        host_reduced_costs,
-                                        lp_result.get_objective_value(),
-                                        user_obj,
-                                        iterations);
     }
 
     // in case the pdlp returned var boudns that are out of bounds

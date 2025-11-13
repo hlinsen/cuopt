@@ -80,15 +80,6 @@ class rins_t {
 
   void run_rins();
 
-  void set_root_relaxation_solution(const std::vector<f_t>& primal,
-                                    const std::vector<f_t>& dual,
-                                    const std::vector<f_t>& reduced_costs,
-                                    f_t objective,
-                                    f_t user_objective,
-                                    i_t iterations);
-
-  cuopt::linear_programming::dual_simplex::lp_solution_t<i_t, f_t> root_relax_soln_;
-
   mip_solver_context_t<i_t, f_t>& context;
   problem_t<i_t, f_t>* problem_ptr;
   diversity_manager_t<i_t, f_t>& dm;
@@ -114,7 +105,6 @@ class rins_t {
   std::atomic<i_t> node_count_at_last_rins{0};
   std::atomic<i_t> node_count_at_last_improvement{0};
   std::mutex rins_mutex;
-  std::atomic<bool> root_relaxation_solution_set_{false};
 
   std::unique_ptr<rins_thread_t<i_t, f_t>> rins_thread;
 };

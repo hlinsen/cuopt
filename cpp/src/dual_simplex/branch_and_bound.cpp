@@ -1064,84 +1064,109 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 
   simplex_solver_settings_t lp_settings = settings_;
   lp_settings.inside_mip                = 1;
-  // auto copy_root_relax_soln             = root_relax_soln_;
-  // lp_status_t root_status               = solve_linear_program_advanced(
-  //   original_lp_, stats_.start_time, lp_settings, copy_root_relax_soln, root_vstatus_,
-  //   edge_norms_);
+  if (!is_main_thread()) {
+    lp_status_t root_status = solve_linear_program_advanced(
+      original_lp_, stats_.start_time, lp_settings, root_relax_soln_, root_vstatus_, edge_norms_);
+    stats_.total_lp_iters      = root_relax_soln_.iterations;
+    stats_.total_lp_solve_time = toc(stats_.start_time);
 
-  i_t validation_iters = 0;
-  // edge_norms_.clear();
-  // settings_.set_log(true);
-  // dual::status_t lp_status = dual_phase2(2,
-  //                                        0,
-  //                                        stats_.start_time,
-  //                                        original_lp_,
-  //                                        settings_,
-  //                                        root_vstatus_,
-  //                                        root_relax_soln_,
-  //                                        validation_iters,
-  //                                        edge_norms_);
-  // settings_.log.printf("Validation iterations root relaxation: %d\n", validation_iters);
-  // exit(0);
-
-  // Wait for the root relaxation solution to be sent by the diversity manager
-  while (!root_relaxation_solution_set_.load(std::memory_order_acquire)) {
-    continue;
-  }
-  stats_.total_lp_iters      = root_relax_soln_.iterations;
-  stats_.total_lp_solve_time = toc(stats_.start_time);
-  // Crush the root relaxation solution on converted user problem
-  std::vector<f_t> crushed_root_x;
-  crush_primal_solution(
-    original_problem_, original_lp_, root_relax_soln_.x, new_slacks_, crushed_root_x);
-  std::vector<f_t> crushed_root_y;
-  std::vector<f_t> crushed_root_z;
-
-  f_t dual_res_inf = crush_dual_solution(original_problem_,
-                                         original_lp_,
-                                         new_slacks_,
-                                         root_relax_soln_.y,
-                                         root_relax_soln_.z,
-                                         crushed_root_y,
-                                         crushed_root_z);
-  settings_.log.printf("Dual residual inf: %e\n", dual_res_inf);
-
-  root_relax_soln_.x = crushed_root_x;
-  root_relax_soln_.y = crushed_root_y;
-  root_relax_soln_.z = crushed_root_z;
-
-  // Call crossover on the crushed solution
-  lp_solution_t<i_t, f_t> crossover_solution(original_lp_.num_rows, original_lp_.num_cols);
-  crossover_status_t crossover_status = crossover(original_lp_,
-                                                  settings_,
-                                                  root_relax_soln_,
-                                                  stats_.start_time,
-                                                  crossover_solution,
-                                                  root_vstatus_);
-  settings_.log.printf("Crossover status: %d\n", crossover_status);
-
-  if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
-    settings_.log.printf("MIP Infeasible\n");
-    // FIXME: rarely dual simplex detects infeasible whereas it is feasible.
-    // to add a small safety net, check if there is a primal solution already.
-    // Uncomment this if the issue with cost266-UUE is resolved
-    // if (settings.heuristic_preemption_callback != nullptr) {
-    //   settings.heuristic_preemption_callback();
-    // }
-    return mip_status_t::INFEASIBLE;
-  }
-  if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
-    settings_.log.printf("MIP Unbounded\n");
-    if (settings_.heuristic_preemption_callback != nullptr) {
-      settings_.heuristic_preemption_callback();
+    if (root_status == lp_status_t::INFEASIBLE) {
+      settings_.log.printf("MIP Infeasible\n");
+      // FIXME: rarely dual simplex detects infeasible whereas it is feasible.
+      // to add a small safety net, check if there is a primal solution already.
+      // Uncomment this if the issue with cost266-UUE is resolved
+      // if (settings.heuristic_preemption_callback != nullptr) {
+      //   settings.heuristic_preemption_callback();
+      // }
+      return mip_status_t::INFEASIBLE;
     }
-    return mip_status_t::UNBOUNDED;
-  }
+    if (root_status == lp_status_t::UNBOUNDED) {
+      settings_.log.printf("MIP Unbounded\n");
+      if (settings_.heuristic_preemption_callback != nullptr) {
+        settings_.heuristic_preemption_callback();
+      }
+      return mip_status_t::UNBOUNDED;
+    }
 
-  if (crossover_status == crossover_status_t::TIME_LIMIT ||
-      crossover_status == crossover_status_t::CONCURRENT_LIMIT) {
-    status_ = mip_exploration_status_t::TIME_LIMIT;
-    return set_final_solution(solution, -inf);
+    if (root_status == lp_status_t::TIME_LIMIT) {
+      status_ = mip_exploration_status_t::TIME_LIMIT;
+      return set_final_solution(solution, -inf);
+    }
+  } else {
+    i_t validation_iters = 0;
+    // edge_norms_.clear();
+    // settings_.set_log(true);
+    // dual::status_t lp_status = dual_phase2(2,
+    //                                        0,
+    //                                        stats_.start_time,
+    //                                        original_lp_,
+    //                                        settings_,
+    //                                        root_vstatus_,
+    //                                        root_relax_soln_,
+    //                                        validation_iters,
+    //                                        edge_norms_);
+    // settings_.log.printf("Validation iterations root relaxation: %d\n", validation_iters);
+    // exit(0);
+
+    // Wait for the root relaxation solution to be sent by the diversity manager
+    while (!root_relaxation_solution_set_.load(std::memory_order_acquire)) {
+      continue;
+    }
+    stats_.total_lp_iters      = root_relax_soln_.iterations;
+    stats_.total_lp_solve_time = toc(stats_.start_time);
+    // Crush the root relaxation solution on converted user problem
+    std::vector<f_t> crushed_root_x;
+    crush_primal_solution(
+      original_problem_, original_lp_, root_relax_soln_.x, new_slacks_, crushed_root_x);
+    std::vector<f_t> crushed_root_y;
+    std::vector<f_t> crushed_root_z;
+
+    f_t dual_res_inf = crush_dual_solution(original_problem_,
+                                           original_lp_,
+                                           new_slacks_,
+                                           root_relax_soln_.y,
+                                           root_relax_soln_.z,
+                                           crushed_root_y,
+                                           crushed_root_z);
+    settings_.log.printf("Dual residual inf: %e\n", dual_res_inf);
+
+    root_relax_soln_.x = crushed_root_x;
+    root_relax_soln_.y = crushed_root_y;
+    root_relax_soln_.z = crushed_root_z;
+
+    // Call crossover on the crushed solution
+    lp_solution_t<i_t, f_t> crossover_solution(original_lp_.num_rows, original_lp_.num_cols);
+    crossover_status_t crossover_status = crossover(original_lp_,
+                                                    settings_,
+                                                    root_relax_soln_,
+                                                    stats_.start_time,
+                                                    crossover_solution,
+                                                    root_vstatus_);
+    settings_.log.printf("Crossover status: %d\n", crossover_status);
+
+    if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
+      settings_.log.printf("MIP Infeasible\n");
+      // FIXME: rarely dual simplex detects infeasible whereas it is feasible.
+      // to add a small safety net, check if there is a primal solution already.
+      // Uncomment this if the issue with cost266-UUE is resolved
+      // if (settings.heuristic_preemption_callback != nullptr) {
+      //   settings.heuristic_preemption_callback();
+      // }
+      return mip_status_t::INFEASIBLE;
+    }
+    if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
+      settings_.log.printf("MIP Unbounded\n");
+      if (settings_.heuristic_preemption_callback != nullptr) {
+        settings_.heuristic_preemption_callback();
+      }
+      return mip_status_t::UNBOUNDED;
+    }
+
+    if (crossover_status == crossover_status_t::TIME_LIMIT ||
+        crossover_status == crossover_status_t::CONCURRENT_LIMIT) {
+      status_ = mip_exploration_status_t::TIME_LIMIT;
+      return set_final_solution(solution, -inf);
+    }
   }
 
   assert(root_vstatus_.size() == original_lp_.num_cols);
