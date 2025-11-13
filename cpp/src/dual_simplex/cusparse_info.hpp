@@ -35,16 +35,16 @@ struct cusparse_info_t {
 
   ~cusparse_info_t()
   {
-    //    RAFT_CUSPARSE_TRY(cusparseSpGEMM_destroyDescr(spgemm_descr));
-    //    RAFT_CUSPARSE_TRY(cusparseDestroySpMat(matA_descr));
-    //   RAFT_CUSPARSE_TRY(cusparseDestroySpMat(matDAT_descr));
-    //   RAFT_CUSPARSE_TRY(cusparseDestroySpMat(matADAT_descr));
+    if (spgemm_descr != nullptr) { RAFT_CUSPARSE_TRY(cusparseSpGEMM_destroyDescr(spgemm_descr)); }
+    if (matA_descr != nullptr) { RAFT_CUSPARSE_TRY(cusparseDestroySpMat(matA_descr)); }
+    if (matDAT_descr != nullptr) { RAFT_CUSPARSE_TRY(cusparseDestroySpMat(matDAT_descr)); }
+    if (matADAT_descr != nullptr) { RAFT_CUSPARSE_TRY(cusparseDestroySpMat(matADAT_descr)); }
   }
 
-  cusparseSpMatDescr_t matA_descr;
-  cusparseSpMatDescr_t matDAT_descr;
-  cusparseSpMatDescr_t matADAT_descr;
-  cusparseSpGEMMDescr_t spgemm_descr;
+  cusparseSpMatDescr_t matA_descr{nullptr};
+  cusparseSpMatDescr_t matDAT_descr{nullptr};
+  cusparseSpMatDescr_t matADAT_descr{nullptr};
+  cusparseSpGEMMDescr_t spgemm_descr{nullptr};
   rmm::device_scalar<f_t> alpha;
   rmm::device_scalar<f_t> beta;
   rmm::device_uvector<uint8_t> buffer_size;
