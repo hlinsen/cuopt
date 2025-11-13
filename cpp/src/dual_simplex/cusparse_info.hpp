@@ -7,8 +7,6 @@
 
 #pragma once
 
-#include <dual_simplex/cusparse_dnvector.hpp>
-
 #include <raft/sparse/detail/cusparse_macros.h>
 #include <raft/sparse/detail/cusparse_wrappers.h>
 #include <raft/core/handle.hpp>

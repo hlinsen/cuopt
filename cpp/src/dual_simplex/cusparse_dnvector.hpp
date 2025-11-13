@@ -8,21 +8,6 @@
 #include <raft/sparse/detail/cusparse_wrappers.h>
 
 #include <rmm/device_uvector.hpp>
-
-#define CUOPT_CUSPARSE_TRY_NO_THROW(call)                                    \
-  do {                                                                       \
-    cusparseStatus_t const status = (call);                                  \
-    if (CUSPARSE_STATUS_SUCCESS != status) {                                 \
-      std::string msg{};                                                     \
-      SET_ERROR_MSG(msg,                                                     \
-                    "cuSparse error encountered at: ",                       \
-                    "call='%s', Reason=%d:%s",                               \
-                    #call,                                                   \
-                    status,                                                  \
-                    raft::sparse::detail::cusparse_error_to_string(status)); \
-    }                                                                        \
-  } while (0)
-
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
