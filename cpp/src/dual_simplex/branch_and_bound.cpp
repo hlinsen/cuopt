@@ -1060,9 +1060,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   // settings_.log.printf("Validation iterations root relaxation: %d\n", validation_iters);
   // exit(0);
 
-  // Wait for the root relaxation solution to be set by diversity manager
-  while (root_relax_soln_.iterations == 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  // Wait for the root relaxation solution to be sent by the diversity manager
+  while (!root_relaxation_solution_set_.load(std::memory_order_acquire)) {
     continue;
   }
   stats_.total_lp_iters      = root_relax_soln_.iterations;
@@ -1096,35 +1095,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                                   crossover_solution,
                                                   root_vstatus_);
   settings_.log.printf("Crossover status: %d\n", crossover_status);
-
-  // TODO: Call dual simplex phase 2 to verify basis
-  validation_iters = 0;
-  // should probably set the cut off here lp_settings.cut_off
-  settings_.set_log(true);
-  dual::status_t lp_status = dual_phase2(2,
-                                         0,
-                                         stats_.start_time,
-                                         original_lp_,
-                                         settings_,
-                                         root_vstatus_,
-                                         root_relax_soln_,
-                                         validation_iters,
-                                         edge_norms_);
-  settings_.log.printf("Validation iterations first call: %d\n", validation_iters);
-
-  validation_iters = 0;
-  lp_status        = dual_phase2(2,
-                          0,
-                          stats_.start_time,
-                          original_lp_,
-                          settings_,
-                          root_vstatus_,
-                          root_relax_soln_,
-                          validation_iters,
-                          edge_norms_);
-  settings_.log.printf("Validation iterations second call: %d\n", validation_iters);
-  cuopt_assert(validation_iters < 100, "Validation iterations exceeded 10");
-  exit(0);
 
   if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
     settings_.log.printf("MIP Infeasible\n");

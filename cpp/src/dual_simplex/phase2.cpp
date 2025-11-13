@@ -1920,11 +1920,11 @@ void set_primal_variables_on_bounds(const lp_problem_t<i_t, f_t>& lp,
     const f_t fixed_tolerance = settings.fixed_tol;
     if (std::abs(lp.lower[j] - lp.upper[j]) < fixed_tolerance) {
       if (vstatus[j] != variable_status_t::NONBASIC_FIXED) {
-        settings.log.printf("Setting fixed variable %d to %e (current %e). vstatus %d\n",
-                            j,
-                            lp.lower[j],
-                            x[j],
-                            static_cast<int>(vstatus[j]));
+        settings.log.debug("Setting fixed variable %d to %e (current %e). vstatus %d\n",
+                           j,
+                           lp.lower[j],
+                           x[j],
+                           static_cast<int>(vstatus[j]));
       }
       x[j]       = lp.lower[j];
       vstatus[j] = variable_status_t::NONBASIC_FIXED;
@@ -1942,7 +1942,7 @@ void set_primal_variables_on_bounds(const lp_problem_t<i_t, f_t>& lp,
       x[j] = lp.upper[j];
     } else if (z[j] > fixed_tolerance && lp.lower[j] > -inf) {
       if (vstatus[j] != variable_status_t::NONBASIC_LOWER) {
-        settings.log.printf(
+        settings.log.debug(
           "Setting nonbasic lower variable (zj %e) %d to %e (current %e). vstatus %d\n",
           z[j],
           j,
@@ -1954,7 +1954,7 @@ void set_primal_variables_on_bounds(const lp_problem_t<i_t, f_t>& lp,
       vstatus[j] = variable_status_t::NONBASIC_LOWER;
     } else if (z[j] < fixed_tolerance && lp.upper[j] < inf) {
       if (vstatus[j] != variable_status_t::NONBASIC_UPPER) {
-        settings.log.printf(
+        settings.log.debug(
           "Setting nonbasic upper variable (zj %e) %d to %e (current %e). vstatus %d\n",
           z[j],
           j,
@@ -1967,33 +1967,33 @@ void set_primal_variables_on_bounds(const lp_problem_t<i_t, f_t>& lp,
     } else if (lp.upper[j] == inf && lp.lower[j] > -inf && z[j] < 0) {
       // dual infeasible
       if (vstatus[j] != variable_status_t::NONBASIC_LOWER) {
-        settings.log.printf("Setting nonbasic lower variable %d to %e (current %e). vstatus %d\n",
-                            j,
-                            lp.lower[j],
-                            x[j],
-                            static_cast<int>(vstatus[j]));
+        settings.log.debug("Setting nonbasic lower variable %d to %e (current %e). vstatus %d\n",
+                           j,
+                           lp.lower[j],
+                           x[j],
+                           static_cast<int>(vstatus[j]));
       }
       x[j]       = lp.lower[j];
       vstatus[j] = variable_status_t::NONBASIC_LOWER;
     } else if (lp.lower[j] == -inf && lp.upper[j] < inf && z[j] > 0) {
       // dual infeasible
       if (vstatus[j] != variable_status_t::NONBASIC_UPPER) {
-        settings.log.printf("Setting nonbasic upper variable %d to %e (current %e). vstatus %d\n",
-                            j,
-                            lp.upper[j],
-                            x[j],
-                            static_cast<int>(vstatus[j]));
+        settings.log.debug("Setting nonbasic upper variable %d to %e (current %e). vstatus %d\n",
+                           j,
+                           lp.upper[j],
+                           x[j],
+                           static_cast<int>(vstatus[j]));
       }
       x[j]       = lp.upper[j];
       vstatus[j] = variable_status_t::NONBASIC_UPPER;
     } else if (lp.lower[j] == -inf && lp.upper[j] == inf) {
       x[j] = 0;  // Set nonbasic free variables to 0 this overwrites previous lines
       if (vstatus[j] != variable_status_t::NONBASIC_FREE) {
-        settings.log.printf(
+        settings.log.debug(
           "Setting free variable %d to %e. vstatus %d\n", j, 0, static_cast<int>(vstatus[j]));
       }
       vstatus[j] = variable_status_t::NONBASIC_FREE;
-      settings.log.printf("Setting free variable %d as nonbasic at 0\n", j);
+      settings.log.debug("Setting free variable %d as nonbasic at 0\n", j);
     } else {
       assert(1 == 0);
     }

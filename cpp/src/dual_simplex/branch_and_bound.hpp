@@ -134,6 +134,7 @@ class branch_and_bound_t {
     root_relax_soln_.objective      = objective;
     root_relax_soln_.user_objective = user_objective;
     root_relax_soln_.iterations     = iterations;
+    root_relaxation_solution_set_.store(true, std::memory_order_release);
   }
 
   // Set a solution based on the user problem during the course of the solve
@@ -198,6 +199,7 @@ class branch_and_bound_t {
   f_t root_objective_;
   lp_solution_t<i_t, f_t> root_relax_soln_;
   std::vector<f_t> edge_norms_;
+  std::atomic<bool> root_relaxation_solution_set_{false};
 
   // Pseudocosts
   pseudo_costs_t<i_t, f_t> pc_;
