@@ -23,12 +23,15 @@
 #include <mip/presolve/trivial_presolve.cuh>
 
 namespace cuopt::linear_programming::detail {
-
 template <typename i_t, typename f_t>
 rins_t<i_t, f_t>::rins_t(mip_solver_context_t<i_t, f_t>& context_,
                          diversity_manager_t<i_t, f_t>& dm_,
                          rins_settings_t settings_)
-  : context(context_), problem_ptr(context.problem_ptr), dm(dm_), settings(settings_)
+  : context(context_),
+    problem_ptr(context.problem_ptr),
+    dm(dm_),
+    settings(settings_),
+    root_relax_soln_(1, 1)
 {
   fixrate    = settings.default_fixrate;
   time_limit = settings.default_time_limit;
@@ -83,6 +86,23 @@ void rins_t<i_t, f_t>::enable()
   problem_copy             = std::make_unique<problem_t<i_t, f_t>>(*problem_ptr);
   problem_copy->handle_ptr = &rins_handle;
   enabled                  = true;
+}
+
+template <typename i_t, typename f_t>
+void rins_t<i_t, f_t>::set_root_relaxation_solution(const std::vector<f_t>& primal,
+                                                    const std::vector<f_t>& dual,
+                                                    const std::vector<f_t>& reduced_costs,
+                                                    f_t objective,
+                                                    f_t user_objective,
+                                                    i_t iterations)
+{
+  root_relax_soln_.x              = primal;
+  root_relax_soln_.y              = dual;
+  root_relax_soln_.z              = reduced_costs;
+  root_relax_soln_.objective      = objective;
+  root_relax_soln_.user_objective = user_objective;
+  root_relax_soln_.iterations     = iterations;
+  root_relaxation_solution_set_.store(true, std::memory_order_release);
 }
 
 template <typename i_t, typename f_t>
@@ -252,6 +272,16 @@ void rins_t<i_t, f_t>::run_rins()
   dual_simplex::branch_and_bound_t<i_t, f_t> branch_and_bound(branch_and_bound_problem,
                                                               branch_and_bound_settings);
   branch_and_bound.set_initial_guess(cuopt::host_copy(fixed_assignment, rins_handle.get_stream()));
+
+  while (!root_relaxation_solution_set_.load(std::memory_order_acquire)) {
+    continue;
+  }
+  branch_and_bound.set_root_relaxation_solution(root_relax_soln_.x,
+                                                root_relax_soln_.y,
+                                                root_relax_soln_.z,
+                                                root_relax_soln_.objective,
+                                                root_relax_soln_.user_objective,
+                                                root_relax_soln_.iterations);
   branch_and_bound_status = branch_and_bound.solve(branch_and_bound_solution);
 
   if (!std::isnan(branch_and_bound_solution.objective)) {

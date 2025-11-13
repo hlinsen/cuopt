@@ -446,12 +446,20 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
 
       auto user_obj   = problem_ptr->get_user_obj_from_solver_obj(lp_result.get_objective_value());
       auto iterations = lp_result.get_additional_termination_information().number_of_steps_taken;
+      // Set for the B&B
       problem_ptr->set_root_relaxation_solution_callback(host_primal,
                                                          host_dual,
                                                          host_reduced_costs,
                                                          lp_result.get_objective_value(),
                                                          user_obj,
                                                          iterations);
+      // Set for RINS new B&B object
+      rins.set_root_relaxation_solution(host_primal,
+                                        host_dual,
+                                        host_reduced_costs,
+                                        lp_result.get_objective_value(),
+                                        user_obj,
+                                        iterations);
     }
 
     // in case the pdlp returned var boudns that are out of bounds
