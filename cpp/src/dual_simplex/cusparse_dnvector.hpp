@@ -20,7 +20,7 @@ struct cuoptdnvector_t {
   cuoptdnvector_t(cuoptdnvector_t const& other)            = delete;
   cuoptdnvector_t& operator=(cuoptdnvector_t const& other) = delete;
 
-  cuoptdnvector_t& operator=(cuoptdnvector_t&& other) noexcept
+  cuoptdnvector_t& operator=(cuoptdnvector_t&& other)
   {
     if (vec_descr != nullptr) { RAFT_CUSPARSE_TRY(cusparseDestroyDnVec(vec_descr)); }
     vec_descr       = other.vec_descr;
