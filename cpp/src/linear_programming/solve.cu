@@ -457,6 +457,8 @@ void run_barrier_thread(
     sol_ptr,
   const timer_t& timer)
 {
+  raft::device_setter device_setter(0);
+  if (settings.multi_gpu) { device_setter = raft::device_setter(1); }
   // We will return the solution from the thread as a unique_ptr
   sol_ptr = std::make_unique<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>(
