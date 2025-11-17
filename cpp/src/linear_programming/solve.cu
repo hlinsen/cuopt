@@ -448,6 +448,8 @@ optimization_problem_solution_t<i_t, f_t> run_barrier(
                                   1);
 }
 
+inline auto make_async() { return std::make_shared<rmm::mr::cuda_async_memory_resource>(); }
+
 template <typename i_t, typename f_t>
 void run_barrier_thread(
   dual_simplex::user_problem_t<i_t, f_t>& problem,
@@ -458,7 +460,11 @@ void run_barrier_thread(
   const timer_t& timer)
 {
   raft::device_setter device_setter(0);
-  if (settings.multi_gpu) { device_setter = raft::device_setter(1); }
+  if (settings.multi_gpu) {
+    device_setter        = raft::device_setter(1);
+    auto memory_resource = make_async();
+    rmm::mr::set_current_device_resource(memory_resource.get());
+  }
   // We will return the solution from the thread as a unique_ptr
   sol_ptr = std::make_unique<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>(
