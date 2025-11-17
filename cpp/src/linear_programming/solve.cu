@@ -37,6 +37,7 @@
 #include <raft/sparse/detail/cusparse_macros.h>
 #include <raft/sparse/detail/cusparse_wrappers.h>
 #include <raft/common/nvtx.hpp>
+#include <raft/core/device_setter.hpp>
 #include <raft/core/handle.hpp>
 
 #include <thread>  // For std::thread
@@ -455,10 +456,15 @@ void run_barrier_thread(
     sol_ptr,
   const timer_t& timer)
 {
+  raft::device_setter device_setter(0);
+  if (settings.multi_gpu) { device_setter = raft::device_setter(1); }
   // We will return the solution from the thread as a unique_ptr
   sol_ptr = std::make_unique<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>(
     run_barrier(problem, settings, timer));
+
+  // Wait for barrier thread to finish
+  problem.handle_ptr->sync_stream();
 }
 
 template <typename i_t, typename f_t>
@@ -667,6 +673,12 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   // Make sure allocations are done on the original stream
   problem.handle_ptr->sync_stream();
 
+  int device_count = raft::device_setter::get_device_count();
+  if (settings.multi_gpu) {
+    CUOPT_LOG_INFO("Device count: %d", device_count);
+    cuopt_assert(device_count > 1, "Multi-GPU mode requires at least 2 GPUs");
+  }
+
   dual_simplex::user_problem_t<i_t, f_t> dual_simplex_problem =
     cuopt_problem_to_simplex_problem<i_t, f_t>(&barrier_handle, problem);
   // Create a thread for dual simplex
@@ -696,8 +708,6 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   // Wait for dual simplex thread to finish
   dual_simplex_thread.join();
 
-  // Wait for barrier thread to finish
-  barrier_handle.sync_stream();
   barrier_thread.join();
 
   // copy the dual simplex solution to the device

@@ -105,7 +105,8 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_CUDSS_DETERMINISTIC, &pdlp_settings.cudss_deterministic, false},
     {CUOPT_PRESOLVE, &pdlp_settings.presolve, false},
     {CUOPT_PRESOLVE, &mip_settings.presolve, true},
-    {CUOPT_DUAL_POSTSOLVE, &pdlp_settings.dual_postsolve, true}
+    {CUOPT_DUAL_POSTSOLVE, &pdlp_settings.dual_postsolve, true},
+    {CUOPT_MULTI_GPU, &pdlp_settings.multi_gpu, false}
   };
   // String parameters
   string_parameters = {

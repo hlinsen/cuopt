@@ -210,6 +210,7 @@ class pdlp_solver_settings_t {
   bool first_primal_feasible{false};
   bool presolve{false};
   bool dual_postsolve{true};
+  bool multi_gpu{false};
   method_t method{method_t::Concurrent};
   // For concurrent termination
   volatile int* concurrent_halt;
