@@ -460,10 +460,12 @@ void run_barrier_thread(
   const timer_t& timer)
 {
   raft::device_setter device_setter(0);
+  std::cout << "Settings multi_gpu: " << settings.multi_gpu << std::endl;
   if (settings.multi_gpu) {
     device_setter        = raft::device_setter(1);
     auto memory_resource = make_async();
     rmm::mr::set_current_device_resource(memory_resource.get());
+    std::cout << "Current device resource: " << device_setter.get_current_device() << std::endl;
   }
   // We will return the solution from the thread as a unique_ptr
   sol_ptr = std::make_unique<
