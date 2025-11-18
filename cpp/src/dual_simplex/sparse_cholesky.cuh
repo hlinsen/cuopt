@@ -154,7 +154,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     cuda_error = cudaSuccess;
     status     = CUDSS_STATUS_SUCCESS;
 
-    if (CUDART_VERSION >= 13000 && settings_.concurrent_halt != nullptr && settings_.num_gpus == 1) {
+    if (CUDART_VERSION >= 13000 && settings_.concurrent_halt != nullptr &&
+        settings_.num_gpus == 1) {
       cuGetErrorString_func = cuopt::detail::get_driver_entry_point("cuGetErrorString");
       // 1. Set up the GPU resources
       CUdevResource initial_device_GPU_resources = {};
