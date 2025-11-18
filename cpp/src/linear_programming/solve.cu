@@ -677,10 +677,16 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   problem.handle_ptr->sync_stream();
 
   int device_count = raft::device_setter::get_device_count();
+<<<<<<< HEAD
   if (settings.num_gpus > 1) {
     CUOPT_LOG_INFO("Running PDLP and Barrier on %d GPUs", device_count);
     cuopt_expects(
       device_count > 1, error_type_t::RuntimeError, "Multi-GPU mode requires at least 2 GPUs");
+=======
+  if (settings.multi_gpu) {
+    CUOPT_LOG_INFO("Device count: %d", device_count);
+    cuopt_expects(device_count > 1, error_type_t::RuntimeError, "Multi-GPU mode requires at least 2 GPUs");
+>>>>>>> 62f44ac (Use cudssCreateMg)
   }
 
   // Initialize the dual simplex structures before we run PDLP.
@@ -702,12 +708,26 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   std::unique_ptr<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>
     sol_barrier_ptr;
+<<<<<<< HEAD
   auto barrier_thread = std::thread([&]() {
     auto call_barrier_thread = [&]() {
       rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
       auto barrier_handle                  = raft::handle_t(barrier_stream);
       auto barrier_problem                 = dual_simplex_problem;
       barrier_problem.handle_ptr           = &barrier_handle;
+=======
+  auto barrier_thread = std::thread(
+    [&]() {
+    if (settings.multi_gpu) {
+    raft::device_setter device_setter(1); // Scoped variable
+      auto memory_resource = make_async();
+      rmm::mr::set_current_device_resource(memory_resource.get());
+      CUOPT_LOG_INFO("Barrier device: %d", device_setter.get_current_device());
+  rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
+  auto barrier_handle                  = raft::handle_t(barrier_stream);
+  auto barrier_problem = dual_simplex_problem;
+  barrier_problem.handle_ptr = &barrier_handle;
+>>>>>>> 62f44ac (Use cudssCreateMg)
 
       run_barrier_thread<i_t, f_t>(std::ref(barrier_problem),
                                    std::ref(settings_pdlp),
