@@ -678,7 +678,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   int device_count = raft::device_setter::get_device_count();
   if (settings.multi_gpu) {
     CUOPT_LOG_INFO("Device count: %d", device_count);
-    cuopt_assert(device_count > 1, "Multi-GPU mode requires at least 2 GPUs");
+    cuopt_expects(device_count > 1, error_type_t::RuntimeError, "Multi-GPU mode requires at least 2 GPUs");
   }
 
   // Initialize the dual simplex structures before we run PDLP.
@@ -703,7 +703,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   auto barrier_thread = std::thread(
     [&]() {
     if (settings.multi_gpu) {
-    raft::device_setter device_setter(1);
+    raft::device_setter device_setter(1); // Scoped variable
       auto memory_resource = make_async();
       rmm::mr::set_current_device_resource(memory_resource.get());
       CUOPT_LOG_INFO("Barrier device: %d", device_setter.get_current_device());

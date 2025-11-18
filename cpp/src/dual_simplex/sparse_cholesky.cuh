@@ -237,7 +237,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
     }
 
-    CUDSS_CALL_AND_CHECK_EXIT(cudssCreate(&handle), status, "cudssCreate");
+    auto cudss_device_idx = handle_ptr_->get_device();
+    auto cudss_device_count = 1;
+    CUDSS_CALL_AND_CHECK_EXIT(
+      cudssCreateMg(&handle, cudss_device_count, &cudss_device_idx), status, "cudssCreateMg");
+
     CUDSS_CALL_AND_CHECK_EXIT(cudssSetStream(handle, stream), status, "cudaStreamCreate");
 
     mem_handler.ctx          = reinterpret_cast<void*>(handle_ptr_->get_workspace_resource());
@@ -264,12 +268,16 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigCreate(&solverConfig), status, "cudssConfigCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
 
-    auto cudss_device_idx = handle_ptr_->get_device();
-    settings_.log.printf("cudss_device_idx: %d", cudss_device_idx);
     CUDSS_CALL_AND_CHECK_EXIT(
       cudssConfigSet(solverConfig, CUDSS_CONFIG_DEVICE_INDICES, &cudss_device_idx, sizeof(int)),
       status,
       "cudssConfigSet for device indices");
+
+    CUDSS_CALL_AND_CHECK_EXIT(
+      cudssConfigSet(solverConfig, CUDSS_CONFIG_DEVICE_COUNT, &cudss_device_count, sizeof(int)),
+      status,
+      "cudssConfigSet for device count");
+
 
 #if CUDSS_VERSION_MAJOR >= 0 && CUDSS_VERSION_MINOR >= 7
     if (settings_.concurrent_halt != nullptr) {
