@@ -410,7 +410,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   barrier_settings.barrier_relaxed_complementarity_tol = settings.tolerances.relative_gap_tolerance;
   if (barrier_settings.concurrent_halt != nullptr) {
     // Don't show the barrier log in concurrent mode. Show the PDLP log instead
-    barrier_settings.log.log = false;
+    // barrier_settings.log.log = false;
   }
 
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
@@ -459,14 +459,13 @@ void run_barrier_thread(
     sol_ptr,
   const timer_t& timer)
 {
-  raft::device_setter device_setter(0);
-  std::cout << "Settings multi_gpu: " << settings.multi_gpu << std::endl;
-  if (settings.multi_gpu) {
-    device_setter        = raft::device_setter(1);
-    auto memory_resource = make_async();
-    rmm::mr::set_current_device_resource(memory_resource.get());
-    std::cout << "Current device resource: " << device_setter.get_current_device() << std::endl;
-  }
+  // raft::device_setter device_setter(1);
+  // if (settings.multi_gpu) {
+  //   device_setter        = raft::device_setter(1);
+  //   auto memory_resource = make_async();
+  //   rmm::mr::set_current_device_resource(memory_resource.get());
+  //   std::cout << "Current device resource: " << device_setter.get_current_device() << std::endl;
+  // }
   // We will return the solution from the thread as a unique_ptr
   sol_ptr = std::make_unique<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>(
