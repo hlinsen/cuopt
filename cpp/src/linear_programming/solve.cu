@@ -447,8 +447,6 @@ optimization_problem_solution_t<i_t, f_t> run_barrier(
                                   1);
 }
 
-inline auto make_async() { return std::make_shared<rmm::mr::cuda_async_memory_resource>(); }
-
 template <typename i_t, typename f_t>
 void run_barrier_thread(
   dual_simplex::user_problem_t<i_t, f_t>& problem,
@@ -458,13 +456,6 @@ void run_barrier_thread(
     sol_ptr,
   const timer_t& timer)
 {
-  // raft::device_setter device_setter(1);
-  // if (settings.multi_gpu) {
-  //   device_setter        = raft::device_setter(1);
-  //   auto memory_resource = make_async();
-  //   rmm::mr::set_current_device_resource(memory_resource.get());
-  //   std::cout << "Current device resource: " << device_setter.get_current_device() << std::endl;
-  // }
   // We will return the solution from the thread as a unique_ptr
   sol_ptr = std::make_unique<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>(
@@ -677,7 +668,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
 
   int device_count = raft::device_setter::get_device_count();
   if (settings.multi_gpu) {
-    CUOPT_LOG_INFO("Device count: %d", device_count);
+    CUOPT_LOG_INFO("Running PDLP and Barrier on %d GPUs", device_count);
     cuopt_expects(device_count > 1, error_type_t::RuntimeError, "Multi-GPU mode requires at least 2 GPUs");
   }
 
@@ -704,9 +695,8 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     [&]() {
     if (settings.multi_gpu) {
     raft::device_setter device_setter(1); // Scoped variable
-      auto memory_resource = make_async();
-      rmm::mr::set_current_device_resource(memory_resource.get());
-      CUOPT_LOG_INFO("Barrier device: %d", device_setter.get_current_device());
+      CUOPT_LOG_DEBUG("Barrier device: %d", device_setter.get_current_device());
+
   rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
   auto barrier_handle                  = raft::handle_t(barrier_stream);
   auto barrier_problem = dual_simplex_problem;
@@ -732,7 +722,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   });
 
   if (settings.multi_gpu) {
-    CUOPT_LOG_INFO("PDLP device: %d", raft::device_setter::get_current_device());
+    CUOPT_LOG_DEBUG("PDLP device: %d", raft::device_setter::get_current_device());
   }
   // Run pdlp in the main thread
   auto sol_pdlp = run_pdlp(problem, settings_pdlp, timer, is_batch_mode);
