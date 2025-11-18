@@ -434,9 +434,6 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       A_created = true;
     }
 
-
-    settings_.log.printf("Analyze device: %d", handle_ptr_->get_device());
-
     // Perform symbolic analysis
     f_t start_symbolic = tic();
     f_t start_symbolic_factor;

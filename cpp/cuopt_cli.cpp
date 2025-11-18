@@ -13,7 +13,6 @@
 
 #include <raft/core/device_setter.hpp>
 #include <raft/core/handle.hpp>
-#include <raft/core/device_setter.hpp>
 
 #include <rmm/mr/cuda_async_memory_resource.hpp>
 

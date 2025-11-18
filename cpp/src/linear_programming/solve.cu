@@ -410,7 +410,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   barrier_settings.barrier_relaxed_complementarity_tol = settings.tolerances.relative_gap_tolerance;
   if (barrier_settings.concurrent_halt != nullptr) {
     // Don't show the barrier log in concurrent mode. Show the PDLP log instead
-    // barrier_settings.log.log = false;
+    barrier_settings.log.log = false;
   }
 
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
