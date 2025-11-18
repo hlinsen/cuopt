@@ -379,7 +379,7 @@ worker() {
             args="$args --relaxation"
         fi
         if [ "$GPUS_PER_INSTANCE" -gt 1 ]; then
-            args="$args --multi-gpu true"
+            args="$args --num-gpus $GPUS_PER_INSTANCE"
         fi
         args="$args --log-to-console $LOG_TO_CONSOLE"
         args="$args --presolve $PRESOLVE"

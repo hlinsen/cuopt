@@ -74,7 +74,7 @@ struct simplex_solver_settings_t {
       solution_callback(nullptr),
       heuristic_preemption_callback(nullptr),
       concurrent_halt(nullptr),
-      multi_gpu(false)
+      num_gpus(1)
   {
   }
 
@@ -121,7 +121,7 @@ struct simplex_solver_settings_t {
   bool cudss_deterministic;   // true to use cuDSS deterministic mode, false for non-deterministic
   bool barrier;               // true to use barrier method, false to use dual simplex method
   bool eliminate_dense_columns;  // true to eliminate dense columns from A*D*A^T
-  bool multi_gpu;                // true to use multi-GPU mode, false to use single-GPU mode
+  int num_gpus;                  // Number of GPUs to use (1 for single-GPU, 2 for multi-GPU)
   i_t folding;                   // -1 automatic, 0 don't fold, 1 fold
   i_t augmented;  // -1 automatic, 0 to solve with ADAT, 1 to solve with augmented system
   i_t dualize;    // -1 automatic, 0 to not dualize, 1 to dualize

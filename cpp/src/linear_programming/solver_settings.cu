@@ -46,7 +46,7 @@ pdlp_solver_settings_t<i_t, f_t>::pdlp_solver_settings_t(const pdlp_solver_setti
     first_primal_feasible(other.first_primal_feasible),
     pdlp_warm_start_data_(other.pdlp_warm_start_data_, stream_view),
     concurrent_halt(other.concurrent_halt),
-    multi_gpu(other.multi_gpu)
+    num_gpus(other.num_gpus)
 {
 }
 

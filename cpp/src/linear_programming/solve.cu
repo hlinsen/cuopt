@@ -392,7 +392,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   f_t norm_rhs            = dual_simplex::vector_norm2<i_t, f_t>(user_problem.rhs);
 
   dual_simplex::simplex_solver_settings_t<i_t, f_t> barrier_settings;
-  barrier_settings.multi_gpu                       = settings.multi_gpu;
+  barrier_settings.num_gpus                        = settings.num_gpus;
   barrier_settings.time_limit                      = settings.time_limit;
   barrier_settings.iteration_limit                 = settings.iteration_limit;
   barrier_settings.concurrent_halt                 = settings.concurrent_halt;
@@ -668,7 +668,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   problem.handle_ptr->sync_stream();
 
   int device_count = raft::device_setter::get_device_count();
-  if (settings.multi_gpu) {
+  if (settings.num_gpus > 1) {
     CUOPT_LOG_INFO("Running PDLP and Barrier on %d GPUs", device_count);
     cuopt_expects(
       device_count > 1, error_type_t::RuntimeError, "Multi-GPU mode requires at least 2 GPUs");
@@ -694,7 +694,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>
     sol_barrier_ptr;
   auto barrier_thread = std::thread([&]() {
-    if (settings.multi_gpu) {
+    if (settings.num_gpus > 1) {
       raft::device_setter device_setter(1);  // Scoped variable
       CUOPT_LOG_DEBUG("Barrier device: %d", device_setter.get_current_device());
 
@@ -720,7 +720,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     }
   });
 
-  if (settings.multi_gpu) {
+  if (settings.num_gpus > 1) {
     CUOPT_LOG_DEBUG("PDLP device: %d", raft::device_setter::get_current_device());
   }
   // Run pdlp in the main thread
