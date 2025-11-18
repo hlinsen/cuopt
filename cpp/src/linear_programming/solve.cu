@@ -715,11 +715,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     }
   });
 
-<<<<<<< HEAD
   if (settings.num_gpus > 1) {
-=======
-  if (settings.multi_gpu) {
->>>>>>> 8b8b8df (Make mr async for other gpus)
     CUOPT_LOG_DEBUG("PDLP device: %d", raft::device_setter::get_current_device());
   }
   // Run pdlp in the main thread
