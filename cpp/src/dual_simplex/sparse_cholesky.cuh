@@ -264,6 +264,13 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigCreate(&solverConfig), status, "cudssConfigCreate");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
 
+    auto cudss_device_idx = handle_ptr_->get_device();
+    settings_.log.printf("cudss_device_idx: %d", cudss_device_idx);
+    CUDSS_CALL_AND_CHECK_EXIT(
+      cudssConfigSet(solverConfig, CUDSS_CONFIG_DEVICE_INDICES, &cudss_device_idx, sizeof(int)),
+      status,
+      "cudssConfigSet for device indices");
+
 #if CUDSS_VERSION_MAJOR >= 0 && CUDSS_VERSION_MINOR >= 7
     if (settings_.concurrent_halt != nullptr) {
       CUDSS_CALL_AND_CHECK_EXIT(cudssDataSet(handle,
@@ -418,6 +425,9 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
         "cudssMatrixCreateCsr");
       A_created = true;
     }
+
+
+    settings_.log.printf("Analyze device: %d", handle_ptr_->get_device());
 
     // Perform symbolic analysis
     f_t start_symbolic = tic();

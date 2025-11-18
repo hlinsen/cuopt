@@ -409,7 +409,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   barrier_settings.barrier_relaxed_complementarity_tol = settings.tolerances.relative_gap_tolerance;
   if (barrier_settings.concurrent_halt != nullptr) {
     // Don't show the barrier log in concurrent mode. Show the PDLP log instead
-    barrier_settings.log.log = false;
+    // barrier_settings.log.log = false;
   }
 
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
@@ -458,14 +458,13 @@ void run_barrier_thread(
     sol_ptr,
   const timer_t& timer)
 {
-  raft::device_setter device_setter(0);
-  std::cout << "Settings multi_gpu: " << settings.multi_gpu << std::endl;
-  if (settings.multi_gpu) {
-    device_setter        = raft::device_setter(1);
-    auto memory_resource = make_async();
-    rmm::mr::set_current_device_resource(memory_resource.get());
-    std::cout << "Current device resource: " << device_setter.get_current_device() << std::endl;
-  }
+  // raft::device_setter device_setter(1);
+  // if (settings.multi_gpu) {
+  //   device_setter        = raft::device_setter(1);
+  //   auto memory_resource = make_async();
+  //   rmm::mr::set_current_device_resource(memory_resource.get());
+  //   std::cout << "Current device resource: " << device_setter.get_current_device() << std::endl;
+  // }
   // We will return the solution from the thread as a unique_ptr
   sol_ptr = std::make_unique<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>(
@@ -673,11 +672,6 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   global_concurrent_halt        = 0;
   settings_pdlp.concurrent_halt = &global_concurrent_halt;
 
-  // Initialize the dual simplex structures before we run PDLP.
-  // Otherwise, CUDA API calls to the problem stream may occur in both threads and throw graph
-  // capture off
-  rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
-  auto barrier_handle                  = raft::handle_t(barrier_stream);
   // Make sure allocations are done on the original stream
   problem.handle_ptr->sync_stream();
 
@@ -687,8 +681,11 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     cuopt_assert(device_count > 1, "Multi-GPU mode requires at least 2 GPUs");
   }
 
+  // Initialize the dual simplex structures before we run PDLP.
+  // Otherwise, CUDA API calls to the problem stream may occur in both threads and throw graph
+  // capture off
   dual_simplex::user_problem_t<i_t, f_t> dual_simplex_problem =
-    cuopt_problem_to_simplex_problem<i_t, f_t>(&barrier_handle, problem);
+    cuopt_problem_to_simplex_problem<i_t, f_t>(problem.handle_ptr, problem);
   // Create a thread for dual simplex
   std::unique_ptr<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>
@@ -699,17 +696,44 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
                                   std::ref(sol_dual_simplex_ptr),
                                   std::ref(timer));
 
-  dual_simplex::user_problem_t<i_t, f_t> barrier_problem = dual_simplex_problem;
   // Create a thread for barrier
   std::unique_ptr<
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>
     sol_barrier_ptr;
-  std::thread barrier_thread(run_barrier_thread<i_t, f_t>,
-                             std::ref(barrier_problem),
-                             std::ref(settings_pdlp),
-                             std::ref(sol_barrier_ptr),
-                             std::ref(timer));
+  auto barrier_thread = std::thread(
+    [&]() {
+    if (settings.multi_gpu) {
+    raft::device_setter device_setter(1);
+      auto memory_resource = make_async();
+      rmm::mr::set_current_device_resource(memory_resource.get());
+      CUOPT_LOG_INFO("Barrier device: %d", device_setter.get_current_device());
+  rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
+  auto barrier_handle                  = raft::handle_t(barrier_stream);
+  auto barrier_problem = dual_simplex_problem;
+  barrier_problem.handle_ptr = &barrier_handle;
 
+      run_barrier_thread<i_t, f_t>(
+                              std::ref(barrier_problem),
+                              std::ref(settings_pdlp),
+                              std::ref(sol_barrier_ptr),
+                              std::ref(timer));
+    } else {
+  rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
+  auto barrier_handle                  = raft::handle_t(barrier_stream);
+  auto barrier_problem = dual_simplex_problem;
+  barrier_problem.handle_ptr = &barrier_handle;
+
+      run_barrier_thread<i_t, f_t>(
+                              std::ref(barrier_problem),
+                              std::ref(settings_pdlp),
+                              std::ref(sol_barrier_ptr),
+                              std::ref(timer));
+    }
+  });
+
+  if (settings.multi_gpu) {
+    CUOPT_LOG_INFO("PDLP device: %d", raft::device_setter::get_current_device());
+  }
   // Run pdlp in the main thread
   auto sol_pdlp = run_pdlp(problem, settings_pdlp, timer, is_batch_mode);
 
