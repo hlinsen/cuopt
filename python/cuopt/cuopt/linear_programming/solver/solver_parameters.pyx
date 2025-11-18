@@ -91,11 +91,7 @@ CUOPT_LOG_TO_CONSOLE = c_CUOPT_LOG_TO_CONSOLE.decode('utf-8') # noqa
 CUOPT_CROSSOVER = c_CUOPT_CROSSOVER.decode('utf-8') # noqa
 CUOPT_PRESOLVE = c_CUOPT_PRESOLVE.decode('utf-8') # noqa
 CUOPT_DUAL_POSTSOLVE = c_CUOPT_DUAL_POSTSOLVE.decode('utf-8') # noqa
-<<<<<<< HEAD
 CUOPT_NUM_GPUS = c_CUOPT_NUM_GPUS.decode('utf-8') # noqa
-=======
-CUOPT_MULTI_GPU = c_CUOPT_MULTI_GPU.decode('utf-8') # noqa
->>>>>>> 936e03b (Add multi gpu option)
 CUOPT_MIP_ABSOLUTE_TOLERANCE = c_CUOPT_MIP_ABSOLUTE_TOLERANCE.decode('utf-8') # noqa
 CUOPT_MIP_RELATIVE_TOLERANCE = c_CUOPT_MIP_RELATIVE_TOLERANCE.decode('utf-8') # noqa
 CUOPT_MIP_INTEGRALITY_TOLERANCE = c_CUOPT_MIP_INTEGRALITY_TOLERANCE.decode('utf-8') # noqa

@@ -75,7 +75,7 @@ struct simplex_solver_settings_t {
       solution_callback(nullptr),
       heuristic_preemption_callback(nullptr),
       concurrent_halt(nullptr),
-      multi_gpu(false)
+      num_gpus(1)
   {
   }
 
