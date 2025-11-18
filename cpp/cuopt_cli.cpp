@@ -11,8 +11,8 @@
 #include <mps_parser/parser.hpp>
 #include <utilities/logger.hpp>
 
-#include <raft/core/handle.hpp>
 #include <raft/core/device_setter.hpp>
+#include <raft/core/handle.hpp>
 
 #include <rmm/mr/cuda_async_memory_resource.hpp>
 
@@ -340,7 +340,7 @@ int main(int argc, char* argv[])
     memory_resources.push_back(make_async());
     rmm::mr::set_per_device_resource(rmm::cuda_device_id{i}, memory_resources.back().get());
   }
-    cudaSetDevice(0);
+  cudaSetDevice(0);
 
   return run_single_file(file_name, initial_solution_file, solve_relaxation, settings_strings);
 }
