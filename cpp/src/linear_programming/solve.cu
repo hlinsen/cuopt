@@ -694,29 +694,24 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>
     sol_barrier_ptr;
   auto barrier_thread = std::thread([&]() {
+    auto call_barrier_thread = [&]() {
+      rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
+      auto barrier_handle                  = raft::handle_t(barrier_stream);
+      auto barrier_problem                 = dual_simplex_problem;
+      barrier_problem.handle_ptr           = &barrier_handle;
+
+      run_barrier_thread<i_t, f_t>(std::ref(barrier_problem),
+                                   std::ref(settings_pdlp),
+                                   std::ref(sol_barrier_ptr),
+                                   std::ref(timer));
+    };
+
     if (settings.num_gpus > 1) {
       raft::device_setter device_setter(1);  // Scoped variable
       CUOPT_LOG_DEBUG("Barrier device: %d", device_setter.get_current_device());
-
-      rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
-      auto barrier_handle                  = raft::handle_t(barrier_stream);
-      auto barrier_problem                 = dual_simplex_problem;
-      barrier_problem.handle_ptr           = &barrier_handle;
-
-      run_barrier_thread<i_t, f_t>(std::ref(barrier_problem),
-                                   std::ref(settings_pdlp),
-                                   std::ref(sol_barrier_ptr),
-                                   std::ref(timer));
+      call_barrier_thread();
     } else {
-      rmm::cuda_stream_view barrier_stream = rmm::cuda_stream_per_thread;
-      auto barrier_handle                  = raft::handle_t(barrier_stream);
-      auto barrier_problem                 = dual_simplex_problem;
-      barrier_problem.handle_ptr           = &barrier_handle;
-
-      run_barrier_thread<i_t, f_t>(std::ref(barrier_problem),
-                                   std::ref(settings_pdlp),
-                                   std::ref(sol_barrier_ptr),
-                                   std::ref(timer));
+      call_barrier_thread();
     }
   });
 
