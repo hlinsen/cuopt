@@ -392,6 +392,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   f_t norm_rhs            = dual_simplex::vector_norm2<i_t, f_t>(user_problem.rhs);
 
   dual_simplex::simplex_solver_settings_t<i_t, f_t> barrier_settings;
+  barrier_settings.multi_gpu                       = settings.multi_gpu;
   barrier_settings.time_limit                      = settings.time_limit;
   barrier_settings.iteration_limit                 = settings.iteration_limit;
   barrier_settings.concurrent_halt                 = settings.concurrent_halt;
