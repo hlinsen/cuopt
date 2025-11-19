@@ -6,8 +6,9 @@
 /* clang-format on */
 #pragma once
 
-#include <dual_simplex/cusparse_dnvector.hpp>
 #include <dual_simplex/sparse_matrix.hpp>
+
+#include <linear_programming/cusparse_view.hpp>
 
 #include <cusparse_v2.h>
 
@@ -28,7 +29,7 @@ class cusparse_view_t {
   cusparse_view_t(raft::handle_t const* handle_ptr, const csc_matrix_t<i_t, f_t>& A);
   ~cusparse_view_t();
 
-  cuopt_cusparse_dnvector_t<i_t, f_t> create_vector(const rmm::device_uvector<f_t>& vec);
+  detail::cusparse_dn_vec_descr_wrapper_t<f_t> create_vector(rmm::device_uvector<f_t> const& vec);
 
   template <typename AllocatorA, typename AllocatorB>
   void spmv(f_t alpha,
@@ -36,18 +37,18 @@ class cusparse_view_t {
             f_t beta,
             std::vector<f_t, AllocatorB>& y);
   void spmv(f_t alpha,
-            cuopt_cusparse_dnvector_t<i_t, f_t> const& x,
+            detail::cusparse_dn_vec_descr_wrapper_t<f_t> const& x,
             f_t beta,
-            cuopt_cusparse_dnvector_t<i_t, f_t> const& y);
+            detail::cusparse_dn_vec_descr_wrapper_t<f_t> const& y);
   template <typename AllocatorA, typename AllocatorB>
   void transpose_spmv(f_t alpha,
                       const std::vector<f_t, AllocatorA>& x,
                       f_t beta,
                       std::vector<f_t, AllocatorB>& y);
   void transpose_spmv(f_t alpha,
-                      cuopt_cusparse_dnvector_t<i_t, f_t> const& x,
+                      detail::cusparse_dn_vec_descr_wrapper_t<f_t> const& x,
                       f_t beta,
-                      cuopt_cusparse_dnvector_t<i_t, f_t> const& y);
+                      detail::cusparse_dn_vec_descr_wrapper_t<f_t> const& y);
 
   raft::handle_t const* handle_ptr_{nullptr};
 
