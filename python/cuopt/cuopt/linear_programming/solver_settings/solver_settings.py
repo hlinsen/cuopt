@@ -29,7 +29,6 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_MIP_RELATIVE_GAP,
     CUOPT_MIP_RELATIVE_TOLERANCE,
     CUOPT_MIP_SCALING,
-    CUOPT_NUM_GPUS,
     CUOPT_NUM_CPU_THREADS,
     CUOPT_ORDERING,
     CUOPT_PDLP_SOLVER_MODE,
@@ -370,7 +369,6 @@ class SolverSettings:
             "method": self.get_parameter(CUOPT_METHOD),
             "presolve": self.get_parameter(CUOPT_PRESOLVE),
             "dual_postsolve": self.get_parameter(CUOPT_DUAL_POSTSOLVE),
-            "num_gpus": self.get_parameter(CUOPT_NUM_GPUS),
             "mip_scaling": self.get_parameter(CUOPT_MIP_SCALING),
             "mip_heuristics_only": self.get_parameter(
                 CUOPT_MIP_HEURISTICS_ONLY
