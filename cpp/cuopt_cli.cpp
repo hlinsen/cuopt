@@ -333,9 +333,11 @@ int main(int argc, char* argv[])
 
   const auto initial_solution_file = program.get<std::string>("--initial-solution");
   const auto solve_relaxation      = program.get<bool>("--relaxation");
+  const auto num_gpus              = program.get<int>("--num-gpus");
 
   std::vector<std::shared_ptr<rmm::mr::device_memory_resource>> memory_resources;
-  for (int i = 0; i < 2; ++i) {
+
+  for (int i = 0; i < std::min(raft::device_setter::get_device_count(), num_gpus); ++i) {
     cudaSetDevice(i);
     memory_resources.push_back(make_async());
     rmm::mr::set_per_device_resource(rmm::cuda_device_id{i}, memory_resources.back().get());
