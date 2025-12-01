@@ -1238,10 +1238,14 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   simplex_solver_settings_t lp_settings = settings_;
   lp_settings.inside_mip                = 1;
   if (!is_main_thread()) {
-    lp_status_t root_status = solve_linear_program_advanced(
-      original_lp_, stats_.start_time, lp_settings, root_relax_soln_, root_vstatus_, edge_norms_);
-    stats_.total_lp_iters      = root_relax_soln_.iterations;
-    stats_.total_lp_solve_time = toc(stats_.start_time);
+    lp_status_t root_status                = solve_linear_program_advanced(original_lp_,
+                                                            exploration_stats_.start_time,
+                                                            lp_settings,
+                                                            root_relax_soln_,
+                                                            root_vstatus_,
+                                                            edge_norms_);
+    exploration_stats_.total_lp_iters      = root_relax_soln_.iterations;
+    exploration_stats_.total_lp_solve_time = toc(exploration_stats_.start_time);
 
     if (root_status == lp_status_t::INFEASIBLE) {
       settings_.log.printf("MIP Infeasible\n");
@@ -1262,7 +1266,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     }
 
     if (root_status == lp_status_t::TIME_LIMIT) {
-      status_ = mip_exploration_status_t::TIME_LIMIT;
+      solver_status_ = mip_exploration_status_t::TIME_LIMIT;
       return set_final_solution(solution, -inf);
     }
   } else {
@@ -1285,8 +1289,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     while (!root_relaxation_solution_set_.load(std::memory_order_acquire)) {
       continue;
     }
-    stats_.total_lp_iters      = root_relax_soln_.iterations;
-    stats_.total_lp_solve_time = toc(stats_.start_time);
+    exploration_stats_.total_lp_iters      = root_relax_soln_.iterations;
+    exploration_stats_.total_lp_solve_time = toc(exploration_stats_.start_time);
     // Crush the root relaxation solution on converted user problem
     std::vector<f_t> crushed_root_x;
     crush_primal_solution(
@@ -1312,7 +1316,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     crossover_status_t crossover_status = crossover(original_lp_,
                                                     settings_,
                                                     root_relax_soln_,
-                                                    stats_.start_time,
+                                                    exploration_stats_.start_time,
                                                     crossover_solution,
                                                     root_vstatus_);
     settings_.log.printf("Crossover status: %d\n", crossover_status);
@@ -1337,7 +1341,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 
     if (crossover_status == crossover_status_t::TIME_LIMIT ||
         crossover_status == crossover_status_t::CONCURRENT_LIMIT) {
-      status_ = mip_exploration_status_t::TIME_LIMIT;
+      solver_status_ = mip_exploration_status_t::TIME_LIMIT;
       return set_final_solution(solution, -inf);
     }
   }
