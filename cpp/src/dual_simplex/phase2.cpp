@@ -2074,6 +2074,7 @@ void prepare_optimality(const lp_problem_t<i_t, f_t>& lp,
       settings.log.printf("Dual infeasibility (abs):   %.2e\n", dual_infeas);
       settings.log.printf("Perturbation:               %.2e\n", perturbation);
     } else {
+      *settings.concurrent_halt = 1;
       settings.log.printf("\n");
       settings.log.printf(
         "Root relaxation solution found in %d iterations and %.2fs\n", iter, toc(start_time));
