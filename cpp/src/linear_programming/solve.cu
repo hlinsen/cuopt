@@ -707,6 +707,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     };
 
     if (settings.num_gpus > 1) {
+      problem.handle_ptr->sync_stream();
       raft::device_setter device_setter(1);  // Scoped variable
       CUOPT_LOG_DEBUG("Barrier device: %d", device_setter.get_current_device());
       call_barrier_thread();
