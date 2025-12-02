@@ -1387,7 +1387,10 @@ crossover_status_t crossover(const lp_problem_t<i_t, f_t>& lp,
   crossover_status_t status = crossover_status_t::NUMERICAL_ISSUES;
   if (dual_feasible) { status = crossover_status_t::DUAL_FEASIBLE; }
   if (primal_feasible) { status = crossover_status_t::PRIMAL_FEASIBLE; }
-  if (primal_feasible && dual_feasible) { status = crossover_status_t::OPTIMAL; }
+  if (primal_feasible && dual_feasible) {
+    status = crossover_status_t::OPTIMAL;
+    if (settings.concurrent_halt != nullptr) { *settings.concurrent_halt = 1; }
+  }
   return status;
 }
 
