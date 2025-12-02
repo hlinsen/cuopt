@@ -1304,23 +1304,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       } else {
         // Solution was found by crossover
         if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
-          settings_.log.printf("MIP Infeasible\n");
-          // FIXME: rarely dual simplex detects infeasible whereas it is feasible.
-          // to add a small safety net, check if there is a primal solution already.
-          // Uncomment this if the issue with cost266-UUE is resolved
-          // if (settings.heuristic_preemption_callback != nullptr) {
-          //   settings.heuristic_preemption_callback();
-          // }
           return mip_status_t::INFEASIBLE;
         }
-        if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
-          settings_.log.printf("MIP Unbounded\n");
-          if (settings_.heuristic_preemption_callback != nullptr) {
-            settings_.heuristic_preemption_callback();
-          }
-          return mip_status_t::UNBOUNDED;
-        }
-
         if (crossover_status == crossover_status_t::TIME_LIMIT) {
           solver_status_ = mip_exploration_status_t::TIME_LIMIT;
           return set_final_solution(solution, -inf);
