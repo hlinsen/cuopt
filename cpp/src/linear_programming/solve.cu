@@ -703,13 +703,16 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   barrier_thread.join();
 
   // copy the dual simplex solution to the device
-  auto sol_dual_simplex = convert_dual_simplex_sol(problem,
-                                                   std::get<0>(*sol_dual_simplex_ptr),
-                                                   std::get<1>(*sol_dual_simplex_ptr),
-                                                   std::get<2>(*sol_dual_simplex_ptr),
-                                                   std::get<3>(*sol_dual_simplex_ptr),
-                                                   std::get<4>(*sol_dual_simplex_ptr),
-                                                   0);
+  auto sol_dual_simplex =
+    !inside_mip ? convert_dual_simplex_sol(problem,
+                                           std::get<0>(*sol_dual_simplex_ptr),
+                                           std::get<1>(*sol_dual_simplex_ptr),
+                                           std::get<2>(*sol_dual_simplex_ptr),
+                                           std::get<3>(*sol_dual_simplex_ptr),
+                                           std::get<4>(*sol_dual_simplex_ptr),
+                                           0)
+                : optimization_problem_solution_t<i_t, f_t>{
+                    pdlp_termination_status_t::ConcurrentLimit, problem.handle_ptr->get_stream()};
 
   // copy the barrier solution to the device
   auto sol_barrier = convert_dual_simplex_sol(problem,
@@ -724,9 +727,10 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   CUOPT_LOG_INFO(
     "Concurrent time:  %.3fs, total time %.3fs", timer_concurrent.elapsed_time(), end_time);
   // Check status to see if we should return the pdlp solution or the dual simplex solution
-  if (sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::Optimal ||
-      sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible ||
-      sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::DualInfeasible) {
+  if (!inside_mip &&
+      (sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::Optimal ||
+       sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible ||
+       sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::DualInfeasible)) {
     CUOPT_LOG_INFO("Solved with dual simplex");
     sol_pdlp.copy_from(problem.handle_ptr, sol_dual_simplex);
     sol_pdlp.set_solve_time(end_time);
