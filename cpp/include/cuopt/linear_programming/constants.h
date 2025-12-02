@@ -49,7 +49,6 @@
 #define CUOPT_CUDSS_DETERMINISTIC         "cudss_deterministic"
 #define CUOPT_PRESOLVE                    "presolve"
 #define CUOPT_DUAL_POSTSOLVE              "dual_postsolve"
-#define CUOPT_NUM_GPUS                    "num_gpus"
 #define CUOPT_MIP_ABSOLUTE_TOLERANCE      "mip_absolute_tolerance"
 #define CUOPT_MIP_RELATIVE_TOLERANCE      "mip_relative_tolerance"
 #define CUOPT_MIP_INTEGRALITY_TOLERANCE   "mip_integrality_tolerance"
@@ -60,6 +59,7 @@
 #define CUOPT_MIP_PRESOLVE                "mip_presolve"
 #define CUOPT_SOLUTION_FILE               "solution_file"
 #define CUOPT_NUM_CPU_THREADS             "num_cpu_threads"
+#define CUOPT_NUM_GPUS                    "num_gpus"
 #define CUOPT_USER_PROBLEM_FILE           "user_problem_file"
 
 /* @brief LP/MIP termination status constants */
