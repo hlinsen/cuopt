@@ -1275,6 +1275,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   } else {
     // Root node path
     std::future<lp_status_t> root_status_future;
+    settings_.log.printf("Async call to dual simplex\n");
+    settings_.log.printf("&global_root_concurrent_halt: %p\n", &global_root_concurrent_halt);
     root_status_future = std::async(std::launch::async,
                                     &solve_linear_program_advanced<i_t, f_t>,
                                     std::ref(original_lp_),

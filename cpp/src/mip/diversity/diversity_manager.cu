@@ -375,7 +375,10 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     rmm::device_uvector<f_t> lp_optimal_solution_copy(lp_optimal_solution.size(),
                                                       problem_ptr->handle_ptr->get_stream());
     timer_t lp_timer(lp_time_limit);
-    auto lp_result = solve_lp_with_method<i_t, f_t>(*problem_ptr, pdlp_settings, lp_timer);
+    auto const is_batch   = false;
+    auto const inside_mip = true;
+    auto lp_result =
+      solve_lp_with_method<i_t, f_t>(*problem_ptr, pdlp_settings, lp_timer, is_batch, inside_mip);
 
     CUOPT_LOG_INFO("LP enum: %s", lp_result.get_termination_status_string().c_str());
     {
