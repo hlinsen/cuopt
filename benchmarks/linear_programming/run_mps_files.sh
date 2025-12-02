@@ -221,6 +221,14 @@ else
         GPU_LIST+=("$i")
     done
 fi
+# Check that requested number of GPUs does not exceed available GPUs (if nvidia-smi is present)
+if command -v nvidia-smi &> /dev/null; then
+    AVAILABLE_GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+    if [[ "$GPU_COUNT" -gt "$AVAILABLE_GPU_COUNT" ]]; then
+        echo "Error: Requested --ngpus $GPU_COUNT, but only $AVAILABLE_GPU_COUNT GPU(s) available according to nvidia-smi."
+        exit 1
+    fi
+fi
 
 # Group GPUs into sets based on GPUS_PER_INSTANCE
 GPU_GROUPS=()
@@ -233,7 +241,8 @@ if [[ "$GPUS_PER_INSTANCE" == "2" ]]; then
             echo "  Creating pair: $pair"
             GPU_GROUPS+=("$pair")
         else
-            echo "Warning: Odd number of GPUs (${#GPU_LIST[@]}) for multi-GPU mode (2 GPUs per instance). Last GPU will be unused."
+            echo "Error: Odd number of GPUs (${#GPU_LIST[@]}) for multi-GPU mode (2 GPUs per instance). Exiting."
+            exit 1
         fi
     done
 else

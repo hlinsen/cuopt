@@ -333,7 +333,11 @@ int main(int argc, char* argv[])
 
   const auto initial_solution_file = program.get<std::string>("--initial-solution");
   const auto solve_relaxation      = program.get<bool>("--relaxation");
-  const auto num_gpus              = program.get<int>("--num-gpus");
+
+  // All arguments are parsed as string, default values are parsed as int if unused.
+  const auto num_gpus = program.is_used("--num-gpus")
+                          ? std::stoi(program.get<std::string>("--num-gpus"))
+                          : program.get<int>("--num-gpus");
 
   std::vector<std::shared_ptr<rmm::mr::device_memory_resource>> memory_resources;
 
