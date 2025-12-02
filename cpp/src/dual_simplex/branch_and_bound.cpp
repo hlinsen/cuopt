@@ -1240,97 +1240,98 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   lp_status_t root_status;
   lp_settings.inside_mip = 1;
   // RINS/SUBMIP path
-  if (!is_main_thread()) {
-    root_status = solve_linear_program_advanced(original_lp_,
-                                                exploration_stats_.start_time,
-                                                lp_settings,
-                                                root_relax_soln_,
-                                                root_vstatus_,
-                                                edge_norms_);
+  // if (!is_main_thread()) {
+  root_status = solve_linear_program_advanced(original_lp_,
+                                              exploration_stats_.start_time,
+                                              lp_settings,
+                                              root_relax_soln_,
+                                              root_vstatus_,
+                                              edge_norms_);
 
-  } else {
-    // Root node path
-    std::future<lp_status_t> root_status_future;
-    root_status_future = std::async(std::launch::async,
-                                    &solve_linear_program_advanced<i_t, f_t>,
-                                    std::ref(original_lp_),
-                                    exploration_stats_.start_time,
-                                    std::ref(lp_settings),
-                                    std::ref(root_relax_soln_),
-                                    std::ref(root_vstatus_),
-                                    std::ref(edge_norms_));
-    // Wait for the root relaxation solution to be sent by the diversity manager or dual simplex
-    // to finish
-    while (!root_crossover_solution_set_.load(std::memory_order_acquire) &&
-           global_root_concurrent_halt == 0) {
-      continue;
-    }
+  // } else {
+  //   // Root node path
+  //   std::future<lp_status_t> root_status_future;
+  //   root_status_future = std::async(std::launch::async,
+  //                                   &solve_linear_program_advanced<i_t, f_t>,
+  //                                   std::ref(original_lp_),
+  //                                   exploration_stats_.start_time,
+  //                                   std::ref(lp_settings),
+  //                                   std::ref(root_relax_soln_),
+  //                                   std::ref(root_vstatus_),
+  //                                   std::ref(edge_norms_));
+  //   // Wait for the root relaxation solution to be sent by the diversity manager or dual simplex
+  //   // to finish
+  //   while (!root_crossover_solution_set_.load(std::memory_order_acquire) &&
+  //          global_root_concurrent_halt == 0) {
+  //     continue;
+  //   }
 
-    // if (root_crossover_solution_set_.load(std::memory_order_acquire)) {
-    //   exploration_stats_.total_lp_iters      = root_crossover_soln_.iterations;
-    //   exploration_stats_.total_lp_solve_time = toc(exploration_stats_.start_time);
-    //   // Crush the root relaxation solution on converted user problem
-    //   std::vector<f_t> crushed_root_x;
-    //   crush_primal_solution(
-    //     original_problem_, original_lp_, root_crossover_soln_.x, new_slacks_, crushed_root_x);
-    //   std::vector<f_t> crushed_root_y;
-    //   std::vector<f_t> crushed_root_z;
+  //   // if (root_crossover_solution_set_.load(std::memory_order_acquire)) {
+  //   //   exploration_stats_.total_lp_iters      = root_crossover_soln_.iterations;
+  //   //   exploration_stats_.total_lp_solve_time = toc(exploration_stats_.start_time);
+  //   //   // Crush the root relaxation solution on converted user problem
+  //   //   std::vector<f_t> crushed_root_x;
+  //   //   crush_primal_solution(
+  //   //     original_problem_, original_lp_, root_crossover_soln_.x, new_slacks_, crushed_root_x);
+  //   //   std::vector<f_t> crushed_root_y;
+  //   //   std::vector<f_t> crushed_root_z;
 
-    //   f_t dual_res_inf = crush_dual_solution(original_problem_,
-    //                                          original_lp_,
-    //                                          new_slacks_,
-    //                                          root_crossover_soln_.y,
-    //                                          root_crossover_soln_.z,
-    //                                          crushed_root_y,
-    //                                          crushed_root_z);
-    //   settings_.log.printf("Dual residual inf: %e\n", dual_res_inf);
+  //   //   f_t dual_res_inf = crush_dual_solution(original_problem_,
+  //   //                                          original_lp_,
+  //   //                                          new_slacks_,
+  //   //                                          root_crossover_soln_.y,
+  //   //                                          root_crossover_soln_.z,
+  //   //                                          crushed_root_y,
+  //   //                                          crushed_root_z);
+  //   //   settings_.log.printf("Dual residual inf: %e\n", dual_res_inf);
 
-    //   root_crossover_soln_.x = crushed_root_x;
-    //   root_crossover_soln_.y = crushed_root_y;
-    //   root_crossover_soln_.z = crushed_root_z;
+  //   //   root_crossover_soln_.x = crushed_root_x;
+  //   //   root_crossover_soln_.y = crushed_root_y;
+  //   //   root_crossover_soln_.z = crushed_root_z;
 
-    //   // Call crossover on the crushed solution
-    //   crossover_status_t crossover_status = crossover(original_lp_,
-    //                                                   settings_,
-    //                                                   root_crossover_soln_,
-    //                                                   exploration_stats_.start_time,
-    //                                                   root_crossover_soln_,
-    //                                                   crossover_vstatus_);
-    //   settings_.log.printf("Crossover status: %d\n", crossover_status);
+  //   //   // Call crossover on the crushed solution
+  //   //   crossover_status_t crossover_status = crossover(original_lp_,
+  //   //                                                   settings_,
+  //   //                                                   root_crossover_soln_,
+  //   //                                                   exploration_stats_.start_time,
+  //   //                                                   root_crossover_soln_,
+  //   //                                                   crossover_vstatus_);
+  //   //   settings_.log.printf("Crossover status: %d\n", crossover_status);
 
-    //   // Check if crossover was stopped by dual simplex
-    //   if (crossover_status == crossover_status_t::CONCURRENT_LIMIT) {
-    //     auto root_status                       = root_status_future.get();
-    //   } else {
-    //     // Solution was found by crossover
-    //     if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
-    //       settings_.log.printf("MIP Infeasible\n");
-    //       // FIXME: rarely dual simplex detects infeasible whereas it is feasible.
-    //       // to add a small safety net, check if there is a primal solution already.
-    //       // Uncomment this if the issue with cost266-UUE is resolved
-    //       // if (settings.heuristic_preemption_callback != nullptr) {
-    //       //   settings.heuristic_preemption_callback();
-    //       // }
-    //       return mip_status_t::INFEASIBLE;
-    //     }
-    //     if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
-    //       settings_.log.printf("MIP Unbounded\n");
-    //       if (settings_.heuristic_preemption_callback != nullptr) {
-    //         settings_.heuristic_preemption_callback();
-    //       }
-    //       return mip_status_t::UNBOUNDED;
-    //     }
+  //   //   // Check if crossover was stopped by dual simplex
+  //   //   if (crossover_status == crossover_status_t::CONCURRENT_LIMIT) {
+  //   //     auto root_status                       = root_status_future.get();
+  //   //   } else {
+  //   //     // Solution was found by crossover
+  //   //     if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
+  //   //       settings_.log.printf("MIP Infeasible\n");
+  //   //       // FIXME: rarely dual simplex detects infeasible whereas it is feasible.
+  //   //       // to add a small safety net, check if there is a primal solution already.
+  //   //       // Uncomment this if the issue with cost266-UUE is resolved
+  //   //       // if (settings.heuristic_preemption_callback != nullptr) {
+  //   //       //   settings.heuristic_preemption_callback();
+  //   //       // }
+  //   //       return mip_status_t::INFEASIBLE;
+  //   //     }
+  //   //     if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
+  //   //       settings_.log.printf("MIP Unbounded\n");
+  //   //       if (settings_.heuristic_preemption_callback != nullptr) {
+  //   //         settings_.heuristic_preemption_callback();
+  //   //       }
+  //   //       return mip_status_t::UNBOUNDED;
+  //   //     }
 
-    //     if (crossover_status == crossover_status_t::TIME_LIMIT) {
-    //       solver_status_ = mip_exploration_status_t::TIME_LIMIT;
-    //       return set_final_solution(solution, -inf);
-    //     }
-    //   }
-    //   // Override the root relaxation solution with the crossover solution
-    //   root_relax_soln_ = root_crossover_soln_;
-    //   root_vstatus_    = crossover_vstatus_;
-    // }
-  }
+  //   //     if (crossover_status == crossover_status_t::TIME_LIMIT) {
+  //   //       solver_status_ = mip_exploration_status_t::TIME_LIMIT;
+  //   //       return set_final_solution(solution, -inf);
+  //   //     }
+  //   //   }
+  //   //   // Override the root relaxation solution with the crossover solution
+  //   //   root_relax_soln_ = root_crossover_soln_;
+  //   //   root_vstatus_    = crossover_vstatus_;
+  //   // }
+  //   root_status = root_status_future.get();
+  // }
   exploration_stats_.total_lp_iters      = root_relax_soln_.iterations;
   exploration_stats_.total_lp_solve_time = toc(exploration_stats_.start_time);
 
