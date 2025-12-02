@@ -380,7 +380,6 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     //   solve_lp_with_method<i_t, f_t>(*problem_ptr, pdlp_settings, lp_timer, is_batch,
     //   inside_mip);
 
-    CUOPT_LOG_INFO("LP enum: %s", lp_result.get_termination_status_string().c_str());
     {
       std::lock_guard<std::mutex> guard(relaxed_solution_mutex);
       if (!simplex_solution_exists.load()) {
@@ -417,11 +416,11 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       // to bring variables within the bounds
     }
 
-    CUOPT_LOG_INFO(
-      "Optimal solution exists: %i, PDLP relaxed solution: objective %f, iterations %d",
-      ls.lp_optimal_exists,
-      lp_result.get_objective_value(),
-      lp_result.get_additional_termination_information().number_of_steps_taken);
+    // CUOPT_LOG_INFO(
+    //   "Optimal solution exists: %i, PDLP relaxed solution: objective %f, iterations %d",
+    //   ls.lp_optimal_exists,
+    //   lp_result.get_objective_value(),
+    //   lp_result.get_additional_termination_information().number_of_steps_taken);
 
     // Send PDLP relaxed solution to branch and bound before it solves the root node
     // if (problem_ptr->set_root_relaxation_solution_callback != nullptr) {

@@ -1910,7 +1910,6 @@ void set_primal_variables_on_bounds(const lp_problem_t<i_t, f_t>& lp,
                                     std::vector<f_t>& x)
 {
   const i_t n = lp.num_cols;
-  settings.log.printf("tolerance %e\n", settings.fixed_tol);
   for (i_t j = 0; j < n; ++j) {
     // We set z_j = 0 for basic variables
     // But we explicitally skip setting basic variables here
@@ -1928,19 +1927,11 @@ void set_primal_variables_on_bounds(const lp_problem_t<i_t, f_t>& lp,
       }
       x[j]       = lp.lower[j];
       vstatus[j] = variable_status_t::NONBASIC_FIXED;
-      // } else if (z[j] == 0 && lp.lower[j] > -inf && vstatus[j] ==
-      // variable_status_t::NONBASIC_LOWER) {
-      //   x[j] = lp.lower[j];
-      // } else if (z[j] == 0 && lp.upper[j] < inf && vstatus[j] ==
-      // variable_status_t::NONBASIC_UPPER) {
-      //   x[j] = lp.upper[j];
-    } else if (std::abs(z[j]) <= fixed_tolerance && lp.lower[j] > -inf &&
-               vstatus[j] == variable_status_t::NONBASIC_LOWER) {
+    } else if (z[j] == 0 && lp.lower[j] > -inf && vstatus[j] == variable_status_t::NONBASIC_LOWER) {
       x[j] = lp.lower[j];
-    } else if (std::abs(z[j]) <= fixed_tolerance && lp.upper[j] < inf &&
-               vstatus[j] == variable_status_t::NONBASIC_UPPER) {
+    } else if (z[j] == 0 && lp.upper[j] < inf && vstatus[j] == variable_status_t::NONBASIC_UPPER) {
       x[j] = lp.upper[j];
-    } else if (z[j] > fixed_tolerance && lp.lower[j] > -inf) {
+    } else if (z[j] >= 0 && lp.lower[j] > -inf) {
       if (vstatus[j] != variable_status_t::NONBASIC_LOWER) {
         settings.log.debug(
           "Setting nonbasic lower variable (zj %e) %d to %e (current %e). vstatus %d\n",
@@ -1952,7 +1943,7 @@ void set_primal_variables_on_bounds(const lp_problem_t<i_t, f_t>& lp,
       }
       x[j]       = lp.lower[j];
       vstatus[j] = variable_status_t::NONBASIC_LOWER;
-    } else if (z[j] < fixed_tolerance && lp.upper[j] < inf) {
+    } else if (z[j] <= 0 && lp.upper[j] < inf) {
       if (vstatus[j] != variable_status_t::NONBASIC_UPPER) {
         settings.log.debug(
           "Setting nonbasic upper variable (zj %e) %d to %e (current %e). vstatus %d\n",
@@ -1993,7 +1984,7 @@ void set_primal_variables_on_bounds(const lp_problem_t<i_t, f_t>& lp,
           "Setting free variable %d to %e. vstatus %d\n", j, 0, static_cast<int>(vstatus[j]));
       }
       vstatus[j] = variable_status_t::NONBASIC_FREE;
-      settings.log.debug("Setting free variable %d as nonbasic at 0\n", j);
+      settings.log.printf("Setting free variable %d as nonbasic at 0\n", j);
     } else {
       assert(1 == 0);
     }
@@ -2201,7 +2192,6 @@ dual::status_t dual_phase2(i_t phase,
                                          iter,
                                          delta_y_steepest_edge);
 }
-// #define PRINT_VSTATUS_CHANGES
 
 template <typename i_t, typename f_t>
 dual::status_t dual_phase2_with_advanced_basis(i_t phase,
