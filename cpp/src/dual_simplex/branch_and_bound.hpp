@@ -61,6 +61,8 @@ enum class thread_type_t {
   DIVING      = 1,
 };
 
+extern volatile int global_root_concurrent_halt;
+
 template <typename i_t, typename f_t>
 class bounds_strengthening_t;
 
@@ -87,14 +89,14 @@ class branch_and_bound_t {
                                     f_t user_objective,
                                     i_t iterations)
   {
-    root_relax_soln_.x              = primal;
-    root_relax_soln_.y              = dual;
-    root_relax_soln_.z              = reduced_costs;
-    root_objective_                 = objective;
-    root_relax_soln_.objective      = objective;
-    root_relax_soln_.user_objective = user_objective;
-    root_relax_soln_.iterations     = iterations;
-    root_relaxation_solution_set_.store(true, std::memory_order_release);
+    root_crossover_soln_.x              = primal;
+    root_crossover_soln_.y              = dual;
+    root_crossover_soln_.z              = reduced_costs;
+    root_objective_                     = objective;
+    root_crossover_soln_.objective      = objective;
+    root_crossover_soln_.user_objective = user_objective;
+    root_crossover_soln_.iterations     = iterations;
+    root_crossover_solution_set_.store(true, std::memory_order_release);
   }
 
   // Set a solution based on the user problem during the course of the solve
@@ -159,10 +161,12 @@ class branch_and_bound_t {
 
   // Variables for the root node in the search tree.
   std::vector<variable_status_t> root_vstatus_;
+  std::vector<variable_status_t> crossover_vstatus_;
   f_t root_objective_;
   lp_solution_t<i_t, f_t> root_relax_soln_;
+  lp_solution_t<i_t, f_t> root_crossover_soln_;
   std::vector<f_t> edge_norms_;
-  std::atomic<bool> root_relaxation_solution_set_{false};
+  std::atomic<bool> root_crossover_solution_set_{false};
   bool main_thread_{false};
 
   // Pseudocosts

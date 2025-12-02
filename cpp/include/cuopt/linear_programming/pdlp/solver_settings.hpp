@@ -212,7 +212,7 @@ class pdlp_solver_settings_t {
   bool dual_postsolve{true};
   method_t method{method_t::Concurrent};
   // For concurrent termination
-  volatile int* concurrent_halt;
+  volatile int* concurrent_halt{nullptr};
   static constexpr f_t minimal_absolute_tolerance = 1.0e-12;
 
  private:

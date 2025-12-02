@@ -27,6 +27,8 @@
 #include <memory>
 #include <thread>
 
+volatile int cuopt::linear_programming::dual_simplex::global_root_concurrent_halt = 0;
+
 namespace cuopt::linear_programming::detail {
 
 // This serves as both a warm up but also a mandatory initial call to setup cuSparse and cuBLAS
@@ -150,6 +152,8 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
   std::future<dual_simplex::mip_status_t> branch_and_bound_status_future;
   dual_simplex::user_problem_t<i_t, f_t> branch_and_bound_problem(context.problem_ptr->handle_ptr);
   dual_simplex::simplex_solver_settings_t<i_t, f_t> branch_and_bound_settings;
+  dual_simplex::global_root_concurrent_halt = 0;
+  branch_and_bound_settings.concurrent_halt = &dual_simplex::global_root_concurrent_halt;
   std::unique_ptr<dual_simplex::branch_and_bound_t<i_t, f_t>> branch_and_bound;
   branch_and_bound_solution_helper_t solution_helper(&dm, branch_and_bound_settings);
   dual_simplex::mip_solution_t<i_t, f_t> branch_and_bound_solution(1);

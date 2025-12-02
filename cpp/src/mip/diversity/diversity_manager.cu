@@ -367,6 +367,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     pdlp_settings.tolerances.relative_dual_tolerance   = absolute_tolerance / tolerance_divisor;
     pdlp_settings.time_limit                           = lp_time_limit;
     pdlp_settings.first_primal_feasible                = false;
+    global_concurrent_halt                             = 0;
     pdlp_settings.concurrent_halt                      = &global_concurrent_halt;
     pdlp_settings.method                               = method_t::Concurrent;
     pdlp_settings.pdlp_solver_mode                     = pdlp_solver_mode_t::Stable2;
