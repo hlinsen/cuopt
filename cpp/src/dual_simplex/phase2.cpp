@@ -2201,7 +2201,7 @@ dual::status_t dual_phase2(i_t phase,
                                          iter,
                                          delta_y_steepest_edge);
 }
-#define PRINT_VSTATUS_CHANGES
+// #define PRINT_VSTATUS_CHANGES
 
 template <typename i_t, typename f_t>
 dual::status_t dual_phase2_with_advanced_basis(i_t phase,
@@ -2267,19 +2267,14 @@ dual::status_t dual_phase2_with_advanced_basis(i_t phase,
   // Solve B'*y = cB
   ft.b_transpose_solve(c_basic, y);
   if (toc(start_time) > settings.time_limit) { return dual::status_t::TIME_LIMIT; }
-  constexpr bool print_norms = true;
+  constexpr bool print_norms = false;
   if constexpr (print_norms) {
     settings.log.printf(
       "|| y || %e || cB || %e\n", vector_norm_inf<i_t, f_t>(y), vector_norm_inf<i_t, f_t>(c_basic));
   }
 
   phase2::compute_reduced_costs(objective, lp.A, y, basic_list, nonbasic_list, z);
-  if constexpr (print_norms) {
-    settings.log.printf("|| z || %e\n", vector_norm_inf<i_t, f_t>(z));
-    // for (i_t j = 0; j < n; ++j) {
-    //   settings.log.printf("z[%d] = %e\n", j, z[j]);
-    // }
-  }
+  if constexpr (print_norms) { settings.log.printf("|| z || %e\n", vector_norm_inf<i_t, f_t>(z)); }
 
 #ifdef COMPUTE_DUAL_RESIDUAL
   std::vector<f_t> dual_res1;

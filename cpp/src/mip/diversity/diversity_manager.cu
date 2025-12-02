@@ -345,39 +345,40 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     // std::cout
     //   << "Converting greater-than constraints to less-than constraints before calling LP solver"
     //   << std::endl;
-    convert_greater_to_less(*problem_ptr);
-    // relaxed_lp_settings_t lp_settings;
-    // lp_settings.time_limit            = lp_time_limit;
-    // lp_settings.tolerance             = context.settings.tolerances.absolute_tolerance;
-    // lp_settings.return_first_feasible = false;
-    // lp_settings.save_state            = true;
-    // lp_settings.concurrent_halt       = &global_concurrent_halt;
-    // lp_settings.has_initial_primal    = false;
-    // rmm::device_uvector<f_t> lp_optimal_solution_copy(lp_optimal_solution.size(),
-    //                                                   problem_ptr->handle_ptr->get_stream());
-    // auto lp_result =
-    //   get_relaxed_lp_solution(*problem_ptr, lp_optimal_solution_copy, lp_state, lp_settings);
-    f_t tolerance_divisor =
-      problem_ptr->tolerances.absolute_tolerance / problem_ptr->tolerances.relative_tolerance;
-    if (tolerance_divisor == 0) { tolerance_divisor = 1; }
-    f_t absolute_tolerance = context.settings.tolerances.absolute_tolerance;
-
-    pdlp_solver_settings_t<i_t, f_t> pdlp_settings{};
-    pdlp_settings.tolerances.relative_primal_tolerance = absolute_tolerance / tolerance_divisor;
-    pdlp_settings.tolerances.relative_dual_tolerance   = absolute_tolerance / tolerance_divisor;
-    pdlp_settings.time_limit                           = lp_time_limit;
-    pdlp_settings.first_primal_feasible                = false;
-    pdlp_settings.concurrent_halt                      = &global_concurrent_halt;
-    pdlp_settings.method                               = method_t::Concurrent;
-    pdlp_settings.pdlp_solver_mode                     = pdlp_solver_mode_t::Stable2;
-
+    // convert_greater_to_less(*problem_ptr);
+    relaxed_lp_settings_t lp_settings;
+    lp_settings.time_limit            = lp_time_limit;
+    lp_settings.tolerance             = context.settings.tolerances.absolute_tolerance;
+    lp_settings.return_first_feasible = false;
+    lp_settings.save_state            = true;
+    lp_settings.concurrent_halt       = &global_concurrent_halt;
+    lp_settings.has_initial_primal    = false;
     rmm::device_uvector<f_t> lp_optimal_solution_copy(lp_optimal_solution.size(),
                                                       problem_ptr->handle_ptr->get_stream());
-    timer_t lp_timer(lp_time_limit);
-    auto const is_batch   = false;
-    auto const inside_mip = true;
     auto lp_result =
-      solve_lp_with_method<i_t, f_t>(*problem_ptr, pdlp_settings, lp_timer, is_batch, inside_mip);
+      get_relaxed_lp_solution(*problem_ptr, lp_optimal_solution_copy, lp_state, lp_settings);
+    // f_t tolerance_divisor =
+    //   problem_ptr->tolerances.absolute_tolerance / problem_ptr->tolerances.relative_tolerance;
+    // if (tolerance_divisor == 0) { tolerance_divisor = 1; }
+    // f_t absolute_tolerance = context.settings.tolerances.absolute_tolerance;
+
+    // pdlp_solver_settings_t<i_t, f_t> pdlp_settings{};
+    // pdlp_settings.tolerances.relative_primal_tolerance = absolute_tolerance / tolerance_divisor;
+    // pdlp_settings.tolerances.relative_dual_tolerance   = absolute_tolerance / tolerance_divisor;
+    // pdlp_settings.time_limit                           = lp_time_limit;
+    // pdlp_settings.first_primal_feasible                = false;
+    // pdlp_settings.concurrent_halt                      = &global_concurrent_halt;
+    // pdlp_settings.method                               = method_t::Concurrent;
+    // pdlp_settings.pdlp_solver_mode                     = pdlp_solver_mode_t::Stable2;
+
+    // rmm::device_uvector<f_t> lp_optimal_solution_copy(lp_optimal_solution.size(),
+    //                                                   problem_ptr->handle_ptr->get_stream());
+    // timer_t lp_timer(lp_time_limit);
+    // auto const is_batch   = false;
+    // auto const inside_mip = true;
+    // auto lp_result =
+    //   solve_lp_with_method<i_t, f_t>(*problem_ptr, pdlp_settings, lp_timer, is_batch,
+    //   inside_mip);
 
     CUOPT_LOG_INFO("LP enum: %s", lp_result.get_termination_status_string().c_str());
     {
@@ -423,40 +424,41 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       lp_result.get_additional_termination_information().number_of_steps_taken);
 
     // Send PDLP relaxed solution to branch and bound before it solves the root node
-    if (problem_ptr->set_root_relaxation_solution_callback != nullptr) {
-      auto& d_primal_solution = lp_result.get_primal_solution();
-      auto& d_dual_solution   = lp_result.get_dual_solution();
-      auto& d_reduced_costs   = lp_result.get_reduced_cost();
-      // cuopt::print("primal_solution", d_primal_solution);
-      // cuopt::print("dual_solution", d_dual_solution);
-      // cuopt::print("reduced_costs", d_reduced_costs);
-      std::vector<f_t> host_primal(d_primal_solution.size());
-      std::vector<f_t> host_dual(d_dual_solution.size());
-      std::vector<f_t> host_reduced_costs(d_reduced_costs.size());
-      raft::copy(host_primal.data(),
-                 d_primal_solution.data(),
-                 d_primal_solution.size(),
-                 problem_ptr->handle_ptr->get_stream());
-      raft::copy(host_dual.data(),
-                 d_dual_solution.data(),
-                 d_dual_solution.size(),
-                 problem_ptr->handle_ptr->get_stream());
-      raft::copy(host_reduced_costs.data(),
-                 d_reduced_costs.data(),
-                 d_reduced_costs.size(),
-                 problem_ptr->handle_ptr->get_stream());
-      problem_ptr->handle_ptr->sync_stream();
+    // if (problem_ptr->set_root_relaxation_solution_callback != nullptr) {
+    //   auto& d_primal_solution = lp_result.get_primal_solution();
+    //   auto& d_dual_solution   = lp_result.get_dual_solution();
+    //   auto& d_reduced_costs   = lp_result.get_reduced_cost();
+    //   // cuopt::print("primal_solution", d_primal_solution);
+    //   // cuopt::print("dual_solution", d_dual_solution);
+    //   // cuopt::print("reduced_costs", d_reduced_costs);
+    //   std::vector<f_t> host_primal(d_primal_solution.size());
+    //   std::vector<f_t> host_dual(d_dual_solution.size());
+    //   std::vector<f_t> host_reduced_costs(d_reduced_costs.size());
+    //   raft::copy(host_primal.data(),
+    //              d_primal_solution.data(),
+    //              d_primal_solution.size(),
+    //              problem_ptr->handle_ptr->get_stream());
+    //   raft::copy(host_dual.data(),
+    //              d_dual_solution.data(),
+    //              d_dual_solution.size(),
+    //              problem_ptr->handle_ptr->get_stream());
+    //   raft::copy(host_reduced_costs.data(),
+    //              d_reduced_costs.data(),
+    //              d_reduced_costs.size(),
+    //              problem_ptr->handle_ptr->get_stream());
+    //   problem_ptr->handle_ptr->sync_stream();
 
-      auto user_obj   = problem_ptr->get_user_obj_from_solver_obj(lp_result.get_objective_value());
-      auto iterations = lp_result.get_additional_termination_information().number_of_steps_taken;
-      // Set for the B&B
-      problem_ptr->set_root_relaxation_solution_callback(host_primal,
-                                                         host_dual,
-                                                         host_reduced_costs,
-                                                         lp_result.get_objective_value(),
-                                                         user_obj,
-                                                         iterations);
-    }
+    //   auto user_obj   =
+    //   problem_ptr->get_user_obj_from_solver_obj(lp_result.get_objective_value()); auto iterations
+    //   = lp_result.get_additional_termination_information().number_of_steps_taken;
+    //   // Set for the B&B
+    //   problem_ptr->set_root_relaxation_solution_callback(host_primal,
+    //                                                      host_dual,
+    //                                                      host_reduced_costs,
+    //                                                      lp_result.get_objective_value(),
+    //                                                      user_obj,
+    //                                                      iterations);
+    // }
 
     // in case the pdlp returned var boudns that are out of bounds
     clamp_within_var_bounds(lp_optimal_solution, problem_ptr, problem_ptr->handle_ptr);
