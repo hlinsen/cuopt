@@ -33,6 +33,8 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
+volatile int global_root_concurrent_halt;
+
 namespace {
 
 template <typename f_t>
@@ -1238,7 +1240,9 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   settings_.log.printf("Solving LP root relaxation\n");
   simplex_solver_settings_t lp_settings = settings_;
   lp_status_t root_status;
-  lp_settings.inside_mip = 1;
+  lp_settings.inside_mip      = 1;
+  global_root_concurrent_halt = 0;
+  lp_settings.concurrent_halt = &global_root_concurrent_halt;
   // RINS/SUBMIP path
   if (!is_main_thread()) {
     root_status = solve_linear_program_advanced(original_lp_,
@@ -1288,8 +1292,10 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       root_crossover_soln_.z = crushed_root_z;
 
       // Call crossover on the crushed solution
-      crossover_status_t crossover_status = crossover(original_lp_,
-                                                      settings_,
+      auto root_crossover_settings            = settings_;
+      root_crossover_settings.concurrent_halt = &global_root_concurrent_halt;
+      crossover_status_t crossover_status     = crossover(original_lp_,
+                                                      root_crossover_settings,
                                                       root_crossover_soln_,
                                                       exploration_stats_.start_time,
                                                       root_crossover_soln_,

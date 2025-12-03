@@ -61,8 +61,6 @@ enum class thread_type_t {
   DIVING      = 1,
 };
 
-extern volatile int global_root_concurrent_halt;
-
 template <typename i_t, typename f_t>
 class bounds_strengthening_t;
 
