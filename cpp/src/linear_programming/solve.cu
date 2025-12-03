@@ -999,11 +999,10 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(
   const cuopt::mps_parser::mps_data_model_t<i_t, f_t>& mps_data_model,
   pdlp_solver_settings_t<i_t, f_t> const& settings,
   bool problem_checking,
-  bool use_pdlp_solver_mode,
-  bool is_batch_mode)
+  bool use_pdlp_solver_mode)
 {
   auto op_problem = mps_data_model_to_optimization_problem(handle_ptr, mps_data_model);
-  return solve_lp(op_problem, settings, problem_checking, use_pdlp_solver_mode, is_batch_mode);
+  return solve_lp(op_problem, settings, problem_checking, use_pdlp_solver_mode);
 }
 
 #define INSTANTIATE(F_TYPE)                                                            \
