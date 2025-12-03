@@ -1310,7 +1310,9 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
         root_status = root_status_future.get();
       } else {
         // Crossover finished before dual simplex
-        if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
+        if (crossover_status == crossover_status_t::NUMERICAL_ISSUES ||
+            crossover_status == crossover_status_t::PRIMAL_FEASIBLE ||
+            crossover_status == crossover_status_t::DUAL_FEASIBLE) {
           return mip_status_t::INFEASIBLE;
         }
         if (crossover_status == crossover_status_t::TIME_LIMIT) {
@@ -1322,6 +1324,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
         // Override the root relaxation solution with the crossover solution
         root_relax_soln_ = root_crossover_soln_;
         root_vstatus_    = crossover_vstatus_;
+        root_status      = lp_status_t::OPTIMAL;
       }
     } else {
       root_status = root_status_future.get();
