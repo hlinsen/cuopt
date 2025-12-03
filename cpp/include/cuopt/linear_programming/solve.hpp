@@ -43,8 +43,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(
   pdlp_solver_settings_t<i_t, f_t> const& settings = pdlp_solver_settings_t<i_t, f_t>{},
   bool problem_checking                            = true,
   bool use_pdlp_solver_mode                        = true,
-  bool is_batch_mode                               = false,
-  bool inside_mip                                  = false);
+  bool is_batch_mode                               = false);
 
 /**
  * @brief Linear programming solve function.
@@ -70,8 +69,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(
   const cuopt::mps_parser::mps_data_model_t<i_t, f_t>& mps_data_model,
   pdlp_solver_settings_t<i_t, f_t> const& settings = pdlp_solver_settings_t<i_t, f_t>{},
   bool problem_checking                            = true,
-  bool use_pdlp_solver_mode                        = true,
-  bool inside_mip                                  = false);
+  bool use_pdlp_solver_mode                        = true);
 
 /**
  * @brief Mixed integer programming solve function.

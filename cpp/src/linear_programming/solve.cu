@@ -645,8 +645,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   detail::problem_t<i_t, f_t>& problem,
   pdlp_solver_settings_t<i_t, f_t> const& settings,
   const timer_t& timer,
-  bool is_batch_mode,
-  bool inside_mip)
+  bool is_batch_mode)
 {
   CUOPT_LOG_INFO("Running concurrent\n");
   timer_t timer_concurrent(timer.remaining_time());
@@ -655,10 +654,9 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   pdlp_solver_settings_t<i_t, f_t> settings_pdlp(settings, problem.handle_ptr->get_stream());
 
   // Set the concurrent halt pointer
-  global_concurrent_halt = 0;
-  if (settings.concurrent_halt == nullptr) {
-    settings_pdlp.concurrent_halt = &global_concurrent_halt;
-  }
+  global_concurrent_halt        = 0;
+  settings_pdlp.concurrent_halt = &global_concurrent_halt;
+
   // Initialize the dual simplex structures before we run PDLP.
   // Otherwise, CUDA API calls to the problem stream may occur in both threads and throw graph
   // capture off
@@ -674,7 +672,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>>
     sol_dual_simplex_ptr;
   std::thread dual_simplex_thread;
-  if (!inside_mip) {
+  if (!settings.inside_mip) {
     dual_simplex_thread = std::thread(run_dual_simplex_thread<i_t, f_t>,
                                       std::ref(dual_simplex_problem),
                                       std::ref(settings_pdlp),
@@ -696,7 +694,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   auto sol_pdlp = run_pdlp(problem, settings_pdlp, timer, is_batch_mode);
 
   // Wait for dual simplex thread to finish
-  if (!inside_mip) { dual_simplex_thread.join(); }
+  if (!settings.inside_mip) { dual_simplex_thread.join(); }
 
   // Wait for barrier thread to finish
   barrier_handle.sync_stream();
@@ -704,15 +702,16 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
 
   // copy the dual simplex solution to the device
   auto sol_dual_simplex =
-    !inside_mip ? convert_dual_simplex_sol(problem,
-                                           std::get<0>(*sol_dual_simplex_ptr),
-                                           std::get<1>(*sol_dual_simplex_ptr),
-                                           std::get<2>(*sol_dual_simplex_ptr),
-                                           std::get<3>(*sol_dual_simplex_ptr),
-                                           std::get<4>(*sol_dual_simplex_ptr),
-                                           0)
-                : optimization_problem_solution_t<i_t, f_t>{
-                    pdlp_termination_status_t::ConcurrentLimit, problem.handle_ptr->get_stream()};
+    !settings.inside_mip
+      ? convert_dual_simplex_sol(problem,
+                                 std::get<0>(*sol_dual_simplex_ptr),
+                                 std::get<1>(*sol_dual_simplex_ptr),
+                                 std::get<2>(*sol_dual_simplex_ptr),
+                                 std::get<3>(*sol_dual_simplex_ptr),
+                                 std::get<4>(*sol_dual_simplex_ptr),
+                                 0)
+      : optimization_problem_solution_t<i_t, f_t>{pdlp_termination_status_t::ConcurrentLimit,
+                                                  problem.handle_ptr->get_stream()};
 
   // copy the barrier solution to the device
   auto sol_barrier = convert_dual_simplex_sol(problem,
@@ -727,7 +726,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   CUOPT_LOG_INFO(
     "Concurrent time:  %.3fs, total time %.3fs", timer_concurrent.elapsed_time(), end_time);
   // Check status to see if we should return the pdlp solution or the dual simplex solution
-  if (!inside_mip &&
+  if (!settings.inside_mip &&
       (sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::Optimal ||
        sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible ||
        sol_dual_simplex.get_termination_status() == pdlp_termination_status_t::DualInfeasible)) {
@@ -767,15 +766,14 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_with_method(
   detail::problem_t<i_t, f_t>& problem,
   pdlp_solver_settings_t<i_t, f_t> const& settings,
   const timer_t& timer,
-  bool is_batch_mode,
-  bool inside_mip)
+  bool is_batch_mode)
 {
   if (settings.method == method_t::DualSimplex) {
     return run_dual_simplex(problem, settings, timer);
   } else if (settings.method == method_t::Barrier) {
     return run_barrier(problem, settings, timer);
   } else if (settings.method == method_t::Concurrent) {
-    return run_concurrent(problem, settings, timer, is_batch_mode, inside_mip);
+    return run_concurrent(problem, settings, timer, is_batch_mode);
   } else {
     return run_pdlp(problem, settings, timer, is_batch_mode);
   }
@@ -786,8 +784,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
                                                    pdlp_solver_settings_t<i_t, f_t> const& settings,
                                                    bool problem_checking,
                                                    bool use_pdlp_solver_mode,
-                                                   bool is_batch_mode,
-                                                   bool inside_mip)
+                                                   bool is_batch_mode)
 {
   try {
     // Create log stream for file logging and add it to default logger
@@ -868,7 +865,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(optimization_problem_t<i_t, f
 
     setup_device_symbols(op_problem.get_handle_ptr()->get_stream());
 
-    auto solution = solve_lp_with_method(problem, settings, lp_timer, is_batch_mode, inside_mip);
+    auto solution = solve_lp_with_method(problem, settings, lp_timer, is_batch_mode);
 
     if (run_presolve) {
       auto primal_solution = cuopt::device_copy(solution.get_primal_solution(),
@@ -1003,10 +1000,10 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(
   pdlp_solver_settings_t<i_t, f_t> const& settings,
   bool problem_checking,
   bool use_pdlp_solver_mode,
-  bool inside_mip)
+  bool is_batch_mode)
 {
   auto op_problem = mps_data_model_to_optimization_problem(handle_ptr, mps_data_model);
-  return solve_lp(op_problem, settings, problem_checking, use_pdlp_solver_mode, inside_mip);
+  return solve_lp(op_problem, settings, problem_checking, use_pdlp_solver_mode, is_batch_mode);
 }
 
 #define INSTANTIATE(F_TYPE)                                                            \
@@ -1015,23 +1012,20 @@ optimization_problem_solution_t<i_t, f_t> solve_lp(
     pdlp_solver_settings_t<int, F_TYPE> const& settings,                               \
     bool problem_checking,                                                             \
     bool use_pdlp_solver_mode,                                                         \
-    bool is_batch_mode,                                                                \
-    bool inside_mip);                                                                  \
+    bool is_batch_mode);                                                               \
                                                                                        \
   template optimization_problem_solution_t<int, F_TYPE> solve_lp(                      \
     raft::handle_t const* handle_ptr,                                                  \
     const cuopt::mps_parser::mps_data_model_t<int, F_TYPE>& mps_data_model,            \
     pdlp_solver_settings_t<int, F_TYPE> const& settings,                               \
     bool problem_checking,                                                             \
-    bool use_pdlp_solver_mode,                                                         \
-    bool inside_mip);                                                                  \
+    bool use_pdlp_solver_mode);                                                        \
                                                                                        \
   template optimization_problem_solution_t<int, F_TYPE> solve_lp_with_method(          \
     detail::problem_t<int, F_TYPE>& problem,                                           \
     pdlp_solver_settings_t<int, F_TYPE> const& settings,                               \
     const timer_t& timer,                                                              \
-    bool is_batch_mode,                                                                \
-    bool inside_mip);                                                                  \
+    bool is_batch_mode);                                                               \
                                                                                        \
   template optimization_problem_t<int, F_TYPE> mps_data_model_to_optimization_problem( \
     raft::handle_t const* handle_ptr,                                                  \
