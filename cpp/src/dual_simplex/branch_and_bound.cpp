@@ -1306,9 +1306,10 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 
       // Check if crossover was stopped by dual simplex
       if (crossover_status == crossover_status_t::CONCURRENT_LIMIT) {
+        settings_.log.printf("Crossover stopped by dual simplex\n");
         root_status = root_status_future.get();
       } else {
-        // Solution was found by crossover
+        // Crossover finished before dual simplex
         if (crossover_status == crossover_status_t::NUMERICAL_ISSUES) {
           return mip_status_t::INFEASIBLE;
         }
@@ -1317,10 +1318,11 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
           return set_final_solution(solution, -inf);
         }
         global_root_concurrent_halt = 1;  // Stop dual simplex
+        settings_.log.printf("Dual simplex stopped by crossover, crossover found a basis\n");
+        // Override the root relaxation solution with the crossover solution
+        root_relax_soln_ = root_crossover_soln_;
+        root_vstatus_    = crossover_vstatus_;
       }
-      // Override the root relaxation solution with the crossover solution
-      root_relax_soln_ = root_crossover_soln_;
-      root_vstatus_    = crossover_vstatus_;
     } else {
       root_status = root_status_future.get();
     }
