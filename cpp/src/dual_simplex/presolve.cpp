@@ -1119,7 +1119,7 @@ f_t crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
     }
   }
   const f_t dual_res_inf = vector_norm_inf<i_t, f_t>(dual_residual);
-  // assert(dual_res_inf < 1e-4);
+  assert(dual_res_inf < 1e-6);
   return dual_res_inf;
 }
 
