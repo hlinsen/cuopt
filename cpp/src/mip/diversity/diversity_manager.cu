@@ -355,6 +355,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     pdlp_settings.method                               = method_t::Concurrent;
     pdlp_settings.inside_mip                           = true;
     pdlp_settings.pdlp_solver_mode                     = pdlp_solver_mode_t::Stable2;
+    pdlp_settings.num_gpus                             = context.settings.num_gpus;
 
     rmm::device_uvector<f_t> lp_optimal_solution_copy(lp_optimal_solution.size(),
                                                       problem_ptr->handle_ptr->get_stream());
@@ -402,9 +403,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       auto& d_primal_solution = lp_result.get_primal_solution();
       auto& d_dual_solution   = lp_result.get_dual_solution();
       auto& d_reduced_costs   = lp_result.get_reduced_cost();
-      // cuopt::print("primal_solution", d_primal_solution);
-      // cuopt::print("dual_solution", d_dual_solution);
-      // cuopt::print("reduced_costs", d_reduced_costs);
+
       std::vector<f_t> host_primal(d_primal_solution.size());
       std::vector<f_t> host_dual(d_dual_solution.size());
       std::vector<f_t> host_reduced_costs(d_reduced_costs.size());

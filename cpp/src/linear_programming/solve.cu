@@ -665,8 +665,8 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   // Make sure allocations are done on the original stream
   problem.handle_ptr->sync_stream();
 
-  int device_count = raft::device_setter::get_device_count();
   if (settings.num_gpus > 1) {
+    int device_count = raft::device_setter::get_device_count();
     CUOPT_LOG_INFO("Running PDLP and Barrier on %d GPUs", device_count);
     cuopt_expects(
       device_count > 1, error_type_t::RuntimeError, "Multi-GPU mode requires at least 2 GPUs");
