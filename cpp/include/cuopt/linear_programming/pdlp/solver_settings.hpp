@@ -210,6 +210,7 @@ class pdlp_solver_settings_t {
   bool first_primal_feasible{false};
   bool presolve{false};
   bool dual_postsolve{true};
+  int num_gpus{1};
   method_t method{method_t::Concurrent};
   bool inside_mip{false};
   // For concurrent termination
