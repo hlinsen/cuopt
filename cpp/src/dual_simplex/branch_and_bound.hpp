@@ -100,7 +100,7 @@ class branch_and_bound_t {
   // Set a solution based on the user problem during the course of the solve
   void set_new_solution(const std::vector<f_t>& solution);
 
-  void set_main_thread(bool main_thread) { main_thread_ = main_thread; }
+  void set_concurrent_lp_root_solve(bool enable) { enable_concurrent_lp_root_solve_ = enable; }
 
   // Repair a low-quality solution from the heuristics.
   bool repair_solution(const std::vector<f_t>& leaf_edge_norms,
@@ -111,7 +111,7 @@ class branch_and_bound_t {
   f_t get_upper_bound();
   f_t get_lower_bound();
   i_t get_heap_size();
-  bool is_main_thread() const { return main_thread_; }
+  bool enable_concurrent_lp_root_solve() const { return enable_concurrent_lp_root_solve_; }
 
   // The main entry routine. Returns the solver status and populates solution with the incumbent.
   mip_status_t solve(mip_solution_t<i_t, f_t>& solution);
@@ -165,7 +165,7 @@ class branch_and_bound_t {
   lp_solution_t<i_t, f_t> root_crossover_soln_;
   std::vector<f_t> edge_norms_;
   std::atomic<bool> root_crossover_solution_set_{false};
-  bool main_thread_{false};
+  bool enable_concurrent_lp_root_solve_{false};
 
   // Pseudocosts
   pseudo_costs_t<i_t, f_t> pc_;

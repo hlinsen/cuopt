@@ -1244,7 +1244,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   global_root_concurrent_halt = 0;
   lp_settings.concurrent_halt = &global_root_concurrent_halt;
   // RINS/SUBMIP path
-  if (!is_main_thread()) {
+  if (!enable_concurrent_lp_root_solve()) {
     root_status = solve_linear_program_advanced(original_lp_,
                                                 exploration_stats_.start_time,
                                                 lp_settings,
@@ -1301,8 +1301,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                                       root_crossover_soln_,
                                                       crossover_vstatus_);
       settings_.log.printf("Crossover status: %d\n", crossover_status);
-      exploration_stats_.total_lp_iters      = root_crossover_soln_.iterations;
-      exploration_stats_.total_lp_solve_time = toc(exploration_stats_.start_time);
 
       // Check if crossover was stopped by dual simplex
       if (crossover_status == crossover_status_t::CONCURRENT_LIMIT) {

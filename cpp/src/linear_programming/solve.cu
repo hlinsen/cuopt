@@ -780,7 +780,8 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   } else if (sol_pdlp.get_termination_status() == pdlp_termination_status_t::Optimal) {
     CUOPT_LOG_INFO("Solved with PDLP");
     return sol_pdlp;
-  } else if (sol_pdlp.get_termination_status() == pdlp_termination_status_t::ConcurrentLimit) {
+  } else if (!settings.inside_mip &&
+             sol_pdlp.get_termination_status() == pdlp_termination_status_t::ConcurrentLimit) {
     CUOPT_LOG_INFO("Using dual simplex solve info");
     return sol_dual_simplex;
   } else {
