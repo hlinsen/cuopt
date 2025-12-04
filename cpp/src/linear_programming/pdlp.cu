@@ -314,10 +314,7 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
 
   // Check for concurrent limit
   if (settings_.concurrent_halt != nullptr && *settings_.concurrent_halt == 1) {
-#ifdef PDLP_VERBOSE_MODE
-    RAFT_CUDA_TRY(cudaDeviceSynchronize());
-    std::cout << "Concurrent Limit reached, returning current solution" << std::endl;
-#endif
+    CUOPT_LOG_INFO("PDLP Concurrent Limit reached, returning current solution");
     return current_termination_strategy_.fill_return_problem_solution(
       internal_solver_iterations_,
       pdhg_solver_,
