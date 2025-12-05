@@ -1285,7 +1285,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                              root_crossover_soln_.z,
                                              crushed_root_y,
                                              crushed_root_z);
-      settings_.log.printf("Dual residual inf: %e\n", dual_res_inf);
 
       root_crossover_soln_.x = crushed_root_x;
       root_crossover_soln_.y = crushed_root_y;
@@ -1303,26 +1302,17 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       settings_.log.printf("Crossover status: %d\n", crossover_status);
 
       // Check if crossover was stopped by dual simplex
-      if (crossover_status == crossover_status_t::CONCURRENT_LIMIT) {
-        settings_.log.printf("Crossover stopped by dual simplex\n");
-        root_status = root_status_future.get();
-      } else {
-        // Crossover finished before dual simplex
-        if (crossover_status == crossover_status_t::NUMERICAL_ISSUES ||
-            crossover_status == crossover_status_t::PRIMAL_FEASIBLE ||
-            crossover_status == crossover_status_t::DUAL_FEASIBLE) {
-          return mip_status_t::INFEASIBLE;
-        }
-        if (crossover_status == crossover_status_t::TIME_LIMIT) {
-          solver_status_ = mip_exploration_status_t::TIME_LIMIT;
-          return set_final_solution(solution, -inf);
-        }
-        global_root_concurrent_halt = 1;  // Stop dual simplex
+      if (crossover_status == crossover_status_t::OPTIMAL) {
         settings_.log.printf("Dual simplex stopped by crossover, crossover found a basis\n");
+        global_root_concurrent_halt = 1;  // Stop dual simplex
+        root_status                 = root_status_future.get();
         // Override the root relaxation solution with the crossover solution
         root_relax_soln_ = root_crossover_soln_;
         root_vstatus_    = crossover_vstatus_;
         root_status      = lp_status_t::OPTIMAL;
+      } else {
+        settings_.log.printf("Dual simplex finished\n");
+        root_status = root_status_future.get();
       }
     } else {
       root_status = root_status_future.get();

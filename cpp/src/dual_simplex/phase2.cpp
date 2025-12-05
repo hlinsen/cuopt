@@ -2075,8 +2075,8 @@ void prepare_optimality(const lp_problem_t<i_t, f_t>& lp,
       settings.log.printf("Perturbation:               %.2e\n", perturbation);
     } else {
       if (settings.concurrent_halt != nullptr) {
-        *settings.concurrent_halt = 1;
         settings.log.printf("Setting concurrent halt in Dual Simplex Phase 2\n");
+        *settings.concurrent_halt = 1;
       }
       settings.log.printf("\n");
       settings.log.printf(
