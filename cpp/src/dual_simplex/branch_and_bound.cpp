@@ -33,8 +33,6 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
-volatile int global_root_concurrent_halt;
-
 namespace {
 
 template <typename f_t>
@@ -1241,8 +1239,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   simplex_solver_settings_t lp_settings = settings_;
   lp_status_t root_status;
   lp_settings.inside_mip      = 1;
-  global_root_concurrent_halt = 0;
-  lp_settings.concurrent_halt = &global_root_concurrent_halt;
+  lp_settings.concurrent_halt = get_global_root_concurrent_halt();
   // RINS/SUBMIP path
   if (!enable_concurrent_lp_root_solve()) {
     root_status = solve_linear_program_advanced(original_lp_,
@@ -1266,7 +1263,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     // Wait for the root relaxation solution to be sent by the diversity manager or dual simplex
     // to finish
     while (!root_crossover_solution_set_.load(std::memory_order_acquire) &&
-           global_root_concurrent_halt == 0) {
+           *get_global_root_concurrent_halt() == 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
 
@@ -1292,26 +1290,27 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 
       // Call crossover on the crushed solution
       auto root_crossover_settings            = settings_;
-      root_crossover_settings.concurrent_halt = &global_root_concurrent_halt;
+      root_crossover_settings.concurrent_halt = get_global_root_concurrent_halt();
       crossover_status_t crossover_status     = crossover(original_lp_,
                                                       root_crossover_settings,
                                                       root_crossover_soln_,
                                                       exploration_stats_.start_time,
                                                       root_crossover_soln_,
                                                       crossover_vstatus_);
-      settings_.log.printf("Crossover status: %d\n", crossover_status);
+
+      if (crossover_status != crossover_status_t::CONCURRENT_LIMIT) {
+        settings_.log.printf("Crossover status: %d\n", crossover_status);
+      }
 
       // Check if crossover was stopped by dual simplex
       if (crossover_status == crossover_status_t::OPTIMAL) {
-        settings_.log.printf("Dual simplex stopped by crossover, crossover found a basis\n");
-        global_root_concurrent_halt = 1;  // Stop dual simplex
-        root_status                 = root_status_future.get();
+        set_global_root_concurrent_halt(1);  // Stop dual simplex
+        root_status = root_status_future.get();
         // Override the root relaxation solution with the crossover solution
         root_relax_soln_ = root_crossover_soln_;
         root_vstatus_    = crossover_vstatus_;
         root_status      = lp_status_t::OPTIMAL;
       } else {
-        settings_.log.printf("Dual simplex finished\n");
         root_status = root_status_future.get();
       }
     } else {
