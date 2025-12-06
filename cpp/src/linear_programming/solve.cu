@@ -535,6 +535,7 @@ static optimization_problem_solution_t<i_t, f_t> run_pdlp_solver(
                                                      problem.handle_ptr->get_stream()};
   }
   detail::pdlp_solver_t<i_t, f_t> solver(problem, settings, is_batch_mode);
+  if (settings.inside_mip) { solver.set_inside_mip(true); }
   return solver.run_solver(timer);
 }
 

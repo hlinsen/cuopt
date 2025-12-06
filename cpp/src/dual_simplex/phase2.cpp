@@ -2074,10 +2074,6 @@ void prepare_optimality(const lp_problem_t<i_t, f_t>& lp,
       settings.log.printf("Dual infeasibility (abs):   %.2e\n", dual_infeas);
       settings.log.printf("Perturbation:               %.2e\n", perturbation);
     } else {
-      if (settings.concurrent_halt != nullptr) {
-        settings.log.printf("Setting concurrent halt in Dual Simplex Phase 2\n");
-        *settings.concurrent_halt = 1;
-      }
       settings.log.printf("\n");
       settings.log.printf(
         "Root relaxation solution found in %d iterations and %.2fs\n", iter, toc(start_time));
@@ -2984,6 +2980,10 @@ dual::status_t dual_phase2_with_advanced_basis(i_t phase,
                           dense_delta_z,
                           100.0 * dense_delta_z / (sparse_delta_z + dense_delta_z));
       ft.print_stats();
+    }
+    if (settings.inside_mip && settings.concurrent_halt != nullptr) {
+      settings.log.printf("Setting concurrent halt in Dual Simplex Phase 2\n");
+      *settings.concurrent_halt = 1;
     }
   }
   return status;
