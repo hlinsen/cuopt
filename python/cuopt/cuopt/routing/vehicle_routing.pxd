@@ -133,3 +133,11 @@ cdef extern from "cuopt/routing/cython/cython.hpp" namespace "cuopt::cython": # 
         data_model_view_t[int, float]* data_model,
         solver_settings_t[int, float]* solver_settings
     ) except +
+
+cdef extern from "cuopt/routing/cython/cython.hpp" namespace "cuopt::cython": # noqa
+    cdef unique_ptr[vehicle_routing_ret_t] call_run_local_search(
+        data_model_view_t[int, float]* data_model,
+        solver_settings_t[int, float]* solver_settings,
+        const int *solution,
+        int sol_size
+    ) except +

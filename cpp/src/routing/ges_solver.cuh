@@ -39,6 +39,8 @@ class ges_solver_t {
   assignment_t<i_t> get_ges_assignment(detail::solution_t<i_t, f_t, REQUEST>& sol,
                                        std::vector<i_t> const& accepted = {});
 
+  assignment_t<i_t> run_local_search_impl(i_t const* solution, i_t sol_size, double time_limit);
+
   // instantiate timer above anything
   timer_t timer;
   const detail::problem_t<i_t, f_t> problem;

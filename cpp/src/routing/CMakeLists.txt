@@ -44,6 +44,7 @@ set(ROUTING_SRC_FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/order_info.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/fleet_order_constraints.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/fleet_order_info.cu
+  ${CMAKE_CURRENT_SOURCE_DIR}/run_local_search.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/solve.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/solver.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/solver_settings.cu

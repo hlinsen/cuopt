@@ -82,6 +82,13 @@ struct dataset_ret_t {
 std::unique_ptr<vehicle_routing_ret_t> call_solve(routing::data_model_view_t<int, float>*,
                                                   routing::solver_settings_t<int, float>*);
 
+// Wrapper for run_local_search to expose the API to cython.
+std::unique_ptr<vehicle_routing_ret_t> call_run_local_search(
+  routing::data_model_view_t<int, float>*,
+  routing::solver_settings_t<int, float>*,
+  int const* solution,
+  int sol_size);
+
 // Wrapper for dataset to expose the API to cython.
 std::unique_ptr<dataset_ret_t> call_generate_dataset(
   raft::handle_t const& handle, routing::generator::dataset_params_t<int, float> const& params);

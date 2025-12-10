@@ -17,6 +17,9 @@
 #include "ges/guided_ejection_search.cuh"
 
 #include <rmm/mr/device_memory_resource.hpp>
+#include <utilities/copy_helpers.hpp>
+
+#include <set>
 
 namespace cuopt {
 namespace routing {
@@ -34,6 +37,68 @@ ges_solver_t<i_t, f_t, REQUEST>::ges_solver_t(const data_model_view_t<i_t, f_t>&
     expected_route_count(expected_route_count_),
     intermediate_file(intermediate_file_)
 {
+}
+
+template <typename i_t, typename f_t, request_t REQUEST>
+assignment_t<i_t> ges_solver_t<i_t, f_t, REQUEST>::run_local_search_impl(i_t const* solution,
+                                                                         i_t sol_size,
+                                                                         double time_limit)
+{
+  const double initial_weights[] = {
+    10000., 10000., 100., 1000., 1000., 1000., 10000., 10000., 10000.};
+  detail::infeasible_cost_t weights(initial_weights);
+  auto cpu_weights = detail::get_cpu_cost(weights);
+
+  detail::adapted_modifier_t<i_t, f_t, REQUEST> lm(pool_allocator);
+
+  // Load solution from input array
+  auto stream     = pool_allocator.sol_handles[0]->get_stream();
+  auto tmp_routes = cuopt::host_copy(solution, sol_size, stream);
+
+  std::vector<std::pair<int, std::vector<detail::NodeInfo<>>>> sol_routes;
+  std::vector<detail::NodeInfo<>> new_route;
+  std::vector<int> desired_vehicle_ids;
+  std::set<int> added_node_ids;
+
+  int sol_n_routes = 0;
+
+  for (int j = 0; j < sol_size; ++j) {
+    if (tmp_routes[j] == 0 && new_route.empty()) { continue; }
+
+    if (tmp_routes[j] == 0 && !new_route.empty()) {
+      sol_routes.push_back({sol_n_routes++, new_route});
+      new_route.clear();
+    } else {
+      new_route.push_back(problem.get_node_info_of_node(tmp_routes[j]));
+      cuopt_expects(added_node_ids.count(tmp_routes[j]) == 0,
+                    error_type_t::ValidationError,
+                    "Duplicate order id");
+      added_node_ids.insert(tmp_routes[j]);
+    }
+  }
+  if (!new_route.empty()) { sol_routes.push_back({sol_n_routes++, new_route}); }
+
+  cuopt_expects(sol_n_routes <= problem.get_fleet_size(),
+                error_type_t::ValidationError,
+                "One solution has more vehicles than the fleet size");
+
+  // Note that the injection search is currently supported only for homogenous case,
+  // so we will use first n vehicles. For heterogenous case, we have to read it
+  // from the file as well
+  desired_vehicle_ids.resize(sol_n_routes);
+  std::iota(desired_vehicle_ids.begin(), desired_vehicle_ids.end(), 0);
+
+  detail::adapted_sol_t<i_t, f_t, REQUEST> S(
+    &problem, pool_allocator.sol_handles[0].get(), desired_vehicle_ids);
+  std::vector<int> sequence(sol_n_routes);
+  std::iota(sequence.begin(), sequence.end(), 0);
+  S.remove_routes(sequence);
+  S.add_new_routes(sol_routes);
+
+  // Run local search improvement
+  lm.improve(S, cpu_weights, time_limit, true);
+
+  return get_ges_assignment(S.sol);
 }
 
 template <typename i_t, typename f_t, request_t REQUEST>

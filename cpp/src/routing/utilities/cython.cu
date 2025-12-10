@@ -6,6 +6,7 @@
 /* clang-format on */
 
 #include <cuopt/routing/cython/cython.hpp>
+#include <cuopt/routing/run_local_search.hpp>
 #include <cuopt/routing/solve.hpp>
 #include <raft/core/handle.hpp>
 #include <rmm/device_buffer.hpp>
@@ -68,6 +69,42 @@ std::unique_ptr<vehicle_routing_ret_t> call_solve(
 
 {
   auto routing_solution = cuopt::routing::solve(*data_model, *settings);
+  vehicle_routing_ret_t vr_ret{
+    routing_solution.get_vehicle_count(),
+    routing_solution.get_total_objective(),
+    routing_solution.get_objectives(),
+    std::make_unique<rmm::device_buffer>(routing_solution.get_route().release()),
+    std::make_unique<rmm::device_buffer>(routing_solution.get_order_locations().release()),
+    std::make_unique<rmm::device_buffer>(routing_solution.get_arrival_stamp().release()),
+    std::make_unique<rmm::device_buffer>(routing_solution.get_truck_id().release()),
+    std::make_unique<rmm::device_buffer>(routing_solution.get_node_types().release()),
+    std::make_unique<rmm::device_buffer>(routing_solution.get_unserviced_nodes().release()),
+    std::make_unique<rmm::device_buffer>(routing_solution.get_accepted().release()),
+    routing_solution.get_status(),
+    routing_solution.get_status_string(),
+    routing_solution.get_error_status().get_error_type(),
+    routing_solution.get_error_status().what()};
+  return std::make_unique<vehicle_routing_ret_t>(std::move(vr_ret));
+}
+
+/**
+ * @brief Wrapper for run_local_search to expose the API to cython
+ *
+ * @param data_model Composable data model object
+ * @param settings  Composable solver settings object
+ * @param solution  Initial solution array
+ * @param sol_size  Size of the solution array
+ * @return std::unique_ptr<vehicle_routing_ret_t>
+ */
+std::unique_ptr<vehicle_routing_ret_t> call_run_local_search(
+  routing::data_model_view_t<int, float>* data_model,
+  routing::solver_settings_t<int, float>* settings,
+  int const* solution,
+  int sol_size)
+
+{
+  auto routing_solution =
+    cuopt::routing::run_local_search(*data_model, *settings, solution, sol_size);
   vehicle_routing_ret_t vr_ret{
     routing_solution.get_vehicle_count(),
     routing_solution.get_total_objective(),

@@ -56,6 +56,15 @@ class solver_t {
    */
   assignment_t<i_t> solve();
 
+  /**
+   * @brief Runs local search on a provided initial solution.
+   *
+   * @param solution Initial solution array
+   * @param sol_size Size of the solution array
+   * @return assignment_t owning container for the solver output.
+   */
+  assignment_t<i_t> run_local_search(i_t const* solution, i_t sol_size);
+
  protected:
   template <request_t REQUEST>
   assignment_t<i_t> run_ges_solver(i_t target_vehicles);

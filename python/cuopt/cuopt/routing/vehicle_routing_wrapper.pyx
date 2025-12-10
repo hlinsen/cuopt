@@ -11,6 +11,7 @@ from pylibraft.common.handle cimport *
 
 from cuopt.routing.structure.routing_utilities cimport *
 from cuopt.routing.vehicle_routing cimport (
+    call_run_local_search,
     call_solve,
     data_model_view_t,
     node_type_t,
@@ -756,6 +757,110 @@ def Solve(DataModel data_model, SolverSettings solver_settings):
     vr_ret_ptr = move(call_solve(
         c_data_model_view,
         c_solver_settings
+    ))
+
+    vr_ret = move(vr_ret_ptr.get()[0])
+    vehicle_count = vr_ret.vehicle_count_
+    total_objective_value = vr_ret.total_objective_value_
+    objective_values = vr_ret.objective_values_
+
+    objective_values = {}
+    for k in vr_ret.objective_values_:
+        obj = Objective(int(k.first))
+        objective_values[obj] = k.second
+
+    status = vr_ret.status_
+    cdef char* c_sol_string = c_get_string(vr_ret.solution_string_)
+    try:
+        # Performs a copy of the data
+        solver_status_string = \
+            c_sol_string[:vr_ret.solution_string_.length()].decode('UTF-8')
+    finally:
+        free(c_sol_string)
+
+    route = DeviceBuffer.c_from_unique_ptr(move(vr_ret.d_route_))
+    route_locations = DeviceBuffer.c_from_unique_ptr(
+        move(vr_ret.d_route_locations_)
+    )
+    arrival_stamp = DeviceBuffer.c_from_unique_ptr(
+        move(vr_ret.d_arrival_stamp_)
+    )
+    truck_id = DeviceBuffer.c_from_unique_ptr(move(vr_ret.d_truck_id_))
+    node_types = DeviceBuffer.c_from_unique_ptr(move(vr_ret.d_node_types_))
+    unserviced_nodes = \
+        DeviceBuffer.c_from_unique_ptr(move(vr_ret.d_unserviced_nodes_))
+    accepted = \
+        DeviceBuffer.c_from_unique_ptr(move(vr_ret.d_accepted_))
+
+    route_df = cudf.DataFrame()
+    route_df['route'] = series_from_buf(route, pa.int32())
+    route_df['arrival_stamp'] = series_from_buf(arrival_stamp, pa.float64())
+    route_df['truck_id'] = series_from_buf(truck_id, pa.int32())
+    route_df['location'] = series_from_buf(route_locations, pa.int32())
+    route_df['type'] = series_from_buf(node_types, pa.int32())
+
+    unserviced_nodes = cudf.Series._from_column(
+        series_from_buf(unserviced_nodes, pa.int32())
+    )
+    accepted = cudf.Series._from_column(
+        series_from_buf(accepted, pa.int32())
+    )
+
+    def get_type_from_int(type_in_int):
+        if type_in_int == int(NodeType.DEPOT):
+            return "Depot"
+        elif type_in_int == int(NodeType.PICKUP):
+            return "Pickup"
+        elif type_in_int == int(NodeType.DELIVERY):
+            return "Delivery"
+        elif type_in_int == int(NodeType.BREAK):
+            return "Break"
+
+    node_types_string = [
+        get_type_from_int(type_in_int)
+        for type_in_int in route_df['type'].to_pandas()]
+    route_df['type'] = node_types_string
+    error_status = vr_ret.error_status_
+    error_message = vr_ret.error_message_
+
+    return Assignment(
+        vehicle_count,
+        total_objective_value,
+        objective_values,
+        route_df,
+        accepted,
+        <solution_status_t> status,
+        solver_status_string,
+        <error_type_t> error_status,
+        error_message,
+        unserviced_nodes
+    )
+
+
+def RunLocalSearch(DataModel data_model, SolverSettings solver_settings,
+                   solution, sol_size):
+    if not isinstance(solution, cudf.Series):
+        raise TypeError("Input solution should be a cudf.Series")
+
+    solution_cpy = solution.copy()
+    solution_cpy = type_cast(solution_cpy, np.int32, "solution")
+
+    cdef data_model_view_t[int, float]* c_data_model_view = (
+        data_model.c_data_model_view.get()
+    )
+    cdef solver_settings_t[int, float]* c_solver_settings = (
+        solver_settings.c_solver_settings.get()
+    )
+
+    cdef uintptr_t c_solution = (
+        solution_cpy.__cuda_array_interface__['data'][0]
+    )
+
+    vr_ret_ptr = move(call_run_local_search(
+        c_data_model_view,
+        c_solver_settings,
+        <const int *> c_solution,
+        sol_size
     ))
 
     vr_ret = move(vr_ret_ptr.get()[0])

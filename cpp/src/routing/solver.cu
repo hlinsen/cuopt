@@ -55,6 +55,42 @@ solver_t<i_t, f_t>::solver_t(data_model_view_t<i_t, f_t> const& data_model,
 }
 
 template <typename i_t, typename f_t>
+assignment_t<i_t> solver_t<i_t, f_t>::run_local_search(i_t const* solution, i_t sol_size)
+{
+  if (settings_.dump_best_results_) { best_result_file_.open(settings_.best_result_file_name_); }
+  if (settings_.time_limit_ == std::numeric_limits<f_t>::max()) {
+    // order_info_ is populated in ges_solver_t constructor, so use data_model here
+    settings_.time_limit_ = data_view_ptr_->get_num_orders() / 5;
+  }
+  // TODO accept a settings object once we have full feature in ges solver
+  // We only set target vehicles and use fixed route loop in the below case. The other paths will
+  // run regular fixed route loop.
+  auto target_vehicles = -1;
+  if (data_view_ptr_->get_fleet_size() == data_view_ptr_->get_min_vehicles()) {
+    target_vehicles = data_view_ptr_->get_min_vehicles();
+  }
+
+  const bool is_pdp = data_view_ptr_->get_pickup_delivery_pair().first != nullptr;
+
+  if (is_pdp) {
+    ges_solver_t<i_t, f_t, request_t::PDP> s{*data_view_ptr_,
+                                             *solver_settings_ptr_,
+                                             (double)settings_.time_limit_,
+                                             target_vehicles,
+                                             &best_result_file_};
+
+    return s.run_local_search_impl(solution, sol_size, (double)settings_.time_limit_);
+  }
+
+  ges_solver_t<i_t, f_t, request_t::VRP> s{*data_view_ptr_,
+                                           *solver_settings_ptr_,
+                                           (double)settings_.time_limit_,
+                                           target_vehicles,
+                                           &best_result_file_};
+  return s.run_local_search_impl(solution, sol_size, (double)settings_.time_limit_);
+}
+
+template <typename i_t, typename f_t>
 assignment_t<i_t> solver_t<i_t, f_t>::solve()
 {
   if (settings_.dump_best_results_) { best_result_file_.open(settings_.best_result_file_name_); }

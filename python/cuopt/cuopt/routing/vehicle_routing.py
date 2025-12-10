@@ -1540,3 +1540,46 @@ def Solve(data_model, solver_settings=None):
             solver_settings.get_config_file_name(),
         )
     return solution
+
+
+@catch_cuopt_exception
+def RunLocalSearch(data_model, solver_settings, solution, sol_size):
+    """
+    Runs local search on a provided initial solution.
+
+    LIMITED:
+        Limited version only return routes if the number of nodes
+        is less than 1001,
+        else it will return only cost and number of vehicles.
+
+    Parameters
+    ----------
+    data_model: DataModel
+        data model containing orders, vehicles and constraints.
+    solver_settings: SolverSettings
+        settings to configure solver configurations.
+        By default, it uses default solver settings to solve.
+    solution: cudf.Series
+        Initial solution as a cudf.Series of int32.
+    sol_size: int32
+        Size of the solution.
+
+    Returns
+    -------
+    assignment : Assignment
+        Assignment object containing the solver output.
+    """
+    if solver_settings is None:
+        solver_settings = SolverSettings()
+
+    out_solution = vehicle_routing_wrapper.RunLocalSearch(
+        data_model, solver_settings, solution, sol_size
+    )
+    if solver_settings.get_config_file_name() is not None:
+        routing.utils.save_data_model_to_yaml(
+            data_model,
+            solver_settings,
+            out_solution,
+            solver_settings.get_config_file_name(),
+        )
+    return out_solution
