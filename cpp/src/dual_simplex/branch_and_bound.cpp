@@ -1319,19 +1319,21 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   lp_status_t root_status;
   simplex_solver_settings_t lp_settings = settings_;
   lp_settings.inside_mip                = 1;
-  lp_settings.concurrent_halt           = get_root_concurrent_halt();
+  // lp_settings.concurrent_halt           = get_root_concurrent_halt();
   // RINS/SUBMIP path
-  if (!enable_concurrent_lp_root_solve()) {
-    root_status = solve_linear_program_advanced(original_lp_,
-                                                exploration_stats_.start_time,
-                                                lp_settings,
-                                                root_relax_soln_,
-                                                root_vstatus_,
-                                                edge_norms_);
+  // if (!enable_concurrent_lp_root_solve()) {
+  root_status = solve_linear_program_advanced(original_lp_,
+                                              exploration_stats_.start_time,
+                                              lp_settings,
+                                              root_relax_soln_,
+                                              root_vstatus_,
+                                              edge_norms_);
 
-  } else {
-    root_status = solve_root_relaxation(lp_settings);
-  }
+  // }
+
+  // else {
+  //   root_status = solve_root_relaxation(lp_settings);
+  // }
 
   exploration_stats_.total_lp_iters      = root_relax_soln_.iterations;
   exploration_stats_.total_lp_solve_time = toc(exploration_stats_.start_time);
