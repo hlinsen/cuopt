@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -235,7 +235,10 @@ std::unique_ptr<solver_ret_t> call_solve(
   // This is a workaround to fix the synchronization issues, please fix this in the future and
   // remove this workaround. cudaStream_t stream; RAFT_CUDA_TRY(cudaStreamCreateWithFlags(&stream,
   // flags));  // flags=cudaStreamNonBlocking const raft::handle_t handle_{stream};
-  const raft::handle_t handle_{};
+  // const raft::handle_t handle_{};
+  cudaStream_t stream;
+  RAFT_CUDA_TRY(cudaStreamCreateWithFlags(&stream, flags));
+  raft::handle_t handle_{stream};
 
   auto op_problem = data_model_to_optimization_problem(data_model, solver_settings, &handle_);
   solver_ret_t response;

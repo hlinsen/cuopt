@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -309,10 +309,16 @@ struct dual_reflected_projection {
   dual_reflected_projection(const f_t* scalar) : scalar_{scalar} {}
   HDI f_t operator()(f_t current_dual, f_t Ax, f_t lower_bound, f_t upper_bounds)
   {
+    printf("current_dual: %f, Ax: %f, lower_bound: %f, upper_bounds: %f\n",
+           current_dual,
+           Ax,
+           lower_bound,
+           upper_bounds);
     cuopt_assert(*scalar_ != f_t(0.0), "Scalar can't be 0");
     const f_t tmp       = current_dual / *scalar_ - Ax;
     const f_t tmp_proj  = raft::max<f_t>(-upper_bounds, raft::min<f_t>(tmp, -lower_bound));
     const f_t next_dual = (tmp - tmp_proj) * *scalar_;
+    printf("tmp: %f, tmp_proj: %f, next_dual: %f\n", tmp, tmp_proj, next_dual);
     return f_t(2.0) * next_dual - current_dual;
   }
 
@@ -387,11 +393,11 @@ void pdhg_solver_t<i_t, f_t>::compute_next_primal_dual_solution_reflected(
         primal_size_h_,
         primal_reflected_projection<f_t>(primal_step_size.data()),
         stream_view_);
-#ifdef CUPDLP_DEBUG_MODE
-      print("reflected_primal_", reflected_primal_);
-#endif
+      // #ifdef CUPDLP_DEBUG_MODE
+      // #endif
 
       // Compute next dual
+      cusparseSetStream(handle_ptr_->get_cusparse_handle(), stream_view_);
       compute_A_x();
 
       cub::DeviceTransform::Transform(
@@ -403,12 +409,21 @@ void pdhg_solver_t<i_t, f_t>::compute_next_primal_dual_solution_reflected(
         dual_size_h_,
         dual_reflected_projection<f_t>(dual_step_size.data()),
         stream_view_);
-#ifdef CUPDLP_DEBUG_MODE
-      print("reflected_dual_", reflected_dual_);
-#endif
+      // #ifdef CUPDLP_DEBUG_MODE
+      // #endif
       graph_all.end_capture(should_major);
     }
     graph_all.launch(should_major);
+    cudaDeviceSynchronize();
+    std::cout << "dual_size_h_: " << dual_size_h_ << std::endl;
+    print("dual_solution_", current_saddle_point_state_.get_dual_solution());
+    print("dual_gradient_", current_saddle_point_state_.get_dual_gradient());
+    print("constraint_lower_bounds_", problem_ptr->constraint_lower_bounds);
+    print("constraint_upper_bounds_", problem_ptr->constraint_upper_bounds);
+    print("reflected_primal_", reflected_primal_);
+    print("reflected_dual_", reflected_dual_);
+    cudaDeviceSynchronize();
+    exit(0);
   }
 }
 

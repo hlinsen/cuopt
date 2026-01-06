@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -326,6 +326,7 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(
                              buffer_transpose.data(),
                              handle_ptr->get_stream());
 #endif
+  cudaStreamSynchronize(handle_ptr->get_stream());
 }
 
 // Used by pdlp object for current and average termination condition
