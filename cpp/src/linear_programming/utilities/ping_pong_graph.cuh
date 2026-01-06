@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -21,6 +21,9 @@ class ping_pong_graph_t {
   ping_pong_graph_t(rmm::cuda_stream_view stream_view, bool is_batch_mode = false)
     : stream_view_(stream_view), is_batch_mode_(is_batch_mode)
   {
+    unsigned long long stream_id;
+    RAFT_CUDA_TRY(cudaStreamGetId(stream_view_.value(), &stream_id));
+    std::cout << "stream_id of ping_pong_graph: " << stream_id << std::endl;
   }
 
   ~ping_pong_graph_t()

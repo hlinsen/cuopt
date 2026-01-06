@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -40,13 +40,13 @@ adaptive_step_size_strategy_t<i_t, f_t>::adaptive_step_size_strategy_t(
     stream_view_(handle_ptr_->get_stream()),
     primal_weight_(primal_weight),
     step_size_(step_size),
-    interaction_{stream_view_},
-    movement_{stream_view_},
-    norm_squared_delta_primal_{stream_view_},
-    norm_squared_delta_dual_{stream_view_},
-    reusable_device_scalar_value_1_{f_t(1.0), stream_view_},
-    reusable_device_scalar_value_0_{f_t(0.0), stream_view_},
-    graph(stream_view_, is_batch_mode)
+    interaction_{handle_ptr_->get_stream()},
+    movement_{handle_ptr_->get_stream()},
+    norm_squared_delta_primal_{handle_ptr_->get_stream()},
+    norm_squared_delta_dual_{handle_ptr_->get_stream()},
+    reusable_device_scalar_value_1_{f_t(1.0), handle_ptr_->get_stream()},
+    reusable_device_scalar_value_0_{f_t(0.0), handle_ptr_->get_stream()},
+    graph(handle_ptr_->get_stream(), is_batch_mode)
 {
   valid_step_size_  = make_unique_cuda_host_pinned<i_t>();
   *valid_step_size_ = 0;
@@ -325,7 +325,7 @@ void adaptive_step_size_strategy_t<i_t, f_t>::compute_interaction_and_movement(
   //               2 + (0.5 /
   //               solver_state.primal_weight) *
   //               norm(delta_dual) ^ 2;
-  deltas_are_done_.stream_wait(stream_pool_.get_stream(0));
+  // deltas_are_done_.stream_wait(stream_pool_.get_stream(0));
   RAFT_CUBLAS_TRY(
     raft::linalg::detail::cublasdot(handle_ptr_->get_cublas_handle(),
                                     current_saddle_point_state.get_primal_size(),
@@ -334,10 +334,10 @@ void adaptive_step_size_strategy_t<i_t, f_t>::compute_interaction_and_movement(
                                     current_saddle_point_state.get_delta_primal().data(),
                                     primal_stride,
                                     norm_squared_delta_primal_.data(),
-                                    stream_pool_.get_stream(0)));
-  dot_delta_X_.record(stream_pool_.get_stream(0));
+                                    stream_view_));
+  // dot_delta_X_.record(stream_pool_.get_stream(0));
 
-  deltas_are_done_.stream_wait(stream_pool_.get_stream(1));
+  // deltas_are_done_.stream_wait(stream_pool_.get_stream(1));
   RAFT_CUBLAS_TRY(
     raft::linalg::detail::cublasdot(handle_ptr_->get_cublas_handle(),
                                     current_saddle_point_state.get_dual_size(),
@@ -346,12 +346,12 @@ void adaptive_step_size_strategy_t<i_t, f_t>::compute_interaction_and_movement(
                                     current_saddle_point_state.get_delta_dual().data(),
                                     dual_stride,
                                     norm_squared_delta_dual_.data(),
-                                    stream_pool_.get_stream(1)));
-  dot_delta_Y_.record(stream_pool_.get_stream(1));
+                                    stream_view_));
+  // dot_delta_Y_.record(stream_pool_.get_stream(1));
 
   // Wait on main stream for both dot to be done before launching the next kernel
-  dot_delta_X_.stream_wait(stream_view_);
-  dot_delta_Y_.stream_wait(stream_view_);
+  // dot_delta_X_.stream_wait(stream_view_);
+  // dot_delta_Y_.stream_wait(stream_view_);
 }
 
 template <typename i_t, typename f_t>

@@ -229,6 +229,7 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(
   std::cout << "PDHG cusparse view init" << std::endl;
 #endif
 
+  cusparseSetStream(handle_ptr_->get_cusparse_handle(), handle_ptr->get_stream());
   // setup cusparse view
   A.create(op_problem_scaled.n_constraints,
            op_problem_scaled.n_variables,

@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -2051,7 +2051,6 @@ void pdlp_restart_strategy_t<i_t, f_t>::compute_dual_gradient(
                            duality_gap.dual_gradient_.data(),
                            dual_size_h_,
                            stream_view_);
-  print("dual_gradient_", duality_gap.dual_gradient_);
 }
 
 template <typename i_t, typename f_t>

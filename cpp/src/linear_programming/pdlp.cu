@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -54,15 +54,18 @@ pdlp_solver_t<i_t, f_t>::pdlp_solver_t(problem_t<i_t, f_t>& op_problem,
     problem_ptr(&op_problem),
     op_problem_scaled_(
       op_problem, false),  // False to call the PDLP custom version of the problem copy constructor
-    unscaled_primal_avg_solution_{static_cast<size_t>(op_problem.n_variables), stream_view_},
-    unscaled_dual_avg_solution_{static_cast<size_t>(op_problem.n_constraints), stream_view_},
+    unscaled_primal_avg_solution_{static_cast<size_t>(op_problem.n_variables),
+                                  handle_ptr_->get_stream()},
+    unscaled_dual_avg_solution_{static_cast<size_t>(op_problem.n_constraints),
+                                handle_ptr_->get_stream()},
     primal_size_h_(op_problem.n_variables),
     dual_size_h_(op_problem.n_constraints),
-    primal_step_size_{stream_view_},
-    dual_step_size_{stream_view_},
-    primal_weight_{stream_view_},
-    best_primal_weight_{stream_view_},
-    step_size_{(f_t)pdlp_hyper_params::initial_step_size_scaling, stream_view_},
+    primal_step_size_{op_problem.handle_ptr->get_stream()},
+    dual_step_size_{op_problem.handle_ptr->get_stream()},
+    primal_weight_{op_problem.handle_ptr->get_stream()},
+    best_primal_weight_{op_problem.handle_ptr->get_stream()},
+    step_size_{(f_t)pdlp_hyper_params::initial_step_size_scaling,
+               op_problem.handle_ptr->get_stream()},
     step_size_strategy_{handle_ptr_, &primal_weight_, &step_size_, is_batch_mode},
     pdhg_solver_{handle_ptr_, op_problem_scaled_, is_batch_mode},
     settings_(settings),
@@ -114,10 +117,11 @@ pdlp_solver_t<i_t, f_t>::pdlp_solver_t(problem_t<i_t, f_t>& op_problem,
                                   primal_size_h_,
                                   dual_size_h_,
                                   settings_},
-    initial_primal_{0, stream_view_},
-    initial_dual_{0, stream_view_},
+    initial_primal_{0, op_problem.handle_ptr->get_stream()},
+    initial_dual_{0, op_problem.handle_ptr->get_stream()},
 
-    best_primal_solution_so_far{pdlp_termination_status_t::TimeLimit, stream_view_},
+    best_primal_solution_so_far{pdlp_termination_status_t::TimeLimit,
+                                op_problem.handle_ptr->get_stream()},
     inside_mip_{false}
 {
   if (settings.has_initial_primal_solution()) {
@@ -1512,70 +1516,76 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
     const auto& cusparse_view_ = pdhg_solver_.get_cusparse_view();
 
     int sing_iters = 0;
-    for (int i = 0; i < max_iterations; ++i) {
-      ++sing_iters;
-      // d_q = d_z
-      raft::copy(d_q.data(), d_z.data(), m, stream_view_);
-      // norm_q = l2_norm(d_q)
-      my_l2_norm<i_t, f_t>(d_q, norm_q, handle_ptr_);
+    unsigned long long stream_id;
+    RAFT_CUDA_TRY(cudaStreamGetId(stream_view_, &stream_id));
+    std::cout << "stream_id of compute_initial_step_size: " << stream_id << std::endl;
+    {
+      raft::common::nvtx::range fun_scope("compute_initial_step_size_loop");
+      for (int i = 0; i < max_iterations; ++i) {
+        ++sing_iters;
+        // d_q = d_z
+        raft::copy(d_q.data(), d_z.data(), m, stream_view_);
+        // norm_q = l2_norm(d_q)
+        my_l2_norm<i_t, f_t>(d_q, norm_q, handle_ptr_);
 
-      cuopt_assert(norm_q.value(stream_view_) != f_t(0), "norm q can't be 0");
+        cuopt_assert(norm_q.value(stream_view_) != f_t(0), "norm q can't be 0");
 
-      // d_q *= 1 / norm_q
-      cub::DeviceTransform::Transform(
-        d_q.data(),
-        d_q.data(),
-        d_q.size(),
-        [norm_q = norm_q.data()] __device__(f_t d_q) { return d_q / *norm_q; },
-        stream_view_);
+        // d_q *= 1 / norm_q
+        cub::DeviceTransform::Transform(
+          d_q.data(),
+          d_q.data(),
+          d_q.size(),
+          [norm_q = norm_q.data()] __device__(f_t d_q) { return d_q / *norm_q; },
+          stream_view_);
 
-      // A_t_q = A_t @ d_q
-      RAFT_CUSPARSE_TRY(
-        raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
-                                           CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           reusable_device_scalar_value_1_.data(),
-                                           cusparse_view_.A_T,
-                                           vecQ,
-                                           reusable_device_scalar_value_0_.data(),
-                                           vecATQ,
-                                           CUSPARSE_SPMV_CSR_ALG2,
-                                           (f_t*)cusparse_view_.buffer_transpose.data(),
-                                           stream_view_));
+        // A_t_q = A_t @ d_q
+        RAFT_CUSPARSE_TRY(
+          raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
+                                             CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                             reusable_device_scalar_value_1_.data(),
+                                             cusparse_view_.A_T,
+                                             vecQ,
+                                             reusable_device_scalar_value_0_.data(),
+                                             vecATQ,
+                                             CUSPARSE_SPMV_CSR_ALG2,
+                                             (f_t*)cusparse_view_.buffer_transpose.data(),
+                                             stream_view_));
 
-      // z = A @ A_t_q
-      RAFT_CUSPARSE_TRY(
-        raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
-                                           CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           reusable_device_scalar_value_1_.data(),  // 1
-                                           cusparse_view_.A,
-                                           vecATQ,
-                                           reusable_device_scalar_value_0_.data(),  // 1
-                                           vecZ,
-                                           CUSPARSE_SPMV_CSR_ALG2,
-                                           (f_t*)cusparse_view_.buffer_non_transpose.data(),
-                                           stream_view_));
-      // sigma_max_sq = dot(q, z)
-      RAFT_CUBLAS_TRY(raft::linalg::detail::cublasdot(handle_ptr_->get_cublas_handle(),
-                                                      m,
-                                                      d_q.data(),
-                                                      primal_stride,
-                                                      d_z.data(),
-                                                      primal_stride,
-                                                      sigma_max_sq.data(),
-                                                      stream_view_));
+        // z = A @ A_t_q
+        RAFT_CUSPARSE_TRY(
+          raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
+                                             CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                             reusable_device_scalar_value_1_.data(),  // 1
+                                             cusparse_view_.A,
+                                             vecATQ,
+                                             reusable_device_scalar_value_0_.data(),  // 1
+                                             vecZ,
+                                             CUSPARSE_SPMV_CSR_ALG2,
+                                             (f_t*)cusparse_view_.buffer_non_transpose.data(),
+                                             stream_view_));
+        // sigma_max_sq = dot(q, z)
+        RAFT_CUBLAS_TRY(raft::linalg::detail::cublasdot(handle_ptr_->get_cublas_handle(),
+                                                        m,
+                                                        d_q.data(),
+                                                        primal_stride,
+                                                        d_z.data(),
+                                                        primal_stride,
+                                                        sigma_max_sq.data(),
+                                                        stream_view_));
 
-      cub::DeviceTransform::Transform(
-        cuda::std::make_tuple(d_q.data(), d_z.data()),
-        d_q.data(),
-        d_q.size(),
-        [sigma_max_sq = sigma_max_sq.data()] __device__(f_t d_q, f_t d_z) {
-          return d_q * -(*sigma_max_sq) + d_z;
-        },
-        stream_view_);
+        cub::DeviceTransform::Transform(
+          cuda::std::make_tuple(d_q.data(), d_z.data()),
+          d_q.data(),
+          d_q.size(),
+          [sigma_max_sq = sigma_max_sq.data()] __device__(f_t d_q, f_t d_z) {
+            return d_q * -(*sigma_max_sq) + d_z;
+          },
+          stream_view_);
 
-      my_l2_norm<i_t, f_t>(d_q, residual_norm, handle_ptr_);
+        my_l2_norm<i_t, f_t>(d_q, residual_norm, handle_ptr_);
 
-      if (residual_norm.value(stream_view_) < tolerance) break;
+        if (residual_norm.value(stream_view_) < tolerance) break;
+      }
     }
 #ifdef CUPDLP_DEBUG_MODE
     printf("iter_count %d\n", sing_iters);

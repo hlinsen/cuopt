@@ -236,9 +236,14 @@ std::unique_ptr<solver_ret_t> call_solve(
   // remove this workaround. cudaStream_t stream; RAFT_CUDA_TRY(cudaStreamCreateWithFlags(&stream,
   // flags));  // flags=cudaStreamNonBlocking const raft::handle_t handle_{stream};
   // const raft::handle_t handle_{};
-  cudaStream_t stream;
-  RAFT_CUDA_TRY(cudaStreamCreateWithFlags(&stream, flags));
+  // cudaStream_t stream;
+  // RAFT_CUDA_TRY(cudaStreamCreateWithFlags(&stream, flags));
+  rmm::cuda_stream stream(rmm::cuda_stream::flags::non_blocking);
   raft::handle_t handle_{stream};
+
+  unsigned long long stream_id;
+  RAFT_CUDA_TRY(cudaStreamGetId(stream.value(), &stream_id));
+  std::cout << "stream_id of call_solve: " << stream_id << std::endl;
 
   auto op_problem = data_model_to_optimization_problem(data_model, solver_settings, &handle_);
   solver_ret_t response;
