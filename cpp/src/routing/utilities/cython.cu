@@ -11,6 +11,8 @@
 #include <raft/core/handle.hpp>
 #include <rmm/device_buffer.hpp>
 #include <routing/generator/generator.hpp>
+#include <utilities/driver_helpers.cuh>
+#include <utilities/macros.cuh>
 
 #include <omp.h>
 #include <chrono>
@@ -106,7 +108,80 @@ std::vector<std::unique_ptr<vehicle_routing_ret_t>> call_batch_solve(
 
   // Use OpenMP for parallel execution
   const int max_thread = std::min(static_cast<int>(size), omp_get_max_threads());
-  rmm::cuda_stream_pool stream_pool(size, rmm::cuda_stream::flags::non_blocking);
+
+#if CUDART_VERSION >= 13000
+  // Set up green contexts for GPU SM partitioning
+  std::vector<CUgreenCtx> green_contexts(size);
+  std::vector<CUstream> green_streams(size);
+  void* cuGetErrorString_func = nullptr;
+
+  cuGetErrorString_func = cuopt::detail::get_driver_entry_point("cuGetErrorString");
+
+  // Get the GPU device resources
+  CUdevResource initial_device_GPU_resources = {};
+  auto cuDeviceGetDevResource_func =
+    cuopt::detail::get_driver_entry_point("cuDeviceGetDevResource");
+  int device_id = data_models[0]->get_handle_ptr()->get_device();
+  CU_CHECK(reinterpret_cast<decltype(::cuDeviceGetDevResource)*>(cuDeviceGetDevResource_func)(
+             device_id, &initial_device_GPU_resources, CU_DEV_RESOURCE_TYPE_SM),
+           reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
+
+  auto total_SMs = initial_device_GPU_resources.sm.smCount;
+
+  printf("Total SMs: %u\n", total_SMs);
+  // Divide SMs equally based on number of orders (data_models)
+  auto sms_per_context = std::max(1u, total_SMs / static_cast<unsigned>(size));
+  printf("SMS per context: %u\n", sms_per_context);
+
+  auto cuDevSmResourceSplitByCount_func =
+    cuopt::detail::get_driver_entry_point("cuDevSmResourceSplitByCount");
+  auto cuDevResourceGenerateDesc_func =
+    cuopt::detail::get_driver_entry_point("cuDevResourceGenerateDesc");
+  auto cuGreenCtxCreate_func = cuopt::detail::get_driver_entry_point("cuGreenCtxCreate");
+  auto cuGreenCtxStreamCreate_func =
+    cuopt::detail::get_driver_entry_point("cuGreenCtxStreamCreate");
+
+  // Split resources into n_groups = size (number of problems)
+  std::vector<CUdevResource> resources(size);
+  auto n_groups  = static_cast<unsigned>(size);
+  auto use_flags = CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING;
+  CU_CHECK(reinterpret_cast<decltype(::cuDevSmResourceSplitByCount)*>(
+             cuDevSmResourceSplitByCount_func)(resources.data(),
+                                               &n_groups,
+                                               &initial_device_GPU_resources,
+                                               nullptr,
+                                               use_flags,
+                                               sms_per_context),
+           reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
+
+  printf(
+    "Resources were split into %u groups (had requested %zu) with %u SMs each (had requested %u)\n",
+    n_groups,
+    size,
+    resources[0].sm.smCount,
+    sms_per_context);
+
+  // Create green contexts and streams for each solve
+  for (std::size_t i = 0; i < size; ++i) {
+    printf("Problem %zu: %u SMs\n", i, resources[i].sm.smCount);
+
+    CUdevResourceDesc resource_desc;
+    CU_CHECK(reinterpret_cast<decltype(::cuDevResourceGenerateDesc)*>(
+               cuDevResourceGenerateDesc_func)(&resource_desc, &resources[i], 1),
+             reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
+
+    CU_CHECK(reinterpret_cast<decltype(::cuGreenCtxCreate)*>(cuGreenCtxCreate_func)(
+               &green_contexts[i], resource_desc, device_id, CU_GREEN_CTX_DEFAULT_STREAM),
+             reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
+
+    int stream_priority = 0;
+    cudaStreamGetPriority(data_models[i]->get_handle_ptr()->get_stream(), &stream_priority);
+
+    CU_CHECK(reinterpret_cast<decltype(::cuGreenCtxStreamCreate)*>(cuGreenCtxStreamCreate_func)(
+               &green_streams[i], green_contexts[i], CU_STREAM_NON_BLOCKING, stream_priority),
+             reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
+  }
+#endif
 
 #pragma omp parallel for num_threads(max_thread)
   for (std::size_t i = 0; i < size; ++i) {
@@ -114,12 +189,18 @@ std::vector<std::unique_ptr<vehicle_routing_ret_t>> call_batch_solve(
     // Make sure previous operations are finished
     data_models[i]->get_handle_ptr()->sync_stream();
 
-    // Set new non blocking stream for current data model
-    raft::resource::set_cuda_stream(*(data_models[i]->get_handle_ptr()), stream_pool.get_stream(i));
+#if CUDART_VERSION >= 13000
+    // Set the green context stream for current data model
+    rmm::cuda_stream_view green_stream_view(green_streams[i]);
+    raft::resource::set_cuda_stream(*(data_models[i]->get_handle_ptr()), green_stream_view);
+#endif
+
     auto routing_solution = cuopt::routing::solve(*data_models[i], *settings);
 
+#if CUDART_VERSION >= 13000
     // Make sure current solve is finished
-    stream_pool.get_stream(i).synchronize();
+    cudaStreamSynchronize(green_streams[i]);
+#endif
 
     // Create buffers and reassociate them with the original stream so they
     // outlive the local stream which will be destroyed at end of loop iteration
@@ -148,6 +229,23 @@ std::vector<std::unique_ptr<vehicle_routing_ret_t>> call_batch_solve(
     raft::resource::set_cuda_stream(*(data_models[i]->get_handle_ptr()), old_stream);
     old_stream.synchronize();
   }
+
+#if CUDART_VERSION >= 13000
+  // Clean up green contexts and streams
+  {
+    auto cuStreamDestroy_func     = cuopt::detail::get_driver_entry_point("cuStreamDestroy");
+    auto cuGreenCtxDestroy_func   = cuopt::detail::get_driver_entry_point("cuGreenCtxDestroy");
+    auto cuGetErrorString_cleanup = cuopt::detail::get_driver_entry_point("cuGetErrorString");
+    for (std::size_t i = 0; i < size; ++i) {
+      CU_CHECK(
+        reinterpret_cast<decltype(::cuStreamDestroy)*>(cuStreamDestroy_func)(green_streams[i]),
+        reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_cleanup));
+      CU_CHECK(
+        reinterpret_cast<decltype(::cuGreenCtxDestroy)*>(cuGreenCtxDestroy_func)(green_contexts[i]),
+        reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_cleanup));
+    }
+  }
+#endif
 
   return list;
 }

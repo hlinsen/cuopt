@@ -45,7 +45,7 @@ std::vector<f_t> create_small_tsp_cost_matrix(i_t n_locations)
  */
 TEST(batch_tsp, varying_sizes)
 {
-  std::vector<i_t> tsp_sizes = {5, 8, 10, 6, 7, 9};
+  std::vector<i_t> tsp_sizes = {150, 150, 150, 150, 150, 150};
   const i_t n_problems       = static_cast<i_t>(tsp_sizes.size());
 
   // Create handles and cost matrices for each problem
@@ -69,7 +69,7 @@ TEST(batch_tsp, varying_sizes)
 
   // Configure solver settings
   cuopt::routing::solver_settings_t<i_t, f_t> settings;
-  settings.set_time_limit(5);
+  settings.set_time_limit(0.1);
 
   // Call batch solve
   auto solutions = cuopt::cython::call_batch_solve(data_model_ptrs, &settings);
