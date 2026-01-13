@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -90,7 +90,7 @@ convergence_information_t<i_t, f_t>::convergence_information_t(
                          bound_value_.begin(),
                          dual_objective_.data(),
                          dual_size_h_,
-                         stream_view_);
+                         stream_view_.value());
 
   size_t temp_storage_bytes_2 = 0;
   cub::DeviceReduce::Sum(d_temp_storage,
@@ -98,7 +98,7 @@ convergence_information_t<i_t, f_t>::convergence_information_t(
                          bound_value_.begin(),
                          reduced_cost_dual_objective_.data(),
                          primal_size_h_,
-                         stream_view_);
+                         stream_view_.value());
 
   size_of_buffer_       = std::max({temp_storage_bytes_1, temp_storage_bytes_2});
   this->rmm_tmp_buffer_ = rmm::device_buffer{size_of_buffer_, stream_view_};
@@ -113,26 +113,26 @@ template <typename i_t, typename f_t>
 void convergence_information_t<i_t, f_t>::set_relative_dual_tolerance_factor(
   f_t dual_tolerance_factor)
 {
-  l2_norm_primal_linear_objective_.set_value_async(dual_tolerance_factor, stream_view_);
+  l2_norm_primal_linear_objective_.set_value_async(dual_tolerance_factor, stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
 void convergence_information_t<i_t, f_t>::set_relative_primal_tolerance_factor(
   f_t primal_tolerance_factor)
 {
-  l2_norm_primal_right_hand_side_.set_value_async(primal_tolerance_factor, stream_view_);
+  l2_norm_primal_right_hand_side_.set_value_async(primal_tolerance_factor, stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
 f_t convergence_information_t<i_t, f_t>::get_relative_dual_tolerance_factor() const
 {
-  return l2_norm_primal_linear_objective_.value(stream_view_);
+  return l2_norm_primal_linear_objective_.value(stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
 f_t convergence_information_t<i_t, f_t>::get_relative_primal_tolerance_factor() const
 {
-  return l2_norm_primal_right_hand_side_.value(stream_view_);
+  return l2_norm_primal_right_hand_side_.value(stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
@@ -263,7 +263,7 @@ void convergence_information_t<i_t, f_t>::compute_primal_residual(
                                                  problem_ptr->constraint_upper_bounds.data(),
                                                  dual_size_h_,
                                                  violation<f_t>(),
-                                                 stream_view_);
+                                                 stream_view_.value());
   } else {
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(tmp_dual.data(),
@@ -278,7 +278,7 @@ void convergence_information_t<i_t, f_t>::compute_primal_residual(
                 raft::max(dual, f_t(0.0)) * finite_or_zero(lower) +
                   raft::min(dual, f_t(0.0)) * finite_or_zero(upper)};
       },
-      stream_view_);
+      stream_view_.value());
   }
 }
 
@@ -354,14 +354,14 @@ void convergence_information_t<i_t, f_t>::compute_dual_residual(
                            problem_ptr->objective_coefficients.data(),
                            tmp_primal.data(),
                            primal_size_h_,
-                           stream_view_);
+                           stream_view_.value());
 
   if (pdlp_hyper_params::use_reflected_primal_dual) {
     cub::DeviceTransform::Transform(cuda::std::make_tuple(tmp_primal.data(), dual_slack.data()),
                                     dual_residual_.data(),
                                     dual_residual_.size(),
                                     cuda::std::minus<>{},
-                                    stream_view_);
+                                    stream_view_.value());
   } else {
     compute_reduced_cost_from_primal_gradient(tmp_primal, primal_solution);
 
@@ -370,7 +370,7 @@ void convergence_information_t<i_t, f_t>::compute_dual_residual(
                              tmp_primal.data(),  // primal_gradient
                              reduced_cost_.data(),
                              primal_size_h_,
-                             stream_view_);
+                             stream_view_.value());
   }
 }
 
@@ -395,14 +395,14 @@ void convergence_information_t<i_t, f_t>::compute_dual_objective(
                             problem_ptr->constraint_upper_bounds.data(),
                             dual_size_h_,
                             constraint_bound_value_reduced_cost_product<f_t>(),
-                            stream_view_);
+                            stream_view_.value());
 
     cub::DeviceReduce::Sum(rmm_tmp_buffer_.data(),
                            size_of_buffer_,
                            bound_value_.begin(),
                            dual_objective_.data(),
                            dual_size_h_,
-                           stream_view_);
+                           stream_view_.value());
 
     compute_reduced_costs_dual_objective_contribution();
 
@@ -410,7 +410,7 @@ void convergence_information_t<i_t, f_t>::compute_dual_objective(
                              dual_objective_.data(),
                              reduced_cost_dual_objective_.data(),
                              1,
-                             stream_view_);
+                             stream_view_.value());
   } else {
     RAFT_CUBLAS_TRY(raft::linalg::detail::cublasdot(handle_ptr_->get_cublas_handle(),
                                                     primal_size_h_,
@@ -426,10 +426,10 @@ void convergence_information_t<i_t, f_t>::compute_dual_objective(
                            primal_slack_.begin(),
                            sum_primal_slack_.data(),
                            dual_size_h_,
-                           stream_view_);
+                           stream_view_.value());
 
-    const f_t sum = dual_dot_.value(stream_view_) + sum_primal_slack_.value(stream_view_);
-    dual_objective_.set_value_async(sum, stream_view_);
+    const f_t sum = dual_dot_.value(stream_view_) + sum_primal_slack_.value(stream_view_.value());
+    dual_objective_.set_value_async(sum, stream_view_.value());
   }
 
   // dual_objective = 1 * (dual_objective + 0) = dual_objective
@@ -459,7 +459,7 @@ void convergence_information_t<i_t, f_t>::compute_reduced_cost_from_primal_gradi
     bound_value_.data(),
     primal_size_h_,
     bound_value_gradient<f_t, f_t2>(),
-    stream_view_);
+    stream_view_.value());
 
   if (pdlp_hyper_params::handle_some_primal_gradients_on_finite_bounds_as_residuals) {
     raft::linalg::ternaryOp(reduced_cost_.data(),
@@ -468,14 +468,14 @@ void convergence_information_t<i_t, f_t>::compute_reduced_cost_from_primal_gradi
                             primal_gradient.data(),
                             primal_size_h_,
                             copy_gradient_if_should_be_reduced_cost<f_t>(),
-                            stream_view_);
+                            stream_view_.value());
   } else {
     raft::linalg::binaryOp(reduced_cost_.data(),
                            bound_value_.data(),
                            primal_gradient.data(),
                            primal_size_h_,
                            copy_gradient_if_finite_bounds<f_t>(),
-                           stream_view_);
+                           stream_view_.value());
   }
 }
 
@@ -492,7 +492,7 @@ void convergence_information_t<i_t, f_t>::compute_reduced_costs_dual_objective_c
     bound_value_.data(),
     primal_size_h_,
     bound_value_reduced_cost_product<f_t, f_t2>(),
-    stream_view_);
+    stream_view_.value());
 
   // sum over bound_value*reduced_cost, but should be -inf if any element is -inf
   cub::DeviceReduce::Sum(rmm_tmp_buffer_.data(),
@@ -500,7 +500,7 @@ void convergence_information_t<i_t, f_t>::compute_reduced_costs_dual_objective_c
                          bound_value_.begin(),
                          reduced_cost_dual_objective_.data(),
                          primal_size_h_,
-                         stream_view_);
+                         stream_view_.value());
 }
 
 template <typename i_t, typename f_t>

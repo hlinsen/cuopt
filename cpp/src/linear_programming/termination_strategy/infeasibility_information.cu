@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -79,12 +79,12 @@ infeasibility_information_t<i_t, f_t>::infeasibility_information_t(
                           problem_ptr->constraint_lower_bounds.data(),
                           dual_size_h_,
                           zero_if_is_finite<f_t>(),
-                          stream_view_);
+                          stream_view_.value());
     raft::linalg::unaryOp(homogenous_dual_upper_bounds_.data(),
                           problem_ptr->constraint_upper_bounds.data(),
                           dual_size_h_,
                           zero_if_is_finite<f_t>(),
-                          stream_view_);
+                          stream_view_.value());
 
     void* d_temp_storage        = NULL;
     size_t temp_storage_bytes_1 = 0;
@@ -93,7 +93,7 @@ infeasibility_information_t<i_t, f_t>::infeasibility_information_t(
                            bound_value_.begin(),
                            dual_ray_linear_objective_.data(),
                            dual_size_h_,
-                           stream_view_);
+                           stream_view_.value());
 
     size_t temp_storage_bytes_2 = 0;
     cub::DeviceReduce::Sum(d_temp_storage,
@@ -101,7 +101,7 @@ infeasibility_information_t<i_t, f_t>::infeasibility_information_t(
                            bound_value_.begin(),
                            reduced_cost_dual_objective_.data(),
                            primal_size_h_,
-                           stream_view_);
+                           stream_view_.value());
 
     size_of_buffer_       = std::max({temp_storage_bytes_1, temp_storage_bytes_2});
     this->rmm_tmp_buffer_ = rmm::device_buffer{size_of_buffer_, stream_view_};
@@ -176,12 +176,12 @@ void infeasibility_information_t<i_t, f_t>::compute_infeasibility_information(
                                        reusable_device_scalar_value_1_.data(),
                                        primal_ray_inf_norm_.data(),
                                        1,
-                                       stream_view_);
+                                       stream_view_.value());
   raft::linalg::eltwiseMultiply(neg_primal_ray_inf_norm_inverse_.data(),
                                 primal_ray_inf_norm_inverse_.data(),
                                 reusable_device_scalar_value_neg_1_.data(),
                                 1,
-                                stream_view_);
+                                stream_view_.value());
 
   compute_homogenous_primal_residual(op_problem_cusparse_view_,
                                      current_pdhg_solver.get_dual_tmp_resource());
@@ -234,7 +234,7 @@ void infeasibility_information_t<i_t, f_t>::compute_homogenous_primal_residual(
                           homogenous_dual_upper_bounds_.data(),
                           dual_size_h_,
                           violation<f_t>(),
-                          stream_view_);
+                          stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
@@ -274,7 +274,7 @@ void infeasibility_information_t<i_t, f_t>::compute_homogenous_primal_objective(
                                 primal_ray_linear_objective_.data(),
                                 primal_ray_inf_norm_inverse_.data(),
                                 1,
-                                stream_view_);
+                                stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
@@ -305,7 +305,7 @@ void infeasibility_information_t<i_t, f_t>::compute_homogenous_dual_residual(
                            tmp_primal.data(),  // primal_gradient
                            reduced_cost_.data(),
                            primal_size_h_,
-                           stream_view_);
+                           stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
@@ -318,14 +318,14 @@ void infeasibility_information_t<i_t, f_t>::compute_homogenous_dual_objective(
                           problem_ptr->constraint_upper_bounds.data(),
                           dual_size_h_,
                           constraint_bound_value_reduced_cost_product<f_t>(),
-                          stream_view_);
+                          stream_view_.value());
 
   cub::DeviceReduce::Sum(rmm_tmp_buffer_.data(),
                          size_of_buffer_,
                          bound_value_.begin(),
                          dual_ray_linear_objective_.data(),
                          dual_size_h_,
-                         stream_view_);
+                         stream_view_.value());
 
 #ifdef PDLP_DEBUG_MODE
   std::cout << "-compute_homogenous_dual_objective:\n"
@@ -339,7 +339,7 @@ void infeasibility_information_t<i_t, f_t>::compute_homogenous_dual_objective(
                            dual_ray_linear_objective_.data(),
                            reduced_cost_dual_objective_.data(),
                            1,
-                           stream_view_);
+                           stream_view_.value());
 #ifdef PDLP_DEBUG_MODE
   std::cout << "  reduced_cost_dual_objective_=" << reduced_cost_dual_objective_.value(stream_view_)
             << std::endl;
@@ -358,7 +358,7 @@ void infeasibility_information_t<i_t, f_t>::compute_reduced_cost_from_primal_gra
     bound_value_.data(),
     primal_size_h_,
     bound_value_gradient<f_t, f_t2>(),
-    stream_view_);
+    stream_view_.value());
 
   if (pdlp_hyper_params::handle_some_primal_gradients_on_finite_bounds_as_residuals) {
     raft::linalg::ternaryOp(reduced_cost_.data(),
@@ -367,14 +367,14 @@ void infeasibility_information_t<i_t, f_t>::compute_reduced_cost_from_primal_gra
                             primal_gradient.data(),
                             primal_size_h_,
                             copy_gradient_if_should_be_reduced_cost<f_t>(),
-                            stream_view_);
+                            stream_view_.value());
   } else {
     raft::linalg::binaryOp(reduced_cost_.data(),
                            bound_value_.data(),
                            primal_gradient.data(),
                            primal_size_h_,
                            copy_gradient_if_finite_bounds<f_t>(),
-                           stream_view_);
+                           stream_view_.value());
   }
 }
 
@@ -390,7 +390,7 @@ void infeasibility_information_t<i_t, f_t>::compute_reduced_costs_dual_objective
     bound_value_.data(),
     primal_size_h_,
     bound_value_reduced_cost_product<f_t, f_t2>(),
-    stream_view_);
+    stream_view_.value());
 
   // sum over bound_value*reduced_cost
   cub::DeviceReduce::Sum(rmm_tmp_buffer_.data(),
@@ -398,7 +398,7 @@ void infeasibility_information_t<i_t, f_t>::compute_reduced_costs_dual_objective
                          bound_value_.begin(),
                          reduced_cost_dual_objective_.data(),
                          primal_size_h_,
-                         stream_view_);
+                         stream_view_.value());
 }
 
 template <typename i_t, typename f_t>

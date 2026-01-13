@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -89,7 +89,8 @@ int run_single_file(const std::string& file_path,
                     bool solve_relaxation,
                     const std::map<std::string, std::string>& settings_strings)
 {
-  const raft::handle_t handle_{};
+  rmm::cuda_stream stream;
+  const raft::handle_t handle_(stream);
   cuopt::linear_programming::solver_settings_t<int, double> settings;
 
   try {

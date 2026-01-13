@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -113,9 +113,9 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::bound_objective_rescaling()
     cuda::std::plus<>{},
     main_op,
     f_t(0),
-    stream_view_);
+    stream_view_.value());
 
-  d_temp_storage.resize(bytes, stream_view_);
+  d_temp_storage.resize(bytes, stream_view_.value());
 
   cub::DeviceReduce::TransformReduce(
     d_temp_storage.data(),
@@ -127,19 +127,19 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::bound_objective_rescaling()
     cuda::std::plus<>{},
     main_op,
     f_t(0),
-    stream_view_);
+    stream_view_.value());
 
   h_bound_rescaling = f_t(1.0) / (std::sqrt(bound_rescaling_.value(stream_view_)) + f_t(1.0));
-  bound_rescaling_.set_value_async(h_bound_rescaling, stream_view_);
+  bound_rescaling_.set_value_async(h_bound_rescaling, stream_view_.value());
 
   detail::my_l2_weighted_norm<i_t, f_t>(op_problem_scaled_.objective_coefficients,
                                         pdlp_hyper_params::initial_primal_weight_c_scaling,
                                         objective_rescaling_,
-                                        stream_view_);
+                                        stream_view_.value());
 
   // sqrt already applied
   h_objective_rescaling = f_t(1.0) / (objective_rescaling_.value(stream_view_) + f_t(1.0));
-  objective_rescaling_.set_value_async(h_objective_rescaling, stream_view_);
+  objective_rescaling_.set_value_async(h_objective_rescaling, stream_view_.value());
 
   // Sync since we are using local variable
   RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
@@ -199,14 +199,14 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::ruiz_inf_scaling(i_t number_of_r
                            iteration_constraint_matrix_scaling_.data(),
                            dual_size_h_,
                            a_divides_sqrt_b_bounded<f_t>(),
-                           stream_view_);
+                           stream_view_.value());
 
     raft::linalg::binaryOp(cummulative_variable_scaling_.data(),
                            cummulative_variable_scaling_.data(),
                            iteration_variable_scaling_.data(),
                            primal_size_h_,
                            a_divides_sqrt_b_bounded<f_t>(),
-                           stream_view_);
+                           stream_view_.value());
 
     // Reset the iteration_scaling vectors to all 0
     RAFT_CUDA_TRY(cudaMemsetAsync(
@@ -351,13 +351,13 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::pock_chambolle_scaling(f_t alpha
                          iteration_constraint_matrix_scaling_.data(),
                          dual_size_h_,
                          a_divides_sqrt_b_bounded<f_t>(),
-                         stream_view_);
+                         stream_view_.value());
   raft::linalg::binaryOp(cummulative_variable_scaling_.data(),
                          cummulative_variable_scaling_.data(),
                          iteration_variable_scaling_.data(),
                          primal_size_h_,
                          a_divides_sqrt_b_bounded<f_t>(),
-                         stream_view_);
+                         stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
@@ -427,7 +427,7 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::scale_problem()
     op_problem_scaled_.objective_coefficients.data(),
     cummulative_variable_scaling_.data(),
     primal_size_h_,
-    stream_view_);
+    stream_view_.value());
 
   using f_t2 = typename type_2<f_t>::type;
   cub::DeviceTransform::Transform(cuda::std::make_tuple(op_problem_scaled_.variable_bounds.data(),
@@ -435,20 +435,20 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::scale_problem()
                                   op_problem_scaled_.variable_bounds.data(),
                                   primal_size_h_,
                                   divide_check_zero<f_t, f_t2>(),
-                                  stream_view_);
+                                  stream_view_.value());
 
   raft::linalg::eltwiseMultiply(
     const_cast<rmm::device_uvector<f_t>&>(op_problem_scaled_.constraint_lower_bounds).data(),
     op_problem_scaled_.constraint_lower_bounds.data(),
     cummulative_constraint_matrix_scaling_.data(),
     dual_size_h_,
-    stream_view_);
+    stream_view_.value());
   raft::linalg::eltwiseMultiply(
     const_cast<rmm::device_uvector<f_t>&>(op_problem_scaled_.constraint_upper_bounds).data(),
     op_problem_scaled_.constraint_upper_bounds.data(),
     cummulative_constraint_matrix_scaling_.data(),
     dual_size_h_,
-    stream_view_);
+    stream_view_.value());
 
   if (pdlp_hyper_params::bound_objective_rescaling && !running_mip_) {
     // Coefficients are computed on the already scaled values
@@ -471,7 +471,7 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::scale_problem()
         return {constraint_lower_bound * *bound_rescaling,
                 constraint_upper_bound * *bound_rescaling};
       },
-      stream_view_);
+      stream_view_.value());
 
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(op_problem_scaled_.variable_bounds.data(),
@@ -486,7 +486,7 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::scale_problem()
         return {{variable_bounds.x * *bound_rescaling, variable_bounds.y * *bound_rescaling},
                 objective_coefficient * *objective_rescaling};
       },
-      stream_view_);
+      stream_view_.value());
   }
 
 #ifdef CUPDLP_DEBUG_MODE
@@ -516,14 +516,14 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::scale_solutions(
                                          primal_solution.data(),
                                          cummulative_variable_scaling_.data(),
                                          primal_size_h_,
-                                         stream_view_);
+                                         stream_view_.value());
 
     if (pdlp_hyper_params::bound_objective_rescaling && !running_mip_) {
       raft::linalg::scalarMultiply(primal_solution.data(),
                                    primal_solution.data(),
                                    h_bound_rescaling,
                                    primal_size_h_,
-                                   stream_view_);
+                                   stream_view_.value());
     }
   }
 
@@ -535,13 +535,13 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::scale_solutions(
                                          dual_solution.data(),
                                          cummulative_constraint_matrix_scaling_.data(),
                                          dual_size_h_,
-                                         stream_view_);
+                                         stream_view_.value());
     if (pdlp_hyper_params::bound_objective_rescaling && !running_mip_) {
       raft::linalg::scalarMultiply(dual_solution.data(),
                                    dual_solution.data(),
                                    h_objective_rescaling,
                                    dual_size_h_,
-                                   stream_view_);
+                                   stream_view_.value());
     }
   }
 
@@ -553,10 +553,13 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::scale_solutions(
                                   dual_slack.data(),
                                   cummulative_variable_scaling_.data(),
                                   primal_size_h_,
-                                  stream_view_);
+                                  stream_view_.value());
     if (pdlp_hyper_params::bound_objective_rescaling && !running_mip_) {
-      raft::linalg::scalarMultiply(
-        dual_slack.data(), dual_slack.data(), h_objective_rescaling, primal_size_h_, stream_view_);
+      raft::linalg::scalarMultiply(dual_slack.data(),
+                                   dual_slack.data(),
+                                   h_objective_rescaling,
+                                   primal_size_h_,
+                                   stream_view_.value());
     }
   }
 }
@@ -610,7 +613,7 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::unscale_solutions(
                                   primal_solution.data(),
                                   cummulative_variable_scaling_.data(),
                                   primal_size_h_,
-                                  stream_view_);
+                                  stream_view_.value());
 
     if (pdlp_hyper_params::bound_objective_rescaling && !running_mip_) {
       cuopt_assert(h_bound_rescaling != f_t(0),
@@ -619,7 +622,7 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::unscale_solutions(
                                    primal_solution.data(),
                                    f_t(1.0) / h_bound_rescaling,
                                    primal_size_h_,
-                                   stream_view_);
+                                   stream_view_.value());
     }
   }
 
@@ -633,13 +636,13 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::unscale_solutions(
                                   dual_solution.data(),
                                   cummulative_constraint_matrix_scaling_.data(),
                                   dual_size_h_,
-                                  stream_view_);
+                                  stream_view_.value());
     if (pdlp_hyper_params::bound_objective_rescaling && !running_mip_) {
       raft::linalg::scalarMultiply(dual_solution.data(),
                                    dual_solution.data(),
                                    f_t(1.0) / (h_objective_rescaling),
                                    dual_size_h_,
-                                   stream_view_);
+                                   stream_view_.value());
     }
   }
 
@@ -651,13 +654,13 @@ void pdlp_initial_scaling_strategy_t<i_t, f_t>::unscale_solutions(
                                          dual_slack.data(),
                                          cummulative_variable_scaling_.data(),
                                          primal_size_h_,
-                                         stream_view_);
+                                         stream_view_.value());
     if (pdlp_hyper_params::bound_objective_rescaling && !running_mip_) {
       raft::linalg::scalarMultiply(dual_slack.data(),
                                    dual_slack.data(),
                                    f_t(1.0) / h_objective_rescaling,
                                    primal_size_h_,
-                                   stream_view_);
+                                   stream_view_.value());
     }
   }
 }

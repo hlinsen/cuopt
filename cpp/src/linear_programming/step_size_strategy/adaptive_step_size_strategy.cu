@@ -188,19 +188,19 @@ i_t adaptive_step_size_strategy_t<i_t, f_t>::get_valid_step_size() const
 template <typename i_t, typename f_t>
 f_t adaptive_step_size_strategy_t<i_t, f_t>::get_interaction() const
 {
-  return interaction_.value(stream_view_);
+  return interaction_.value(stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
 f_t adaptive_step_size_strategy_t<i_t, f_t>::get_norm_squared_delta_primal() const
 {
-  return norm_squared_delta_primal_.value(stream_view_);
+  return norm_squared_delta_primal_.value(stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
 f_t adaptive_step_size_strategy_t<i_t, f_t>::get_norm_squared_delta_dual() const
 {
-  return norm_squared_delta_dual_.value(stream_view_);
+  return norm_squared_delta_dual_.value(stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
@@ -272,7 +272,7 @@ void adaptive_step_size_strategy_t<i_t, f_t>::compute_interaction_and_movement(
   // We need to make sure both dot products happens after previous operations (next_primal/dual)
   // Thus, we add another node in the main stream before starting the SpMVs
 
-  deltas_are_done_.record(stream_view_);
+  deltas_are_done_.record(stream_view_.value());
 
   // primal_dual_interaction computation => we purposly diverge from the paper (delta_y . (A @ x' -
   // A@x)) to save one SpMV
@@ -304,7 +304,7 @@ void adaptive_step_size_strategy_t<i_t, f_t>::compute_interaction_and_movement(
     tmp_primal.data(),
     current_saddle_point_state.get_primal_size(),
     raft::sub_op(),
-    stream_view_);
+    stream_view_.value());
 
   // compute interaction (x'-x) . (A(y'-y))
   RAFT_CUBLAS_TRY(
@@ -350,8 +350,8 @@ void adaptive_step_size_strategy_t<i_t, f_t>::compute_interaction_and_movement(
   // dot_delta_Y_.record(stream_pool_.get_stream(1));
 
   // Wait on main stream for both dot to be done before launching the next kernel
-  // dot_delta_X_.stream_wait(stream_view_);
-  // dot_delta_Y_.stream_wait(stream_view_);
+  // dot_delta_X_.stream_wait(stream_view_.value());
+  // dot_delta_Y_.stream_wait(stream_view_.value());
 }
 
 template <typename i_t, typename f_t>

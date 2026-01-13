@@ -124,6 +124,12 @@ pdlp_solver_t<i_t, f_t>::pdlp_solver_t(problem_t<i_t, f_t>& op_problem,
                                 op_problem.handle_ptr->get_stream()},
     inside_mip_{false}
 {
+  unsigned long long handle_stream_id;
+  cudaStreamGetId(handle_ptr_->get_stream(), &handle_stream_id);
+  std::cout << "handle_stream_id: " << handle_stream_id << std::endl;
+  unsigned long long stream_id;
+  cudaStreamGetId(stream_view_, &stream_id);
+  std::cout << "stream_view_ id: " << stream_id << std::endl;
   if (settings.has_initial_primal_solution()) {
     auto& primal_sol = settings.get_initial_primal_solution();
     set_initial_primal_solution(primal_sol);
@@ -142,7 +148,7 @@ pdlp_solver_t<i_t, f_t>::pdlp_solver_t(problem_t<i_t, f_t>& op_problem,
     pdhg_solver_.total_pdhg_iterations_ =
       settings.get_pdlp_warm_start_data().total_pdhg_iterations_;
     pdhg_solver_.get_d_total_pdhg_iterations().set_value_async(
-      settings.get_pdlp_warm_start_data().total_pdhg_iterations_, stream_view_);
+      settings.get_pdlp_warm_start_data().total_pdhg_iterations_, stream_view_.value());
     restart_strategy_.last_candidate_kkt_score =
       settings.get_pdlp_warm_start_data().last_candidate_kkt_score_;
     restart_strategy_.last_restart_kkt_score =
@@ -150,37 +156,37 @@ pdlp_solver_t<i_t, f_t>::pdlp_solver_t(problem_t<i_t, f_t>& op_problem,
     raft::copy(restart_strategy_.weighted_average_solution_.sum_primal_solutions_.data(),
                settings.get_pdlp_warm_start_data().sum_primal_solutions_.data(),
                settings.get_pdlp_warm_start_data().sum_primal_solutions_.size(),
-               stream_view_);
+               stream_view_.value());
     raft::copy(restart_strategy_.weighted_average_solution_.sum_dual_solutions_.data(),
                settings.get_pdlp_warm_start_data().sum_dual_solutions_.data(),
                settings.get_pdlp_warm_start_data().sum_dual_solutions_.size(),
-               stream_view_);
+               stream_view_.value());
     raft::copy(unscaled_primal_avg_solution_.data(),
                settings.get_pdlp_warm_start_data().initial_primal_average_.data(),
                settings.get_pdlp_warm_start_data().initial_primal_average_.size(),
-               stream_view_);
+               stream_view_.value());
     raft::copy(unscaled_dual_avg_solution_.data(),
                settings.get_pdlp_warm_start_data().initial_dual_average_.data(),
                settings.get_pdlp_warm_start_data().initial_dual_average_.size(),
-               stream_view_);
+               stream_view_.value());
     raft::copy(pdhg_solver_.get_saddle_point_state().get_current_AtY().data(),
                settings.get_pdlp_warm_start_data().current_ATY_.data(),
                settings.get_pdlp_warm_start_data().current_ATY_.size(),
-               stream_view_);
+               stream_view_.value());
     raft::copy(restart_strategy_.last_restart_duality_gap_.primal_solution_.data(),
                settings.get_pdlp_warm_start_data().last_restart_duality_gap_primal_solution_.data(),
                settings.get_pdlp_warm_start_data().last_restart_duality_gap_primal_solution_.size(),
-               stream_view_);
+               stream_view_.value());
     raft::copy(restart_strategy_.last_restart_duality_gap_.dual_solution_.data(),
                settings.get_pdlp_warm_start_data().last_restart_duality_gap_dual_solution_.data(),
                settings.get_pdlp_warm_start_data().last_restart_duality_gap_dual_solution_.size(),
-               stream_view_);
+               stream_view_.value());
 
     const auto value = settings.get_pdlp_warm_start_data().sum_solution_weight_;
     restart_strategy_.weighted_average_solution_.sum_primal_solution_weights_.set_value_async(
-      value, stream_view_);
+      value, stream_view_.value());
     restart_strategy_.weighted_average_solution_.sum_dual_solution_weights_.set_value_async(
-      value, stream_view_);
+      value, stream_view_.value());
     restart_strategy_.weighted_average_solution_.iterations_since_last_restart_ =
       settings.get_pdlp_warm_start_data().iterations_since_last_restart_;
   }
@@ -240,20 +246,22 @@ template <typename i_t, typename f_t>
 void pdlp_solver_t<i_t, f_t>::set_initial_primal_solution(
   const rmm::device_uvector<f_t>& initial_primal_solution)
 {
-  initial_primal_.resize(initial_primal_solution.size(), stream_view_);
+  initial_primal_.resize(initial_primal_solution.size(), stream_view_.value());
   raft::copy(initial_primal_.data(),
              initial_primal_solution.data(),
              initial_primal_solution.size(),
-             stream_view_);
+             stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
 void pdlp_solver_t<i_t, f_t>::set_initial_dual_solution(
   const rmm::device_uvector<f_t>& initial_dual_solution)
 {
-  initial_dual_.resize(initial_dual_solution.size(), stream_view_);
-  raft::copy(
-    initial_dual_.data(), initial_dual_solution.data(), initial_dual_solution.size(), stream_view_);
+  initial_dual_.resize(initial_dual_solution.size(), stream_view_.value());
+  raft::copy(initial_dual_.data(),
+             initial_dual_solution.data(),
+             initial_dual_solution.size(),
+             stream_view_.value());
 }
 
 static bool time_limit_reached(const timer_t& timer) { return timer.check_time_limit(); }
@@ -602,10 +610,10 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
         termination_current == pdlp_termination_status_t::PrimalFeasible) {
       const f_t current_overall_primal_residual =
         current_termination_strategy_.get_convergence_information().get_l2_primal_residual().value(
-          stream_view_);
+          stream_view_.value());
       const f_t average_overall_primal_residual =
         average_termination_strategy_.get_convergence_information().get_l2_primal_residual().value(
-          stream_view_);
+          stream_view_.value());
       if (current_overall_primal_residual < average_overall_primal_residual) {
         return current_termination_strategy_.fill_return_problem_solution(
           internal_solver_iterations_,
@@ -901,11 +909,13 @@ void pdlp_solver_t<i_t, f_t>::update_primal_dual_solutions(
     raft::copy(pdhg_solver_.get_primal_solution().data(),
                primal.value()->data(),
                primal_size_h_,
-               stream_view_);
+               stream_view_.value());
   }
   if (dual) {
-    raft::copy(
-      pdhg_solver_.get_dual_solution().data(), dual.value()->data(), dual_size_h_, stream_view_);
+    raft::copy(pdhg_solver_.get_dual_solution().data(),
+               dual.value()->data(),
+               dual_size_h_,
+               stream_view_.value());
   }
 
   // Handle initial step size if needed
@@ -940,15 +950,15 @@ void pdlp_solver_t<i_t, f_t>::update_primal_dual_solutions(
       raft::copy(saddle.get_delta_primal().data(),
                  primal.value()->data(),
                  saddle.get_delta_primal().size(),
-                 stream_view_);
+                 stream_view_.value());
       raft::copy(saddle.get_delta_dual().data(),
                  dual.value()->data(),
                  saddle.get_delta_dual().size(),
-                 stream_view_);
+                 stream_view_.value());
       raft::copy(pdhg_solver_.get_potential_next_dual_solution().data(),
                  dual.value()->data(),
                  pdhg_solver_.get_potential_next_dual_solution().size(),
-                 stream_view_);
+                 stream_view_.value());
       RAFT_CUDA_TRY(cudaMemsetAsync(saddle.get_current_AtY().data(),
                                     f_t(0.0),
                                     sizeof(f_t) * saddle.get_current_AtY().size(),
@@ -1038,13 +1048,13 @@ void pdlp_solver_t<i_t, f_t>::compute_fixed_error(bool& has_restarted)
                                   pdhg_solver_.get_saddle_point_state().get_delta_primal().data(),
                                   primal_size_h_,
                                   cuda::std::minus<f_t>{},
-                                  stream_view_);
+                                  stream_view_.value());
   cub::DeviceTransform::Transform(cuda::std::make_tuple(pdhg_solver_.get_reflected_dual().data(),
                                                         pdhg_solver_.get_dual_solution().data()),
                                   pdhg_solver_.get_saddle_point_state().get_delta_dual().data(),
                                   dual_size_h_,
                                   cuda::std::minus<f_t>{},
-                                  stream_view_);
+                                  stream_view_.value());
 
   auto& cusparse_view = pdhg_solver_.get_cusparse_view();
   // Make potential_next_dual_solution point towards reflected dual solution to reuse the code
@@ -1056,9 +1066,9 @@ void pdlp_solver_t<i_t, f_t>::compute_fixed_error(bool& has_restarted)
 
   const f_t movement =
     step_size_strategy_.get_norm_squared_delta_primal() * primal_weight_.value(stream_view_) +
-    step_size_strategy_.get_norm_squared_delta_dual() / primal_weight_.value(stream_view_);
+    step_size_strategy_.get_norm_squared_delta_dual() / primal_weight_.value(stream_view_.value());
   const f_t interaction =
-    f_t(2.0) * step_size_strategy_.get_interaction() * step_size_.value(stream_view_);
+    f_t(2.0) * step_size_strategy_.get_interaction() * step_size_.value(stream_view_.value());
 
   restart_strategy_.fixed_point_error_ = std::sqrt(movement + interaction);
 
@@ -1082,6 +1092,7 @@ void pdlp_solver_t<i_t, f_t>::compute_fixed_error(bool& has_restarted)
 template <typename i_t, typename f_t>
 optimization_problem_solution_t<i_t, f_t> pdlp_solver_t<i_t, f_t>::run_solver(const timer_t& timer)
 {
+  raft::common::nvtx::range fun_scope("pdlp_solver_t::run_solver");
   bool verbose;
 #ifdef PDLP_VERBOSE_MODE
   verbose = true;
@@ -1110,12 +1121,13 @@ optimization_problem_solution_t<i_t, f_t> pdlp_solver_t<i_t, f_t>::run_solver(co
   // Needs to be performed here before the below line to make sure the initial primal_weight / step
   // size are used as previous point when potentially updating them in this next call
   if (initial_step_size_.has_value())
-    step_size_.set_value_async(initial_step_size_.value(), stream_view_);
+    step_size_.set_value_async(initial_step_size_.value(), stream_view_.value());
   if (initial_primal_weight_.has_value())
-    primal_weight_.set_value_async(initial_primal_weight_.value(), stream_view_);
+    primal_weight_.set_value_async(initial_primal_weight_.value(), stream_view_.value());
   if (initial_k_.has_value()) {
     pdhg_solver_.total_pdhg_iterations_ = initial_k_.value();
-    pdhg_solver_.get_d_total_pdhg_iterations().set_value_async(initial_k_.value(), stream_view_);
+    pdhg_solver_.get_d_total_pdhg_iterations().set_value_async(initial_k_.value(),
+                                                               stream_view_.value());
   }
 
   // Only the primal_weight_ and step_size_ variables are initialized during the initial phase
@@ -1144,14 +1156,14 @@ optimization_problem_solution_t<i_t, f_t> pdlp_solver_t<i_t, f_t>::run_solver(co
       pdhg_solver_.get_primal_solution().data(),
       primal_size_h_,
       clamp<f_t, f_t2>(),
-      stream_view_);
+      stream_view_.value());
     cub::DeviceTransform::Transform(
       cuda::std::make_tuple(unscaled_primal_avg_solution_.data(),
                             op_problem_scaled_.variable_bounds.data()),
       unscaled_primal_avg_solution_.data(),
       primal_size_h_,
       clamp<f_t, f_t2>(),
-      stream_view_);
+      stream_view_.value());
   }
 
   if (verbose) {
@@ -1225,11 +1237,11 @@ optimization_problem_solution_t<i_t, f_t> pdlp_solver_t<i_t, f_t>::run_solver(co
           raft::copy(unscaled_primal_avg_solution_.data(),
                      pdhg_solver_.get_primal_solution().data(),
                      primal_size_h_,
-                     stream_view_);
+                     stream_view_.value());
           raft::copy(unscaled_dual_avg_solution_.data(),
                      pdhg_solver_.get_dual_solution().data(),
                      dual_size_h_,
-                     stream_view_);
+                     stream_view_.value());
         } else {
           restart_strategy_.get_average_solutions(unscaled_primal_avg_solution_,
                                                   unscaled_dual_avg_solution_);
@@ -1406,7 +1418,7 @@ void pdlp_solver_t<i_t, f_t>::halpern_update()
                             (f_t(1.0) - reflection_coefficient) * current_primal;
       return weight * reflected + (f_t(1.0) - weight) * initial_primal;
     },
-    stream_view_);
+    stream_view_.value());
 
   // Update dual
   cub::DeviceTransform::Transform(
@@ -1421,7 +1433,7 @@ void pdlp_solver_t<i_t, f_t>::halpern_update()
                             (f_t(1.0) - reflection_coefficient) * current_dual;
       return weight * reflected + (f_t(1.0) - weight) * initial_dual;
     },
-    stream_view_);
+    stream_view_.value());
 
 #ifdef CUPDLP_DEBUG_MODE
   print("halpen_update current primal",
@@ -1462,7 +1474,7 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
                               op_problem_scaled_.nnz,
                               red_op,
                               0.0,
-                              stream_view_);
+                              stream_view_.value());
     // Allocate temporary storage
     rmm::device_buffer cub_tmp{temp_storage_bytes, stream_view_};
     // Run max-reduction
@@ -1473,9 +1485,9 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
                               op_problem_scaled_.nnz,
                               red_op,
                               0.0,
-                              stream_view_);
+                              stream_view_.value());
     raft::linalg::eltwiseDivideCheckZero(
-      step_size_.data(), step_size_.data(), abs_max_element.data(), 1, stream_view_);
+      step_size_.data(), step_size_.data(), abs_max_element.data(), 1, stream_view_.value());
 
     // Sync since we are using local variable
     RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
@@ -1487,9 +1499,9 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
     i_t n = op_problem_scaled_.n_variables;
 
     std::vector<f_t> z(m);
-    rmm::device_uvector<f_t> d_z(m, stream_view_);
-    rmm::device_uvector<f_t> d_q(m, stream_view_);
-    rmm::device_uvector<f_t> d_atq(n, stream_view_);
+    rmm::device_uvector<f_t> d_z(m, stream_view_.value());
+    rmm::device_uvector<f_t> d_q(m, stream_view_.value());
+    rmm::device_uvector<f_t> d_atq(n, stream_view_.value());
 
     std::mt19937 gen(1);
     std::normal_distribution<double> dist(0.0, 1.0);
@@ -1497,13 +1509,13 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
     for (int i = 0; i < m; ++i)
       z[i] = dist(gen);
 
-    device_copy(d_z, z, stream_view_);
+    device_copy(d_z, z, stream_view_.value());
 
-    rmm::device_scalar<f_t> norm_q(stream_view_);
-    rmm::device_scalar<f_t> sigma_max_sq(stream_view_);
-    rmm::device_scalar<f_t> residual_norm(stream_view_);
-    rmm::device_scalar<f_t> reusable_device_scalar_value_1_(1, stream_view_);
-    rmm::device_scalar<f_t> reusable_device_scalar_value_0_(0, stream_view_);
+    rmm::device_scalar<f_t> norm_q(stream_view_.value());
+    rmm::device_scalar<f_t> sigma_max_sq(stream_view_.value());
+    rmm::device_scalar<f_t> residual_norm(stream_view_.value());
+    rmm::device_scalar<f_t> reusable_device_scalar_value_1_(1, stream_view_.value());
+    rmm::device_scalar<f_t> reusable_device_scalar_value_0_(0, stream_view_.value());
 
     cusparseDnVecDescr_t vecZ, vecQ, vecATQ;
     RAFT_CUSPARSE_TRY(
@@ -1524,7 +1536,7 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
       for (int i = 0; i < max_iterations; ++i) {
         ++sing_iters;
         // d_q = d_z
-        raft::copy(d_q.data(), d_z.data(), m, stream_view_);
+        raft::copy(d_q.data(), d_z.data(), m, stream_view_.value());
         // norm_q = l2_norm(d_q)
         my_l2_norm<i_t, f_t>(d_q, norm_q, handle_ptr_);
 
@@ -1536,7 +1548,7 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
           d_q.data(),
           d_q.size(),
           [norm_q = norm_q.data()] __device__(f_t d_q) { return d_q / *norm_q; },
-          stream_view_);
+          stream_view_.value());
 
         // A_t_q = A_t @ d_q
         {
@@ -1593,7 +1605,7 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
             [sigma_max_sq = sigma_max_sq.data()] __device__(f_t d_q, f_t d_z) {
               return d_q * -(*sigma_max_sq) + d_z;
             },
-            stream_view_);
+            stream_view_.value());
           stream_view_.synchronize();
         }
         my_l2_norm<i_t, f_t>(d_q, residual_norm, handle_ptr_);
@@ -1607,7 +1619,7 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
 
     constexpr f_t scaling_factor = 0.998;
     const f_t step_size          = scaling_factor / std::sqrt(sigma_max_sq.value(stream_view_));
-    step_size_.set_value_async(step_size, stream_view_);
+    step_size_.set_value_async(step_size, stream_view_.value());
 
     // Sync since we are using local variable
     RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
@@ -1655,7 +1667,7 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_primal_weight()
   detail::my_l2_weighted_norm<i_t, f_t>(op_problem_scaled_.objective_coefficients,
                                         pdlp_hyper_params::initial_primal_weight_c_scaling,
                                         c_vec_norm,
-                                        stream_view_);
+                                        stream_view_.value());
 
   rmm::device_scalar<f_t> b_vec_norm{0.0, stream_view_};
   if (pdlp_hyper_params::initial_primal_weight_combined_bounds) {
@@ -1663,13 +1675,13 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_primal_weight()
     detail::my_l2_weighted_norm<i_t, f_t>(op_problem_scaled_.combined_bounds,
                                           pdlp_hyper_params::initial_primal_weight_b_scaling,
                                           b_vec_norm,
-                                          stream_view_);
+                                          stream_view_.value());
 
   } else {
     if (pdlp_hyper_params::bound_objective_rescaling) {
       const f_t one = 1;
-      primal_weight_.set_value_async(one, stream_view_);
-      best_primal_weight_.set_value_async(one, stream_view_);
+      primal_weight_.set_value_async(one, stream_view_.value());
+      best_primal_weight_.set_value_async(one, stream_view_.value());
       return;
     } else {
       cuopt_expects(pdlp_hyper_params::initial_primal_weight_b_scaling == 1,
@@ -1679,7 +1691,7 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_primal_weight()
       compute_sum_bounds(op_problem_scaled_.constraint_lower_bounds,
                          op_problem_scaled_.constraint_upper_bounds,
                          b_vec_norm,
-                         stream_view_);
+                         stream_view_.value());
     }
   }
 
@@ -1694,13 +1706,13 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_primal_weight()
 template <typename i_t, typename f_t>
 f_t pdlp_solver_t<i_t, f_t>::get_primal_weight_h() const
 {
-  return primal_weight_.value(stream_view_);
+  return primal_weight_.value(stream_view_.value());
 }
 
 template <typename i_t, typename f_t>
 f_t pdlp_solver_t<i_t, f_t>::get_step_size_h() const
 {
-  return step_size_.value(stream_view_);
+  return step_size_.value(stream_view_.value());
 }
 
 template <typename i_t, typename f_t>

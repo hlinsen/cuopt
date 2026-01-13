@@ -239,8 +239,8 @@ std::unique_ptr<solver_ret_t> call_solve(
   // cudaStream_t stream;
   // RAFT_CUDA_TRY(cudaStreamCreateWithFlags(&stream, flags));
   rmm::cuda_stream stream;  // rmm::cuda_stream::flags::non_blocking);
-  // const raft::handle_t handle_{};
-  raft::handle_t handle_{stream};
+  const raft::handle_t handle_{};
+  // raft::handle_t handle_{stream};
 
   // unsigned long long stream_id;
   // RAFT_CUDA_TRY(cudaStreamGetId(stream.value(), &stream_id));
@@ -256,6 +256,7 @@ std::unique_ptr<solver_ret_t> call_solve(
     response.mip_ret      = call_solve_mip(op_problem, solver_settings->get_mip_settings());
     response.problem_type = linear_programming::problem_category_t::MIP;
   }
+  // stream.synchronize();
 
   return std::make_unique<solver_ret_t>(std::move(response));
 }
