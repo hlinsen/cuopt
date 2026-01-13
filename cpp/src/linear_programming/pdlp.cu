@@ -1539,49 +1539,63 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
           stream_view_);
 
         // A_t_q = A_t @ d_q
-        RAFT_CUSPARSE_TRY(
-          raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
-                                             CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                             reusable_device_scalar_value_1_.data(),
-                                             cusparse_view_.A_T,
-                                             vecQ,
-                                             reusable_device_scalar_value_0_.data(),
-                                             vecATQ,
-                                             CUSPARSE_SPMV_CSR_ALG2,
-                                             (f_t*)cusparse_view_.buffer_transpose.data(),
-                                             stream_view_));
-
+        {
+          raft::common::nvtx::range fun_scope("cusparsespmv_A_t_q");
+          RAFT_CUSPARSE_TRY(
+            raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
+                                               CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                               reusable_device_scalar_value_1_.data(),
+                                               cusparse_view_.A_T,
+                                               vecQ,
+                                               reusable_device_scalar_value_0_.data(),
+                                               vecATQ,
+                                               CUSPARSE_SPMV_CSR_ALG2,
+                                               (f_t*)cusparse_view_.buffer_transpose.data(),
+                                               stream_view_));
+        }
         // z = A @ A_t_q
-        RAFT_CUSPARSE_TRY(
-          raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
-                                             CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                             reusable_device_scalar_value_1_.data(),  // 1
-                                             cusparse_view_.A,
-                                             vecATQ,
-                                             reusable_device_scalar_value_0_.data(),  // 1
-                                             vecZ,
-                                             CUSPARSE_SPMV_CSR_ALG2,
-                                             (f_t*)cusparse_view_.buffer_non_transpose.data(),
-                                             stream_view_));
+        {
+          raft::common::nvtx::range fun_scope("cusparsespmv_A_z");
+          RAFT_CUSPARSE_TRY(
+            raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
+                                               CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                               reusable_device_scalar_value_1_.data(),  // 1
+                                               cusparse_view_.A,
+                                               vecATQ,
+                                               reusable_device_scalar_value_0_.data(),  // 1
+                                               vecZ,
+                                               CUSPARSE_SPMV_CSR_ALG2,
+                                               (f_t*)cusparse_view_.buffer_non_transpose.data(),
+                                               stream_view_));
+        }
         // sigma_max_sq = dot(q, z)
-        RAFT_CUBLAS_TRY(raft::linalg::detail::cublasdot(handle_ptr_->get_cublas_handle(),
-                                                        m,
-                                                        d_q.data(),
-                                                        primal_stride,
-                                                        d_z.data(),
-                                                        primal_stride,
-                                                        sigma_max_sq.data(),
-                                                        stream_view_));
-
-        cub::DeviceTransform::Transform(
-          cuda::std::make_tuple(d_q.data(), d_z.data()),
-          d_q.data(),
-          d_q.size(),
-          [sigma_max_sq = sigma_max_sq.data()] __device__(f_t d_q, f_t d_z) {
-            return d_q * -(*sigma_max_sq) + d_z;
-          },
-          stream_view_);
-
+        {
+          raft::common::nvtx::range fun_scope("cublasdot_sigma_max_sq");
+          RAFT_CUBLAS_TRY(raft::linalg::detail::cublasdot(handle_ptr_->get_cublas_handle(),
+                                                          m,
+                                                          d_q.data(),
+                                                          primal_stride,
+                                                          d_z.data(),
+                                                          primal_stride,
+                                                          sigma_max_sq.data(),
+                                                          stream_view_));
+        }
+        {
+          stream_view_.synchronize();
+          unsigned long long stream_id;
+          RAFT_CUDA_TRY(cudaStreamGetId(stream_view_, &stream_id));
+          std::cout << "stream_id of cublasdot_residual_norm: " << stream_id << std::endl;
+          raft::common::nvtx::range fun_scope("cublasdot_residual_norm");
+          cub::DeviceTransform::Transform(
+            cuda::std::make_tuple(d_q.data(), d_z.data()),
+            d_q.data(),
+            d_q.size(),
+            [sigma_max_sq = sigma_max_sq.data()] __device__(f_t d_q, f_t d_z) {
+              return d_q * -(*sigma_max_sq) + d_z;
+            },
+            stream_view_);
+          stream_view_.synchronize();
+        }
         my_l2_norm<i_t, f_t>(d_q, residual_norm, handle_ptr_);
 
         if (residual_norm.value(stream_view_) < tolerance) break;
