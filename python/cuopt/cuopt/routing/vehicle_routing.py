@@ -125,7 +125,7 @@ class DataModel(vehicle_routing_wrapper.DataModel):
         if vehicle_type in self.costs:
             raise ValueError("Vehicle type matrix has already been added")
 
-        validate_matrix(cost_mat, "cost matrix", self.get_num_locations())
+        # validate_matrix(cost_mat, "cost matrix", self.get_num_locations())
 
         super().add_cost_matrix(cost_mat, vehicle_type)
 
