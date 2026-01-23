@@ -1314,7 +1314,8 @@ f_t crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
   // TODO: fix me! In test ./cpp/build/tests/linear_programming/C_API_TEST
   // c_api/TimeLimitTestFixture.time_limit/2 this is crashing. It is crashing only if it is run as
   // whole in sequence and not filtering the respective test. Crash could be observed in previous
-  // versions by setting probing cache time to zero. assert(dual_res_inf < 1e-6);
+  // versions by setting probing cache time to zero.
+  assert(dual_res_inf < 1e-6);
   return dual_res_inf;
 }
 

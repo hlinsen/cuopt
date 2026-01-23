@@ -382,6 +382,7 @@ optimization_problem_solution_t<i_t, f_t> convert_dual_simplex_sol(
   return sol;
 }
 
+  // 
 template <typename i_t, typename f_t>
 std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>
 run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
@@ -410,7 +411,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   barrier_settings.barrier_relaxed_complementarity_tol = settings.tolerances.relative_gap_tolerance;
   if (barrier_settings.concurrent_halt != nullptr) {
     // Don't show the barrier log in concurrent mode. Show the PDLP log instead
-    barrier_settings.log.log = false;
+    barrier_settings.log.log = true;
   }
 
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
@@ -535,7 +536,7 @@ static optimization_problem_solution_t<i_t, f_t> run_pdlp_solver(
                                                      problem.handle_ptr->get_stream()};
   }
   detail::pdlp_solver_t<i_t, f_t> solver(problem, settings, is_batch_mode);
-  if (settings.inside_mip) { solver.set_inside_mip(true); }
+   solver.set_inside_mip(true);
   return solver.run_solver(timer);
 }
 

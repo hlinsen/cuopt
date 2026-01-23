@@ -1322,6 +1322,7 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
                                            root_crossover_soln_.z,
                                            crushed_root_y,
                                            crushed_root_z);
+    settings_.log.printf("Dual residual from bb thread: %e\n", dual_res_inf);
 
     root_crossover_soln_.x = crushed_root_x;
     root_crossover_soln_.y = crushed_root_y;

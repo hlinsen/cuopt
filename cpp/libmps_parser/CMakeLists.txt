@@ -31,8 +31,8 @@ rapids_cmake_build_type(Release)
 # #############################################################################
 # - User Options  ------------------------------------------------------------
 option(BUILD_TESTS "Configure CMake to build tests" ON)
-option(MPS_PARSER_WITH_BZIP2 "Build with bzip2 decompression" ON)
-option(MPS_PARSER_WITH_ZLIB "Build with zlib decompression" ON)
+option(MPS_PARSER_WITH_BZIP2 "Build with bzip2 decompression" OFF)
+option(MPS_PARSER_WITH_ZLIB "Build with zlib decompression" OFF)
 
 message(VERBOSE "cuOpt: Build mps-parser unit-tests: ${BUILD_TESTS}")
 
