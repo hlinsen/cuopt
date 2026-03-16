@@ -288,6 +288,20 @@ struct adapted_sol_t {
     return (double)common_edges / max_symmetrical_diference;
   }
 
+  double calculate_jaccard_distance(const adapted_sol_t<i_t, f_t, REQUEST>& second) const
+  {
+    int nodes        = problem->get_num_orders();
+    int start        = (int)problem->order_info.depot_included_;
+    int edge_count   = nodes - start;
+    int intersection = 0;
+    for (int i = start; i < nodes; i++) {
+      if (succ[i] == second.succ[i]) { intersection++; }
+    }
+    double union_size = (double)(2 * edge_count - intersection);
+    if (union_size <= 0.0) return 0.0;
+    return 1.0 - (double)intersection / union_size;
+  }
+
   void add_new_routes(const std::vector<std::pair<int, std::vector<NodeInfo<>>>>& routes)
   {
     raft::common::nvtx::range fun_scope("add_new_routes");

@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -601,7 +601,7 @@ struct solve {
     improvement_timer = timer;
     while (!timer.check_time_limit()) {
       recombine_stats.reset();
-      benchmark_print("time elapsed: %f \n", timer.elapsed_time());
+      benchmark_print("time elapsed: %fs\n", timer.elapsed_time());
       adjust_reserve_threshold();
 
       populate_working_vector();
@@ -973,7 +973,7 @@ struct solve {
       int valid_start_threshold_index =
         std::min(start_threshold_index, (int)step_lengths.size() - 1);
       p.threshold = diversity_levels[valid_start_threshold_index];
-      benchmark_print("time elapsed: %f \n", timer.elapsed_time());
+      benchmark_print("time elapsed: %fs\n", timer.elapsed_time());
       benchmark_print("Improvement steps: %d\n", step_lengths[valid_start_threshold_index]);
       p.add_solutions_to_island(timer.elapsed_time(), reserve_population);
       if (p.best().is_feasible()) {
@@ -1008,7 +1008,7 @@ struct solve {
       }
       if (timer.check_time_limit()) return;
     }
-    benchmark_print("time elapsed: %f \n", timer.elapsed_time());
+    benchmark_print("time elapsed: %fs\n", timer.elapsed_time());
   }
 
   /*! \brief { Improve input population p without changing threshold.If
@@ -1342,6 +1342,18 @@ struct solve {
       fprintf(f.file_ptr, "%d :  %f\n", i, index.second);
       i++;
     }
+    fprintf(f.file_ptr, "time elapsed: %fs\n", timer.elapsed_time());
+    if (p.is_feasible()) {
+      fprintf(f.file_ptr, "best cost: %f\n", p.feasible_quality());
+    } else if (p.current_size() > 0) {
+      fprintf(f.file_ptr, "best cost: %f\n", p.best_quality());
+    }
+    fprintf(f.file_ptr, "avg symmetric difference: %f\n", p.avg_symmetric_difference());
+    fprintf(f.file_ptr,
+            "total pool entropy: %f (base-2, over %d solutions)\n",
+            p.total_pool_entropy(),
+            (int)p.current_size());
+    fprintf(f.file_ptr, "avg jaccard distance: %f\n", p.avg_jaccard_distance());
     fprintf(f.file_ptr, " -------------- \n");
     fflush(f.file_ptr);
   }

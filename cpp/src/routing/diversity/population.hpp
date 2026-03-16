@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <numeric>
 #include <random>
+#include <unordered_map>
 #include <vector>
 #include "helpers.hpp"
 #include "macros.hpp"
@@ -138,16 +139,16 @@ struct population {
   }
 
   /*! \brief { Current number of solutions in the pool }*/
-  size_t current_size() { return indices.size() - 1; }
+  size_t current_size() const { return indices.size() - 1; }
 
   /*! \brief { Is feasible soution in the pool? } */
-  bool is_feasible() { return solutions[0].first; }
+  bool is_feasible() const { return solutions[0].first; }
 
   /*! \brief { Best feasible quality }*/
-  double feasible_quality() { return indices[0].second; }
+  double feasible_quality() const { return indices[0].second; }
 
   /*! \brief { Best quality }*/
-  double best_quality() { return indices[1].second; }
+  double best_quality() const { return indices[1].second; }
 
   void dump_results([[maybe_unused]] int elapsed_time)
   {
@@ -162,11 +163,11 @@ struct population {
 
   /*! \brief { Best feasible solution. An empty solution may be returned - first
    * test if feasible is in the pool. }*/
-  solution best_feasible() { return solutions[0].second; }
+  solution best_feasible() const { return solutions[0].second; }
 
   /*! \brief { Best solution. If no solution is in the pool a Seg Fault may
    * occur. }*/
-  solution best() { return solutions[indices[1].first].second; }
+  solution best() const { return solutions[indices[1].first].second; }
 
   /*! \brief { Completely clear population } */
   void clear()
@@ -322,6 +323,54 @@ struct population {
       return a.second < b.second;
     });
     RUNTIME_TEST(test_invariant());
+  }
+
+  double avg_symmetric_difference() const
+  {
+    double sum = 0.0;
+    int pairs  = 0;
+    for (size_t i = 1; i < indices.size(); ++i) {
+      for (size_t j = i + 1; j < indices.size(); ++j) {
+        sum += 1.0 - solutions[indices[i].first].second.calculate_similarity_radius(
+                       solutions[indices[j].first].second);
+        ++pairs;
+      }
+    }
+    return (pairs > 0) ? sum / pairs : 0.0;
+  }
+
+  double avg_jaccard_distance() const
+  {
+    double sum = 0.0;
+    int pairs  = 0;
+    for (size_t i = 1; i < indices.size(); ++i) {
+      for (size_t j = i + 1; j < indices.size(); ++j) {
+        sum += solutions[indices[i].first].second.calculate_jaccard_distance(
+          solutions[indices[j].first].second);
+        ++pairs;
+      }
+    }
+    return (pairs > 0) ? sum / pairs : 0.0;
+  }
+
+  double total_pool_entropy() const
+  {
+    int n_sols = (int)current_size();
+    if (n_sols == 0) return 0.0;
+    int num_nodes  = problem_ptr->get_num_orders();
+    int depot_off  = problem_ptr->order_info.depot_included_ ? 1 : 0;
+    double entropy = 0.0;
+    for (int node = depot_off; node < num_nodes; ++node) {
+      std::unordered_map<int, int> freq;
+      for (size_t i = 1; i < indices.size(); ++i) {
+        freq[solutions[indices[i].first].second.succ[node].node()]++;
+      }
+      for (const auto& kv : freq) {
+        double pv = (double)kv.second / n_sols;
+        entropy -= pv * std::log2(pv);
+      }
+    }
+    return entropy;
   }
 
  private:
