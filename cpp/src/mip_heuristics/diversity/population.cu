@@ -15,6 +15,8 @@
 #include <utilities/copy_helpers.hpp>
 #include <utilities/seed_generator.cuh>
 
+#include <algorithm>
+#include <cmath>
 #include <mutex>
 
 namespace cuopt::linear_programming::detail {
@@ -217,6 +219,7 @@ std::vector<solution_t<i_t, f_t>> population_t<i_t, f_t>::get_external_solutions
       solution_t<i_t, f_t> sol(*problem_ptr);
       sol.copy_new_assignment(h_entry.solution);
       sol.compute_feasibility();
+      sol.source_label = solution_origin_to_string(h_entry.origin);
       if (!sol.get_feasible()) {
         CUOPT_LOG_DEBUG(
           "External solution %d is infeasible, excess %g, obj %g, int viol %g, var viol %g, cstr "
@@ -295,10 +298,26 @@ void population_t<i_t, f_t>::run_solution_callbacks(solution_t<i_t, f_t>& sol)
   bool better_solution_found = is_better_than_best_feasible(sol);
   auto user_callbacks        = context.settings.get_mip_callbacks();
   if (better_solution_found) {
+    const auto user_objective = sol.get_user_objective();
+    const auto user_bound     = context.stats.get_solution_bound();
+    const auto solve_time     = timer.elapsed_time();
+    const auto source_label   = sol.source_label.empty() ? "unknown" : sol.source_label.c_str();
     if (context.settings.benchmark_info_ptr != nullptr) {
       context.settings.benchmark_info_ptr->last_improvement_of_best_feasible = timer.elapsed_time();
+      context.settings.benchmark_info_ptr->last_improvement_objective        = user_objective;
+      context.settings.benchmark_info_ptr->last_improvement_bound            = user_bound;
+      context.settings.benchmark_info_ptr->last_improvement_num_nodes = context.stats.num_nodes;
+      context.settings.benchmark_info_ptr->last_improvement_source    = source_label;
     }
     CUOPT_LOG_DEBUG("Population: Found new best solution %g", sol.get_user_objective());
+    CUOPT_LOG_INFO(
+      "Incumbent update: source %s objective %+e bound %+e time %.2f nodes %d gap %.3f%%",
+      source_label,
+      user_objective,
+      user_bound,
+      solve_time,
+      context.stats.num_nodes,
+      100.0 * std::abs(user_objective - user_bound) / std::max(1.0, std::abs(user_objective)));
     if (problem_ptr->branch_and_bound_callback != nullptr) {
       problem_ptr->branch_and_bound_callback(sol.get_host_assignment());
     }

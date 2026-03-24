@@ -653,6 +653,7 @@ void local_search_t<i_t, f_t>::reset_alpha_and_save_solution(
   solution_t<i_t, f_t> solution_copy(solution);
   solution_copy.problem_ptr = old_problem_ptr;
   solution_copy.resize_to_problem();
+  solution_copy.source_label = "local_search_reset";
   population_ptr->add_solution(std::move(solution_copy));
   population_ptr->add_external_solutions_to_population();
   if (!cutting_plane_added_for_active_run) {

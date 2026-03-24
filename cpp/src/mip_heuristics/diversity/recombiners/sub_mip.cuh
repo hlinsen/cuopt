@@ -181,6 +181,7 @@ class sub_mip_recombiner_t : public recombiner_t<i_t, f_t> {
       sol.clamp_within_bounds();  // Scaling might bring some very slight variable bound violations
       sol.compute_feasibility();
       cuopt_func_call(sol.test_variable_bounds());
+      sol.source_label = "sub_mip";
       population.add_solution(std::move(sol));
     }
     bool better_cost_than_parents =

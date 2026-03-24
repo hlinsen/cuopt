@@ -19,6 +19,8 @@
 #include <rmm/device_scalar.hpp>
 #include <rmm/device_uvector.hpp>
 
+#include <string>
+
 namespace cuopt::linear_programming::detail {
 
 template <typename i_t, typename f_t>
@@ -146,6 +148,7 @@ class solution_t {
   bool is_problem_fully_reduced{false};
   bool is_scaled_{false};
   bool post_process_completed{false};
+  std::string source_label{"unknown"};
   lp_state_t<i_t, f_t> lp_state;
 
   // runtime TEST functions

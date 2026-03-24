@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include <cuopt/linear_programming/constants.h>
@@ -24,6 +25,10 @@ struct benchmark_info_t {
   double last_improvement_of_best_feasible    = 0;
   double last_improvement_after_recombination = 0;
   double objective_of_initial_population      = std::numeric_limits<double>::max();
+  double last_improvement_objective           = std::numeric_limits<double>::max();
+  double last_improvement_bound               = std::numeric_limits<double>::max();
+  double last_improvement_num_nodes           = 0;
+  std::string last_improvement_source         = "unknown";
 };
 
 // Forward declare solver_settings_t for friend class

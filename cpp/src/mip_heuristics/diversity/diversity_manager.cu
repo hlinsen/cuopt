@@ -131,6 +131,7 @@ void diversity_manager_t<i_t, f_t>::generate_solution(f_t time_limit, bool rando
   raft::common::nvtx::range fun_scope("generate_solution");
   solution_t<i_t, f_t> sol(*problem_ptr);
   sol.compute_feasibility();
+  sol.source_label = random_start ? "generate_solution_random_start" : "generate_solution";
   // if a feasible is found, it is added to the population
   ls.generate_solution(sol, random_start, &population, time_limit);
   population.add_solution(std::move(sol));
@@ -530,6 +531,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     lp_rounded_sol.copy_new_assignment(lp_optimal_solution);
     lp_rounded_sol.round_nearest();
     lp_rounded_sol.compute_feasibility();
+    lp_rounded_sol.source_label = "root_lp_rounding";
     population.add_solution(std::move(lp_rounded_sol));
     ls.start_cpufj_lptopt_scratch_threads(population);
   }
@@ -584,6 +586,8 @@ void diversity_manager_t<i_t, f_t>::diversity_step(i_t max_iterations_without_im
       auto [sol1, sol2]         = population.get_two_random(tournament);
       cuopt_assert(population.test_invariant(), "");
       auto [lp_offspring, offspring]        = recombine_and_local_search(sol1, sol2);
+      lp_offspring.source_label             = "recombination_lp";
+      offspring.source_label                = "recombination";
       auto [inserted_pos_1, best_updated_1] = population.add_solution(std::move(lp_offspring));
       auto [inserted_pos_2, best_updated_2] = population.add_solution(std::move(offspring));
       if (best_updated_1 || best_updated_2) { recombine_stats.add_best_updated(); }
@@ -627,9 +631,11 @@ void diversity_manager_t<i_t, f_t>::recombine_and_ls_with_all(solution_t<i_t, f_
         auto [offspring, lp_offspring] =
           recombine_and_local_search(curr_sol, solution, recombiner_type);
         if (!add_only_feasible || lp_offspring.get_feasible()) {
+          lp_offspring.source_label = "recombination_lp";
           population.add_solution(std::move(lp_offspring));
         }
         if (!add_only_feasible || offspring.get_feasible()) {
+          offspring.source_label = "recombination";
           population.add_solution(std::move(offspring));
         }
         if (timer.check_time_limit()) { return; }
@@ -648,7 +654,9 @@ void diversity_manager_t<i_t, f_t>::recombine_and_ls_with_all(
     // add all solutions because time limit might have been consumed and we might have exited before
     for (auto& sol : solutions) {
       cuopt_func_call(sol.test_feasibility(true));
-      population.add_solution(std::move(solution_t<i_t, f_t>(sol)));
+      auto queued_sol         = solution_t<i_t, f_t>(sol);
+      queued_sol.source_label = "bb_queue_seed";
+      population.add_solution(std::move(queued_sol));
     }
     for (auto& sol : solutions) {
       if (timer.check_time_limit()) { return; }
