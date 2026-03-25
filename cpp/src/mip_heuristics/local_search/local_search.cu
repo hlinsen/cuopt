@@ -26,6 +26,19 @@
 
 namespace cuopt::linear_programming::detail {
 
+namespace {
+
+template <typename i_t, typename f_t>
+bool local_search_step_improved(solution_t<i_t, f_t>& solution,
+                                bool was_feasible,
+                                f_t previous_objective)
+{
+  return solution.get_feasible() &&
+         (!was_feasible || solution.get_objective() < previous_objective);
+}
+
+}  // namespace
+
 template <typename i_t, typename f_t>
 local_search_t<i_t, f_t>::local_search_t(mip_solver_context_t<i_t, f_t>& context_,
                                          rmm::device_uvector<f_t>& lp_optimal_solution_)
@@ -369,12 +382,31 @@ bool local_search_t<i_t, f_t>::run_local_search(solution_t<i_t, f_t>& solution,
     rd = ls_method_t::FJ_ANNEALING;
   }
   if (rd == ls_method_t::FJ_LINE_SEGMENT && lp_optimal_exists) {
+    const auto was_feasible_before_line_segment = solution.get_feasible();
+    const auto objective_before_line_segment    = solution.get_objective();
     fj.copy_weights(weights, solution.handle_ptr);
     is_feas = run_fj_line_segment(solution, timer, ls_config);
+    if (local_search_step_improved(
+          solution, was_feasible_before_line_segment, objective_before_line_segment)) {
+      solution.source_label = "local_search_line_segment";
+    }
   } else {
+    const auto was_feasible_before_fj = solution.get_feasible();
+    const auto objective_before_fj    = solution.get_objective();
     fj.copy_weights(weights, solution.handle_ptr);
     is_feas = run_fj_annealing(solution, timer, ls_config);
-    if (lp_optimal_exists) { is_feas = run_fj_line_segment(solution, timer, ls_config); }
+    if (local_search_step_improved(solution, was_feasible_before_fj, objective_before_fj)) {
+      solution.source_label = "local_search_fj";
+    }
+    if (lp_optimal_exists) {
+      const auto was_feasible_before_line_segment = solution.get_feasible();
+      const auto objective_before_line_segment    = solution.get_objective();
+      is_feas                                     = run_fj_line_segment(solution, timer, ls_config);
+      if (local_search_step_improved(
+            solution, was_feasible_before_line_segment, objective_before_line_segment)) {
+        solution.source_label = "local_search_line_segment";
+      }
+    }
   }
   return is_feas;
 }
@@ -653,7 +685,9 @@ void local_search_t<i_t, f_t>::reset_alpha_and_save_solution(
   solution_t<i_t, f_t> solution_copy(solution);
   solution_copy.problem_ptr = old_problem_ptr;
   solution_copy.resize_to_problem();
-  solution_copy.source_label = "local_search_reset";
+  if (solution_copy.source_label.empty() || solution_copy.source_label == "unknown") {
+    solution_copy.source_label = "local_search";
+  }
   population_ptr->add_solution(std::move(solution_copy));
   population_ptr->add_external_solutions_to_population();
   if (!cutting_plane_added_for_active_run) {
@@ -826,6 +860,7 @@ bool local_search_t<i_t, f_t>::generate_solution(solution_t<i_t, f_t>& solution,
   auto n_integer_vars = solution.problem_ptr->n_integer_vars;
   bool is_feasible    = check_fj_on_lp_optimal(solution, perturb, timer);
   if (is_feasible) {
+    solution.source_label = "local_search_fj_on_lp_optimal";
     CUOPT_LOG_DEBUG("Solution generated with FJ on LP optimal: is_feasible %d", is_feasible);
     return true;
   }
@@ -842,6 +877,7 @@ bool local_search_t<i_t, f_t>::generate_solution(solution_t<i_t, f_t>& solution,
     fj.reset_weights(solution.handle_ptr->get_stream());
     is_feasible = run_fj_on_zero(solution, timer);
     if (is_feasible) {
+      solution.source_label = "local_search_fj_on_zero";
       CUOPT_LOG_DEBUG("Solution generated with FJ on zero solution: is_feasible %d", is_feasible);
       return true;
     }
@@ -861,6 +897,7 @@ bool local_search_t<i_t, f_t>::generate_solution(solution_t<i_t, f_t>& solution,
   fp.reset();
   fp.resize_vectors(*solution.problem_ptr, solution.handle_ptr);
   is_feasible = run_staged_fp(solution, timer, population_ptr);
+  if (is_feasible) { solution.source_label = "local_search_fp"; }
   // is_feasible = run_fp(solution, timer);
   CUOPT_LOG_DEBUG("Solution generated with FP: is_feasible %d", is_feasible);
   return is_feasible;

@@ -21,6 +21,22 @@
 
 namespace cuopt::linear_programming::detail {
 
+namespace {
+
+std::string canonicalize_incumbent_source_label(const std::string& source_label)
+{
+  if (source_label.empty()) { return "unknown"; }
+  if (source_label == "local_search_reset" || source_label == "generate_solution" ||
+      source_label == "generate_solution_random_start") {
+    return "local_search";
+  }
+  if (source_label == "recombination_lp") { return "recombination"; }
+  if (source_label == "bb_queue_seed") { return "B&B"; }
+  return source_label;
+}
+
+}  // namespace
+
 constexpr double weight_increase_ratio       = 2.;
 constexpr double weight_decrease_ratio       = 0.9;
 constexpr double max_infeasibility_weight    = 1e12;
@@ -298,10 +314,20 @@ void population_t<i_t, f_t>::run_solution_callbacks(solution_t<i_t, f_t>& sol)
   bool better_solution_found = is_better_than_best_feasible(sol);
   auto user_callbacks        = context.settings.get_mip_callbacks();
   if (better_solution_found) {
-    const auto user_objective = sol.get_user_objective();
-    const auto user_bound     = context.stats.get_solution_bound();
-    const auto solve_time     = timer.elapsed_time();
-    const auto source_label   = sol.source_label.empty() ? "unknown" : sol.source_label.c_str();
+    const auto user_objective         = sol.get_user_objective();
+    const auto has_previous_incumbent = best_feasible_objective != std::numeric_limits<f_t>::max();
+    const auto previous_user_objective =
+      has_previous_incumbent ? problem_ptr->get_user_obj_from_solver_obj(best_feasible_objective)
+                             : std::numeric_limits<f_t>::infinity();
+    const auto improvement_delta = has_previous_incumbent ? previous_user_objective - user_objective
+                                                          : std::numeric_limits<f_t>::infinity();
+    const auto relative_delta_pct =
+      has_previous_incumbent
+        ? 100.0 * improvement_delta / std::max(1.0, std::abs(previous_user_objective))
+        : std::numeric_limits<f_t>::infinity();
+    const auto user_bound   = context.stats.get_solution_bound();
+    const auto solve_time   = timer.elapsed_time();
+    const auto source_label = canonicalize_incumbent_source_label(sol.source_label);
     if (context.settings.benchmark_info_ptr != nullptr) {
       context.settings.benchmark_info_ptr->last_improvement_of_best_feasible = timer.elapsed_time();
       context.settings.benchmark_info_ptr->last_improvement_objective        = user_objective;
@@ -311,9 +337,13 @@ void population_t<i_t, f_t>::run_solution_callbacks(solution_t<i_t, f_t>& sol)
     }
     CUOPT_LOG_DEBUG("Population: Found new best solution %g", sol.get_user_objective());
     CUOPT_LOG_INFO(
-      "Incumbent update: source %s objective %+e bound %+e time %.2f nodes %d gap %.3f%%",
-      source_label,
+      "Incumbent update: source %s objective %+e previous %+e delta %+e rel_delta %.3f%% "
+      "bound %+e time %.2f nodes %d gap %.3f%%",
+      source_label.c_str(),
       user_objective,
+      previous_user_objective,
+      improvement_delta,
+      relative_delta_pct,
       user_bound,
       solve_time,
       context.stats.num_nodes,
