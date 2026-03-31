@@ -16,13 +16,15 @@
 #include <mip_heuristics/mip_constants.hpp>
 
 #include <raft/sparse/detail/cusparse_wrappers.h>
-#include <raft/common/nvtx.hpp>
+#include <raft/core/nvtx.hpp>
 #include <raft/linalg/detail/cublas_wrappers.hpp>
 #include <raft/linalg/eltwise.cuh>
 #include <raft/linalg/map_then_reduce.cuh>
 #include <raft/linalg/ternary_op.cuh>
 #include <raft/linalg/unary_op.cuh>
 #include <raft/util/cuda_utils.cuh>
+
+#include <thrust/iterator/transform_output_iterator.h>
 
 namespace cuopt::linear_programming::detail {
 template <typename i_t, typename f_t>

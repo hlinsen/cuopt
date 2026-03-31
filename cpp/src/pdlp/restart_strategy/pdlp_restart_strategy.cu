@@ -20,7 +20,7 @@
 #endif
 
 #include <raft/sparse/detail/cusparse_wrappers.h>
-#include <raft/common/nvtx.hpp>
+#include <raft/core/nvtx.hpp>
 #include <raft/core/device_span.hpp>
 #include <raft/linalg/binary_op.cuh>
 #include <raft/linalg/detail/cublas_wrappers.hpp>
@@ -34,6 +34,7 @@
 #include <thrust/for_each.h>
 #include <thrust/functional.h>
 #include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/reverse_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/logical.h>
