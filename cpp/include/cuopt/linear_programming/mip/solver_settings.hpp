@@ -99,6 +99,7 @@ class mip_solver_settings_t {
   f_t cut_change_threshold            = -1.0;
   f_t cut_min_orthogonality           = 0.5;
   i_t mip_batch_pdlp_strong_branching = 0;
+  f_t sb_time_fraction                = 0.15;
   i_t num_gpus                        = 1;
   bool log_to_console                 = true;
 

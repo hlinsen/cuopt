@@ -435,7 +435,9 @@ void strong_branching(const user_problem_t<i_t, f_t>& original_problem,
                              pc);
       }
     }
-    settings.log.printf("Strong branching completed in %.2fs\n", toc(strong_branching_start_time));
+    settings.log.printf("Strong branching completed in %.2fs (time limit was %.2fs)\n",
+                        toc(strong_branching_start_time),
+                        settings.time_limit);
   }
 
   pc.update_pseudo_costs_from_strong_branching(fractional, root_soln);

@@ -115,6 +115,11 @@ class branch_and_bound_t {
 
   void set_concurrent_lp_root_solve(bool enable) { enable_concurrent_lp_root_solve_ = enable; }
 
+  void set_sb_time_fraction(f_t value)
+  {
+    pc_.reliability_branching_settings.sb_time_fraction = value;
+  }
+
   // Repair a low-quality solution from the heuristics.
   bool repair_solution(const std::vector<f_t>& leaf_edge_norms,
                        const std::vector<f_t>& potential_solution,

@@ -395,6 +395,11 @@ struct reliability_branching_settings_t {
   f_t bnb_lp_factor = 0.5;
   i_t bnb_lp_offset = 100000;
 
+  // Maximum fraction of the total time budget spent in strong branching at the root node.
+  // When elapsed SB time exceeds this fraction, SB stops early and pseudo-cost branching
+  // is used for remaining candidates. Set to 1.0 to disable the cap.
+  f_t sb_time_fraction = 0.15;
+
   // Maximum and minimum points in curve to determine the value
   // of the `reliable_threshold` based on the current number of LP
   // iterations in strong branching and B&B. Since it is a

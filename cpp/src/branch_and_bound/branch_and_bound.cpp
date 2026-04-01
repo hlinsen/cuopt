@@ -2446,11 +2446,22 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   set_uninitialized_steepest_edge_norms(original_lp_, basic_list, edge_norms_);
 
   pc_.resize(original_lp_.num_cols);
+  const f_t elapsed_before_sb = toc(exploration_stats_.start_time);
+  const f_t sb_time_budget =
+    pc_.reliability_branching_settings.sb_time_fraction * settings_.time_limit;
+  simplex_solver_settings_t<i_t, f_t> sb_settings = settings_;
+  sb_settings.time_limit = std::min(settings_.time_limit, elapsed_before_sb + sb_time_budget);
+  settings_.log.printf(
+    "Strong branching time budget: %.2fs (%.0f%% of %.2fs total, %.2fs elapsed)\n",
+    sb_time_budget,
+    pc_.reliability_branching_settings.sb_time_fraction * 100,
+    settings_.time_limit,
+    elapsed_before_sb);
   {
     raft::common::nvtx::range scope_sb("BB::strong_branching");
     strong_branching<i_t, f_t>(original_problem_,
                                original_lp_,
-                               settings_,
+                               sb_settings,
                                exploration_stats_.start_time,
                                var_types_,
                                root_relax_soln_.x,
