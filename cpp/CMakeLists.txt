@@ -261,6 +261,13 @@ option(LUSOL "Disable LUSOL" OFF)
 
 FetchContent_MakeAvailable(papilo)
 
+# ##################################################################################################
+# - OpenSSL: prefer conda/prefix env over system to avoid GLIBC version mismatches ---------------
+if(DEFINED ENV{CONDA_PREFIX} AND NOT DEFINED OPENSSL_ROOT_DIR)
+  set(OPENSSL_ROOT_DIR "$ENV{CONDA_PREFIX}" CACHE PATH "OpenSSL root directory")
+endif()
+# ##################################################################################################
+
 # PSLP - Lightweight C presolver for linear programs
 # https://github.com/dance858/PSLP
 FetchContent_Declare(

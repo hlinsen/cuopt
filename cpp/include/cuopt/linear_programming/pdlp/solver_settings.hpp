@@ -274,6 +274,8 @@ class pdlp_solver_settings_t {
   bool per_constraint_residual{false};
   bool crossover{false};
   bool cudss_deterministic{false};
+  /** Pivot threshold passed to cuDSS (barrier linear solves). */
+  f_t cudss_pivot_epsilon{static_cast<f_t>(1e-13)};
   i_t folding{-1};
   i_t augmented{-1};
   i_t dualize{-1};

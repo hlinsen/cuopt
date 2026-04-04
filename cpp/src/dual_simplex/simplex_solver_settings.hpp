@@ -81,8 +81,9 @@ struct simplex_solver_settings_t {
       print_presolve_stats(true),
       barrier_presolve(false),
       cudss_deterministic(false),
-      deterministic(false),
+      cudss_pivot_epsilon(static_cast<f_t>(1e-13)),
       barrier(false),
+      deterministic(false),
       eliminate_dense_columns(true),
       num_gpus(1),
       folding(-1),
@@ -162,6 +163,7 @@ struct simplex_solver_settings_t {
   bool print_presolve_stats;  // true to print presolve stats
   bool barrier_presolve;      // true to use barrier presolve
   bool cudss_deterministic;   // true to use cuDSS deterministic mode, false for non-deterministic
+  f_t cudss_pivot_epsilon;    // cuDSS CUDSS_CONFIG_PIVOT_EPSILON (barrier Cholesky)
   bool barrier;               // true to use barrier method, false to use dual simplex method
   bool deterministic;  // true to use B&B deterministic mode, false to use non-deterministic mode
   bool eliminate_dense_columns;  // true to eliminate dense columns from A*D*A^T

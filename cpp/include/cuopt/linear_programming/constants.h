@@ -48,6 +48,7 @@
 #define CUOPT_BARRIER_DUAL_INITIAL_POINT           "barrier_dual_initial_point"
 #define CUOPT_ELIMINATE_DENSE_COLUMNS              "eliminate_dense_columns"
 #define CUOPT_CUDSS_DETERMINISTIC                  "cudss_deterministic"
+#define CUOPT_CUDSS_PIVOT_EPSILON                  "cudss_pivot_epsilon"
 #define CUOPT_PRESOLVE                             "presolve"
 #define CUOPT_DUAL_POSTSOLVE                       "dual_postsolve"
 #define CUOPT_MIP_DETERMINISM_MODE                 "mip_determinism_mode"
