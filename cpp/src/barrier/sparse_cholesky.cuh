@@ -271,6 +271,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(cudssDataCreate(handle, &solverData), status, "cudssDataCreate");
 
     double pivot_epsilon = static_cast<double>(settings_.cudss_pivot_epsilon);
+    settings.log.printf("cuDSS pivot epsilon         : %f\n", pivot_epsilon);
     CUDSS_CALL_AND_CHECK_EXIT(
       cudssConfigSet(solverConfig, CUDSS_CONFIG_PIVOT_EPSILON, &pivot_epsilon, sizeof(double)),
       status,
