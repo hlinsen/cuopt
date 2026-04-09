@@ -225,6 +225,27 @@ option(FETCH_RAPIDS "Fetch RAPIDS dependencies" ON)
 
 if (FETCH_RAPIDS)
   include(cmake/thirdparty/get_cccl.cmake)
+  # Workaround: CCCL 3.3.0 __basic_any uses constexpr vtables (virtual_tables.h) that GCC+ASan
+  # cannot evaluate — GCC rejects pointer comparisons in constexpr context when -fsanitize=address
+  # is active.  Strip constexpr from __vtable_for_v under __SANITIZE_ADDRESS__ so the initializer
+  # is evaluated at runtime instead.  The guard is idempotent (skipped if already applied).
+  if(BUILD_SANITIZER)
+    FetchContent_GetProperties(cccl SOURCE_DIR _cccl_src_dir)
+    if(_cccl_src_dir)
+      set(_vtables_h "${_cccl_src_dir}/libcudacxx/include/cuda/__utility/__basic_any/virtual_tables.h")
+      if(EXISTS "${_vtables_h}")
+        file(READ "${_vtables_h}" _vtables_content)
+        if(NOT _vtables_content MATCHES "__SANITIZE_ADDRESS__")
+          string(REPLACE
+            "_CCCL_GLOBAL_CONSTANT __vtable<_Interface> __vtable_for_v{__tag<_Tp, _Interface>()};"
+            "#ifdef __SANITIZE_ADDRESS__\ninline __vtable<_Interface> __vtable_for_v{__tag<_Tp, _Interface>()};\n#else\n_CCCL_GLOBAL_CONSTANT __vtable<_Interface> __vtable_for_v{__tag<_Tp, _Interface>()};\n#endif"
+            _vtables_content "${_vtables_content}")
+          file(WRITE "${_vtables_h}" "${_vtables_content}")
+          message(STATUS "cuOpt: Applied CCCL 3.3.0 ASan workaround to ${_vtables_h}")
+        endif()
+      endif()
+    endif()
+  endif()
   include(cmake/thirdparty/get_rmm.cmake)
   include(cmake/thirdparty/get_raft.cmake)
   # Source-built RMM can hide out-of-line utility symbols such as
@@ -293,6 +314,18 @@ find_package(CUDSS REQUIRED)
 # gRPC can come from either:
 # - an installed CMake package (gRPCConfig.cmake), or
 # - an in-tree build (e.g. python/libcuopt uses FetchContent(grpc), which defines gRPC::grpc++).
+
+# Pre-find OpenSSL before gRPCConfig.cmake does. gRPCConfig.cmake calls find_package(OpenSSL)
+# without the CONFIG keyword, which triggers CMake's built-in FindOpenSSL.cmake Find module and
+# can pick up the system libssl/libcrypto instead of the conda-packaged one.
+# gRPCConfig.cmake guards its call with "if(NOT OPENSSL_FOUND)", so finding it here wins.
+# Using CONFIG mode finds OpenSSLConfig.cmake (shipped by conda-forge) via CMAKE_PREFIX_PATH,
+# bypassing the Find module entirely.
+if(NOT OPENSSL_FOUND)
+  find_package(OpenSSL CONFIG REQUIRED)
+  message(STATUS "Found OpenSSL: ${OPENSSL_SSL_LIBRARY} (found version \"${OPENSSL_VERSION}\")")
+endif()
+
 if(NOT TARGET gRPC::grpc++)
   find_package(gRPC CONFIG REQUIRED)
 endif()
