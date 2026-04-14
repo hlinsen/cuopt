@@ -155,8 +155,8 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     cuda_error = cudaSuccess;
     status     = CUDSS_STATUS_SUCCESS;
 
-    if (CUDART_VERSION >= 13000 && settings_.concurrent_halt != nullptr &&
-        settings_.num_gpus == 1) {
+#if CUDART_VERSION >= 13000 && defined(ENABLE_GC)
+    if (settings_.concurrent_halt != nullptr && settings_.num_gpus == 1) {
       cuGetErrorString_func = cuopt::detail::get_driver_entry_point("cuGetErrorString");
       // 1. Set up the GPU resources
       CUdevResource initial_device_GPU_resources = {};
@@ -238,6 +238,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                  &stream, barrier_green_ctx, CU_STREAM_NON_BLOCKING, stream_priority),
                reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
     }
+#endif
 
     auto cudss_device_idx   = handle_ptr_->get_device();
     auto cudss_device_count = 1;
@@ -363,7 +364,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(cudssConfigDestroy(solverConfig), status, "cudssConfigDestroy");
     CUDSS_CALL_AND_CHECK_EXIT(cudssDestroy(handle), status, "cudssDestroy");
     CUDA_CALL_AND_CHECK_EXIT(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
-#if CUDART_VERSION >= 13000
+#if CUDART_VERSION >= 13000 && defined(ENABLE_GC)
     if (settings_.concurrent_halt != nullptr && settings_.num_gpus == 1) {
       auto cuStreamDestroy_func = cuopt::detail::get_driver_entry_point("cuStreamDestroy");
       CU_CHECK(reinterpret_cast<decltype(::cuStreamDestroy)*>(cuStreamDestroy_func)(stream),
