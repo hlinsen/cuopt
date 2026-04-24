@@ -30,89 +30,95 @@ Accept any of:
 
 If only a branch name is provided, find the matching PR first. If only a PR number is provided, discover the branch, checks, and most recent failing run with `gh`.
 
-## GitHub CLI Workflow
+## Workflow
 
-From the repo root:
+Run from the repo root.
+
+### 1. Set Repo Context
 
 ```bash
 git remote -v
 gh repo set-default NVIDIA/cuopt
 ```
 
-Run `gh repo set-default NVIDIA/cuopt` when `gh` reports that no default remote repository is set, or when multiple remotes make the target repository ambiguous.
+Use `gh repo set-default NVIDIA/cuopt` when `gh` reports no default repository or multiple remotes make the target ambiguous.
 
-If a branch name is provided, first infer the likely fork owner from local Git remotes before querying GitHub. Match the branch to a remote-tracking branch, then parse the GitHub owner from that remote URL:
+### 2. Resolve PR
+
+If a PR number is known:
+
+```bash
+gh pr view <PR> -R NVIDIA/cuopt --json number,title,url,state,isDraft,headRefName,baseRefName,mergeStateStatus,statusCheckRollup,commits,files
+```
+
+If owner and branch are known, prefer the direct fork selector:
+
+```bash
+gh pr view <owner>:<branch> -R NVIDIA/cuopt --json number,title,url,state,isDraft,headRefName,baseRefName,mergeStateStatus,statusCheckRollup,commits,files
+```
+
+If only a branch is known, infer the owner locally, then use `owner:branch`:
 
 ```bash
 branch=<branch>
 git branch -r --list "*/$branch"
-git remote -v
-```
-
-For a local branch, `git config branch.<branch>.remote` may also identify the fork remote:
-
-```bash
-remote=$(git config branch.<branch>.remote)
+remote=$(git config branch."$branch".remote)
 git remote get-url "$remote"
 ```
 
-If the owner is known, prefer the owner-qualified PR lookup:
-
-```bash
-gh pr view <owner>:<branch> -R NVIDIA/cuopt --json number,title,url,state,isDraft,headRefName,baseRefName,mergeStateStatus,statusCheckRollup
-```
-
-Then continue with the PR number or head branch:
-
-```bash
-gh pr view <PR> --json number,title,headRefName,baseRefName,mergeStateStatus,statusCheckRollup,commits,files
-gh pr checks <PR>
-gh run list --branch <headRefName> --limit 20 --json databaseId,name,status,conclusion,createdAt,updatedAt,headBranch,event
-```
-
-When the user provides a branch name instead of a PR number:
-
-```bash
-gh pr view <branch> --json number,title,url,state,isDraft,headRefName,baseRefName,mergeStateStatus,statusCheckRollup
-```
-
-For PRs opened from a fork, use the owner-qualified head branch:
-
-```bash
-gh pr view <owner>:<branch> -R NVIDIA/cuopt --json number,title,url,state,isDraft,headRefName,baseRefName,mergeStateStatus,statusCheckRollup
-```
-
-If the owner is unknown, ambiguous, or the owner-qualified lookup fails, list matching PRs and use the exact PR number from the result:
+If branch lookup is still ambiguous, fall back to listing PRs:
 
 ```bash
 gh pr list --head <branch> --state all -R NVIDIA/cuopt --json number,title,url,state,isDraft,headRefName,baseRefName,updatedAt
 ```
 
-For the current checked-out branch:
+For the current branch:
 
 ```bash
 branch=$(git branch --show-current)
-gh pr view "$branch" --json number,title,url,state,isDraft,headRefName,baseRefName,statusCheckRollup
+```
+
+### 3. Inspect CI
+
+```bash
+gh pr checks <PR> -R NVIDIA/cuopt
+gh run list --branch <headRefName> --limit 20 -R NVIDIA/cuopt --json databaseId,name,status,conclusion,createdAt,updatedAt,headBranch,event
 ```
 
 For a suspicious run:
 
 ```bash
-gh run view <run_id> --json databaseId,name,status,conclusion,createdAt,updatedAt,jobs
-gh run view <run_id> --log-failed
+gh run view <run_id> -R NVIDIA/cuopt --json databaseId,name,status,conclusion,createdAt,updatedAt,jobs
+gh run view <run_id> -R NVIDIA/cuopt --log-failed
 ```
 
-If `--log-failed` is too broad or truncated, inspect jobs and fetch the exact job:
+If `--log-failed` is too broad or truncated:
 
 ```bash
-gh run view <run_id> --json jobs
-gh run view <run_id> --job <job_id> --log
+gh run view <run_id> -R NVIDIA/cuopt --json jobs
+gh run view <run_id> -R NVIDIA/cuopt --job <job_id> --log
 ```
 
-Use `gh api` only when the higher-level commands do not expose enough detail:
+Use `gh api` only when higher-level commands do not expose enough detail:
 
 ```bash
-gh api repos/:owner/:repo/actions/runs/<run_id>/jobs
+gh api repos/NVIDIA/cuopt/actions/runs/<run_id>/jobs
+```
+
+### 4. Correlate Locally
+
+```bash
+git status --short
+git diff --stat <base>...HEAD
+git diff <base>...HEAD -- <suspect_paths>
+rg "<error text|test name|symbol>"
+```
+
+Use local history when helpful:
+
+```bash
+git blame -L <start>,<end> -- <file>
+git log --oneline -- <file>
 ```
 
 ## Log Triage Checklist
@@ -135,26 +141,6 @@ Classify the failure:
 - **Server only:** likely REST schema, server validation, serialization, fixture, startup/healthcheck, or async polling issue.
 - **Docs/style only:** likely formatting, docs build, lint, or metadata.
 - **Many unrelated jobs fail at setup:** likely infrastructure, dependency, image, or runner issue.
-
-## Local Correlation
-
-Compare failing logs against the PR diff:
-
-```bash
-git status --short
-git diff --stat <base>...HEAD
-git diff <base>...HEAD -- <suspect_paths>
-rg "<error text|test name|symbol>"
-```
-
-Use local history when helpful:
-
-```bash
-git blame -L <start>,<end> -- <file>
-git log --oneline -- <file>
-```
-
-If the CI failure is from a remote PR branch that is not checked out, inspect with `gh pr diff <PR>` or fetch the branch before making local claims.
 
 ## Repository Heuristics
 
