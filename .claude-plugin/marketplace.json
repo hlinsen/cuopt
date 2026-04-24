@@ -21,6 +21,12 @@
       "description": "Contribute to NVIDIA cuOpt codebase including C++/CUDA, Python, server, docs, and CI. Use when the user wants to modify solver internals, add features, submit PRs, or understand the codebase architecture."
     },
     {
+      "name": "cuopt-ci-debugger",
+      "source": "./skills/cuopt-ci-debugger",
+      "skills": "./",
+      "description": "Debug GitHub CI failures from a PR number, branch name, run id, job name, or failing matrix using gh CLI logs, PR diffs, and local code inspection."
+    },
+    {
       "name": "cuopt-installation-common",
       "source": "./skills/cuopt-installation-common",
       "skills": "./",

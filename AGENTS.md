@@ -11,6 +11,7 @@ AI agent skills for NVIDIA cuOpt optimization engine. Skills live in **`skills/`
 ### Rules
 - `skills/cuopt-user-rules/` — User-facing behavior and conventions; read first when helping users with cuOpt (routing, LP, MILP, QP, install, server). Choose skills from the index below by task, problem type, and interface (Python / C / CLI).
 - `skills/cuopt-developer/` — Contributing and development; use when the user is building from source, contributing code, or working on cuOpt internals.
+- `skills/cuopt-ci-debugger/` — GitHub CI failure triage for cuOpt; use when the user provides a PR number, branch name, run id, job name, failing matrix, or CI log and wants automated debugging or analysis with `gh` CLI.
 - `skills/skill-evolution/` — Skill evolution: after solving a non-trivial problem, propose skill updates to capture generalizable learnings.
 
 ### Common (concepts only; no API code)
