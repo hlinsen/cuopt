@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -24,8 +24,10 @@
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/sequence.h>
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -34,48 +36,55 @@ namespace cuopt::linear_programming::test {
 
 class test_set_solution_callback_t : public cuopt::internals::set_solution_callback_t {
  public:
-  test_set_solution_callback_t(
-    std::vector<std::pair<rmm::device_uvector<double>, double>>& solutions_)
-    : solutions(solutions_), n_calls(0)
+  test_set_solution_callback_t(std::vector<std::pair<std::vector<double>, double>>& solutions_,
+                               void* expected_user_data_)
+    : solutions(solutions_), expected_user_data(expected_user_data_), n_calls(0)
   {
   }
   // This will check that the we are able to recompute our own solution
-  void set_solution(void* data, void* cost) override
+  void set_solution(void* data, void* cost, void* solution_bound, void* user_data) override
   {
+    EXPECT_EQ(user_data, expected_user_data);
     n_calls++;
-    rmm::cuda_stream_view stream{};
+    auto bound_ptr = static_cast<double*>(solution_bound);
+    EXPECT_FALSE(std::isnan(bound_ptr[0]));
     auto assignment = static_cast<double*>(data);
     auto cost_ptr   = static_cast<double*>(cost);
     if (solutions.empty()) { return; }
 
     auto const& [last_assignment, last_cost] = solutions.back();
-    raft::copy(assignment, last_assignment.data(), last_assignment.size(), stream);
-    raft::copy(cost_ptr, &last_cost, 1, stream);
-    stream.synchronize();
+    std::copy(last_assignment.begin(), last_assignment.end(), assignment);
+    *cost_ptr = last_cost;
   }
-  std::vector<std::pair<rmm::device_uvector<double>, double>>& solutions;
+  std::vector<std::pair<std::vector<double>, double>>& solutions;
+  void* expected_user_data;
   int n_calls;
 };
 
 class test_get_solution_callback_t : public cuopt::internals::get_solution_callback_t {
  public:
-  test_get_solution_callback_t(
-    std::vector<std::pair<rmm::device_uvector<double>, double>>& solutions_in, int n_variables_)
-    : solutions(solutions_in), n_calls(0), n_variables(n_variables_)
+  test_get_solution_callback_t(std::vector<std::pair<std::vector<double>, double>>& solutions_in,
+                               int n_variables_,
+                               void* expected_user_data_)
+    : solutions(solutions_in),
+      expected_user_data(expected_user_data_),
+      n_calls(0),
+      n_variables(n_variables_)
   {
   }
-  void get_solution(void* data, void* cost) override
+  void get_solution(void* data, void* cost, void* solution_bound, void* user_data) override
   {
+    EXPECT_EQ(user_data, expected_user_data);
     n_calls++;
-    rmm::cuda_stream_view stream{};
-    rmm::device_uvector<double> assignment(n_variables, stream);
-    raft::copy(assignment.data(), static_cast<double*>(data), n_variables, stream);
-    auto h_cost = 0.;
-    raft::copy(&h_cost, static_cast<double*>(cost), 1, stream);
-    stream.synchronize();
-    solutions.push_back(std::make_pair(std::move(assignment), h_cost));
+    auto bound_ptr = static_cast<double*>(solution_bound);
+    EXPECT_FALSE(std::isnan(bound_ptr[0]));
+    auto assignment_ptr = static_cast<double*>(data);
+    auto cost_ptr       = static_cast<double*>(cost);
+    std::vector<double> assignment(assignment_ptr, assignment_ptr + n_variables);
+    solutions.push_back(std::make_pair(std::move(assignment), *cost_ptr));
   }
-  std::vector<std::pair<rmm::device_uvector<double>, double>>& solutions;
+  std::vector<std::pair<std::vector<double>, double>>& solutions;
+  void* expected_user_data;
   int n_calls;
   int n_variables;
 };
@@ -98,7 +107,7 @@ void check_solutions(const test_get_solution_callback_t& get_solution_callback,
   }
 }
 
-void test_incumbent_callback(std::string test_instance)
+void test_incumbent_callback(std::string test_instance, bool include_set_callback)
 {
   const raft::handle_t handle_{};
   std::cout << "Running: " << test_instance << std::endl;
@@ -110,24 +119,79 @@ void test_incumbent_callback(std::string test_instance)
 
   auto settings       = mip_solver_settings_t<int, double>{};
   settings.time_limit = 30.;
-  std::vector<std::pair<rmm::device_uvector<double>, double>> solutions;
-  test_get_solution_callback_t get_solution_callback(solutions, op_problem.get_n_variables());
-  test_set_solution_callback_t set_solution_callback(solutions);
-  settings.set_mip_callback(&get_solution_callback);
-  settings.set_mip_callback(&set_solution_callback);
+  settings.presolver  = presolver_t::Papilo;
+  int user_data       = 42;
+  std::vector<std::pair<std::vector<double>, double>> solutions;
+  test_get_solution_callback_t get_solution_callback(
+    solutions, op_problem.get_n_variables(), &user_data);
+  settings.set_mip_callback(&get_solution_callback, &user_data);
+  std::unique_ptr<test_set_solution_callback_t> set_solution_callback;
+  if (include_set_callback) {
+    set_solution_callback = std::make_unique<test_set_solution_callback_t>(solutions, &user_data);
+    settings.set_mip_callback(set_solution_callback.get(), &user_data);
+  }
   auto solution = solve_mip(op_problem, settings);
   EXPECT_GE(get_solution_callback.n_calls, 1);
-  EXPECT_GE(set_solution_callback.n_calls, 1);
+  if (include_set_callback) { EXPECT_GE(set_solution_callback->n_calls, 1); }
   check_solutions(get_solution_callback, mps_problem, settings);
 }
 
-TEST(mip_solve, incumbent_callback_test)
+TEST(mip_solve, incumbent_get_callback_test)
 {
   std::vector<std::string> test_instances = {
     "mip/50v-10.mps", "mip/neos5-free-bound.mps", "mip/swath1.mps"};
   for (const auto& test_instance : test_instances) {
-    test_incumbent_callback(test_instance);
+    test_incumbent_callback(test_instance, false);
   }
+}
+
+TEST(mip_solve, incumbent_get_set_callback_test)
+{
+  std::vector<std::string> test_instances = {
+    "mip/50v-10.mps", "mip/neos5-free-bound.mps", "mip/swath1.mps"};
+  for (const auto& test_instance : test_instances) {
+    test_incumbent_callback(test_instance, true);
+  }
+}
+
+// Verify that when only early heuristics find a feasible incumbent but the solver-space
+// pipeline (B&B + GPU heuristics) does not, the solver still returns that incumbent.
+// B&B runs but exits immediately (node_limit=0); GPU heuristics are disabled so the
+// population stays empty. The fallback in solver.cu must use the OG-space incumbent.
+TEST(mip_solve, early_heuristic_incumbent_fallback)
+{
+  setenv("CUOPT_DISABLE_GPU_HEURISTICS", "1", 1);
+
+  const raft::handle_t handle_{};
+  auto path = make_path_absolute("mip/pk1.mps");
+  cuopt::mps_parser::mps_data_model_t<int, double> mps_problem =
+    cuopt::mps_parser::parse_mps<int, double>(path, false);
+  handle_.sync_stream();
+  auto op_problem = mps_data_model_to_optimization_problem(&handle_, mps_problem);
+
+  auto settings       = mip_solver_settings_t<int, double>{};
+  settings.time_limit = 10.;
+  settings.presolver  = presolver_t::Papilo;
+  settings.node_limit = 0;
+
+  int user_data = 0;
+  std::vector<std::pair<std::vector<double>, double>> callback_solutions;
+  test_get_solution_callback_t get_cb(callback_solutions, op_problem.get_n_variables(), &user_data);
+  settings.set_mip_callback(&get_cb, &user_data);
+
+  auto solution = solve_mip(op_problem, settings);
+
+  unsetenv("CUOPT_DISABLE_GPU_HEURISTICS");
+
+  EXPECT_GE(get_cb.n_calls, 1) << "Early heuristics should have emitted at least one incumbent";
+  auto status = solution.get_termination_status();
+  EXPECT_TRUE(status == mip_termination_status_t::FeasibleFound ||
+              status == mip_termination_status_t::Optimal)
+    << "Expected feasible result, got "
+    << mip_solution_t<int, double>::get_termination_status_string(status);
+  EXPECT_TRUE(std::isfinite(solution.get_objective_value()));
+
+  if (!callback_solutions.empty()) { check_solutions(get_cb, mps_problem, settings); }
 }
 
 }  // namespace cuopt::linear_programming::test

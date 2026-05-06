@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -59,8 +59,7 @@ bounds_strengthening_t<i_t, f_t>::bounds_strengthening_t(
   const csr_matrix_t<i_t, f_t>& Arow,
   const std::vector<char>& row_sense,
   const std::vector<variable_type_t>& var_types)
-  : bounds_changed(problem.num_cols, false),
-    A(problem.A),
+  : A(problem.A),
     Arow(Arow),
     var_types(var_types),
     delta_min_activity(problem.num_rows),
@@ -91,9 +90,10 @@ bounds_strengthening_t<i_t, f_t>::bounds_strengthening_t(
 
 template <typename i_t, typename f_t>
 bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
+  const simplex_solver_settings_t<i_t, f_t>& settings,
+  const std::vector<bool>& bounds_changed,
   std::vector<f_t>& lower_bounds,
-  std::vector<f_t>& upper_bounds,
-  const simplex_solver_settings_t<i_t, f_t>& settings)
+  std::vector<f_t>& upper_bounds)
 {
   const i_t m = A.m;
   const i_t n = A.n;
@@ -102,15 +102,17 @@ bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
   std::vector<bool> variable_changed(n, false);
   std::vector<bool> constraint_changed_next(m, false);
 
+  size_t nnz_processed = 0;
+
   if (!bounds_changed.empty()) {
     std::fill(constraint_changed.begin(), constraint_changed.end(), false);
-    for (i_t i = 0; i < n; ++i) {
-      if (bounds_changed[i]) {
-        const i_t row_start = A.col_start[i];
-        const i_t row_end   = A.col_start[i + 1];
-        for (i_t p = row_start; p < row_end; ++p) {
-          const i_t j           = A.i[p];
-          constraint_changed[j] = true;
+    for (i_t j = 0; j < n; ++j) {
+      if (bounds_changed[j]) {
+        const i_t col_start = A.col_start[j];
+        const i_t col_end   = A.col_start[j + 1];
+        for (i_t p = col_start; p < col_end; ++p) {
+          const i_t i           = A.i[p];
+          constraint_changed[i] = true;
         }
       }
     }
@@ -127,6 +129,7 @@ bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
       if (!constraint_changed[i]) { continue; }
       const i_t row_start = Arow.row_start[i];
       const i_t row_end   = Arow.row_start[i + 1];
+      nnz_processed += (row_end - row_start);
 
       f_t min_a = 0.0;
       f_t max_a = 0.0;
@@ -154,7 +157,7 @@ bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
       bool is_infeasible =
         check_infeasibility<i_t, f_t>(min_a, max_a, cnst_lb, cnst_ub, settings.primal_tol);
       if (is_infeasible) {
-        settings.log.printf(
+        settings.log.debug(
           "Iter:: %d, Infeasible constraint %d, cnst_lb %e, cnst_ub %e, min_a %e, max_a %e\n",
           iter,
           i,
@@ -162,6 +165,7 @@ bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
           cnst_ub,
           min_a,
           max_a);
+        last_nnz_processed = nnz_processed;
         return false;
       }
 
@@ -179,9 +183,10 @@ bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
       f_t new_lb = old_lb;
       f_t new_ub = old_ub;
 
-      const i_t row_start = A.col_start[k];
-      const i_t row_end   = A.col_start[k + 1];
-      for (i_t p = row_start; p < row_end; ++p) {
+      const i_t col_start = A.col_start[k];
+      const i_t col_end   = A.col_start[k + 1];
+      nnz_processed += (col_end - col_start);
+      for (i_t p = col_start; p < col_end; ++p) {
         const i_t i = A.i[p];
 
         if (!constraint_changed[i]) { continue; }
@@ -210,13 +215,14 @@ bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
       new_lb = std::max(new_lb, lower_bounds[k]);
       new_ub = std::min(new_ub, upper_bounds[k]);
 
-      if (new_lb > new_ub + 1e-6) {
-        settings.log.printf(
+      if (new_lb > new_ub + settings.primal_tol) {
+        settings.log.debug(
           "Iter:: %d, Infeasible variable after update %d, %e > %e\n", iter, k, new_lb, new_ub);
+        last_nnz_processed = nnz_processed;
         return false;
       }
       if (new_lb != old_lb || new_ub != old_ub) {
-        for (i_t p = row_start; p < row_end; ++p) {
+        for (i_t p = col_start; p < col_end; ++p) {
           const i_t i                = A.i[p];
           constraint_changed_next[i] = true;
         }
@@ -225,8 +231,8 @@ bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
       lower[k] = std::min(new_lb, new_ub);
       upper[k] = std::max(new_lb, new_ub);
 
-      bool bounds_changed = lb_updated || ub_updated;
-      if (bounds_changed) { num_bounds_changed++; }
+      bool bounds_updated = lb_updated || ub_updated;
+      if (bounds_updated) { num_bounds_changed++; }
     }
 
     if (num_bounds_changed == 0) { break; }
@@ -280,6 +286,7 @@ bool bounds_strengthening_t<i_t, f_t>::bounds_strengthening(
   lower_bounds = lower;
   upper_bounds = upper;
 
+  last_nnz_processed = nnz_processed;
   return true;
 }
 

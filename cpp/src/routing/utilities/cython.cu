@@ -7,8 +7,8 @@
 
 #include <cuopt/routing/cython/cython.hpp>
 #include <cuopt/routing/solve.hpp>
-#include <raft/common/nvtx.hpp>
 #include <raft/core/handle.hpp>
+#include <raft/core/nvtx.hpp>
 #include <rmm/device_buffer.hpp>
 #include <routing/generator/generator.hpp>
 #include <utilities/driver_helpers.cuh>
@@ -183,8 +183,13 @@ std::vector<std::unique_ptr<vehicle_routing_ret_t>> call_batch_solve(
   }
 #endif
 
+  int device_id = raft::resource::get_device_id(*(data_models[0]->get_handle_ptr()));
+
 #pragma omp parallel for num_threads(max_thread)
   for (std::size_t i = 0; i < size; ++i) {
+    // Required in multi-GPU environments to set the device for each thread
+    RAFT_CUDA_TRY(cudaSetDevice(device_id));
+
     auto old_stream = data_models[i]->get_handle_ptr()->get_stream();
     // Make sure previous operations are finished
     data_models[i]->get_handle_ptr()->sync_stream();

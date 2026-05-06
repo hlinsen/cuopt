@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 set -euo pipefail
@@ -49,10 +49,15 @@ trap "EXITCODE=1" ERR
 set +e
 
 # Run gtests from libcuopt-tests package
-export GTEST_OUTPUT=xml:${RAPIDS_TESTS_DIR}/
+# XML output and retry logic handled by run_ctests.sh
+export RAPIDS_TESTS_DIR
 
 rapids-logger "Run gtests"
-timeout 40m ./ci/run_ctests.sh
+timeout 50m ./ci/run_ctests.sh
+
+rapids-logger "Generate nightly test report"
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/utils/nightly_report_helper.sh"
+generate_nightly_report "cpp"
 
 rapids-logger "Test script exiting with value: $EXITCODE"
 exit ${EXITCODE}

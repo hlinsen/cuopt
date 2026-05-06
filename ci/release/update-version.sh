@@ -125,10 +125,6 @@ for DEP in "${DEPENDENCIES[@]}"; do
   done
 done
 
-# Update project.json
-PROJECT_FILE="docs/cuopt/source/project.json"
-sed_runner 's/\("version": "\)[0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]"/\1'${NEXT_FULL_TAG}'"/g' "${PROJECT_FILE}"
-
 # Update README.md version badge
 sed_runner 's/badge\/version-[0-9]\+\.[0-9]\+\.[0-9]\+-blue/badge\/version-'${NEXT_FULL_TAG}'-blue/g' README.md
 
@@ -156,3 +152,6 @@ elif [[ "${RUN_CONTEXT}" == "release" ]]; then
   sed_runner "s|\\bmain\\b|release/${NEXT_SHORT_TAG}|g" docs/cuopt/source/faq.rst
   sed_runner "s|\\bmain\\b|release/${NEXT_SHORT_TAG}|g" docs/cuopt/source/cuopt-python/routing/routing-example.ipynb
 fi
+
+# Update docs version switcher to include the new version
+python ci/utils/update_doc_versions.py

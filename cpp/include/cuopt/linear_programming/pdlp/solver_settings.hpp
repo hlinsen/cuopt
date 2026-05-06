@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -8,12 +8,17 @@
 #pragma once
 
 #include <cuopt/linear_programming/constants.h>
+#include <cuopt/linear_programming/cpu_pdlp_warm_start_data.hpp>
+#include <cuopt/linear_programming/pdlp/pdlp_hyper_params.cuh>
 #include <cuopt/linear_programming/pdlp/pdlp_warm_start_data.hpp>
+#include <cuopt/linear_programming/utilities/internals.hpp>
 #include <optional>
 #include <raft/core/device_span.hpp>
 #include <rmm/device_uvector.hpp>
 
 #include <atomic>
+
+#include <cuda/std/span>
 
 namespace cuopt::linear_programming {
 
@@ -47,9 +52,11 @@ enum pdlp_solver_mode_t : int {
  * @brief Enum representing the different methods that can be used to solve the
  * linear programming problem.
  *
- * Concurrent: Use both PDLP and DualSimplex in parallel.
+ * Concurrent: Use PDLP, Barrier and DualSimplex in parallel.
  * PDLP: Use the PDLP method.
  * DualSimplex: Use the dual simplex method.
+ * Barrier: Use the barrier method
+ * Unset: The value was not set.
  *
  * @note Default method is Concurrent.
  */
@@ -57,7 +64,35 @@ enum method_t : int {
   Concurrent  = CUOPT_METHOD_CONCURRENT,
   PDLP        = CUOPT_METHOD_PDLP,
   DualSimplex = CUOPT_METHOD_DUAL_SIMPLEX,
-  Barrier     = CUOPT_METHOD_BARRIER
+  Barrier     = CUOPT_METHOD_BARRIER,
+  Unset       = CUOPT_METHOD_UNSET
+};
+
+/// Returns the corresponding string from the enum `method_t`.
+inline std::string method_to_string(method_t method)
+{
+  switch (method) {
+    case method_t::DualSimplex: return "Dual Simplex";
+    case method_t::PDLP: return "PDLP";
+    case method_t::Barrier: return "Barrier";
+    case method_t::Concurrent: return "Concurrent";
+    default: return "Unset";
+  }
+}
+
+/**
+ * @brief Enum representing the PDLP precision modes.
+ *
+ * DefaultPrecision: Use the type of the problem (FP64 for double problems).
+ * SinglePrecision:  Run PDLP internally in FP32, converting inputs and outputs.
+ * DoublePrecision:  Explicitly run in FP64 (same as default for double problems).
+ * MixedPrecision:   Use mixed precision SpMV (FP32 matrix with FP64 vectors/compute).
+ */
+enum pdlp_precision_t : int {
+  DefaultPrecision = CUOPT_PDLP_DEFAULT_PRECISION,
+  SinglePrecision  = CUOPT_PDLP_SINGLE_PRECISION,
+  DoublePrecision  = CUOPT_PDLP_DOUBLE_PRECISION,
+  MixedPrecision   = CUOPT_PDLP_MIXED_PRECISION
 };
 
 template <typename i_t, typename f_t>
@@ -116,6 +151,26 @@ class pdlp_solver_settings_t {
                                  i_t size,
                                  rmm::cuda_stream_view stream = rmm::cuda_stream_default);
 
+  /** TODO batch mode: tmp
+   * @brief Set an initial step size.
+   *
+   * @param[in] initial_step_size Initial step size.
+   */
+  // TODO batch mode: tmp
+  void set_initial_step_size(f_t initial_step_size);
+  /**
+   * @brief Set an initial primal weight.
+   *
+   * @param[in] initial_primal_weight Initial primal weight.
+   */
+  void set_initial_primal_weight(f_t initial_primal_weight);
+  /**
+   * @brief Set an initial pdlp iteration.
+   *
+   * @param[in] initial_pdlp_iteration Initial pdlp iteration.
+   */
+  void set_initial_pdlp_iteration(i_t initial_pdlp_iteration);
+
   /**
    * @brief Set the pdlp warm start data. This allows to restart PDLP with a
    * previous solution
@@ -164,6 +219,26 @@ class pdlp_solver_settings_t {
   pdlp_warm_start_data_t<i_t, f_t>& get_pdlp_warm_start_data();
   const pdlp_warm_start_data_view_t<i_t, f_t>& get_pdlp_warm_start_data_view() const noexcept;
 
+  /**
+   * @brief Get the CPU-backed PDLP warm start data (for remote execution)
+   * @return Const reference to cpu_pdlp_warm_start_data_t
+   * @note Used when the solver runs on a CPU-only host via remote execution.
+   *       The data is std::vector-backed rather than device_uvector-backed.
+   */
+  const cpu_pdlp_warm_start_data_t<i_t, f_t>& get_cpu_pdlp_warm_start_data() const noexcept;
+
+  /**
+   * @brief Get mutable CPU-backed PDLP warm start data (for remote execution)
+   * @return Mutable reference to cpu_pdlp_warm_start_data_t
+   */
+  cpu_pdlp_warm_start_data_t<i_t, f_t>& get_cpu_pdlp_warm_start_data() noexcept;
+  // TODO batch mode: tmp
+  std::optional<f_t> get_initial_step_size() const;
+  // TODO batch mode: tmp
+  std::optional<f_t> get_initial_primal_weight() const;
+  // TODO batch mode: tmp
+  std::optional<i_t> get_initial_pdlp_iteration() const;
+
   const rmm::device_uvector<f_t>& get_initial_primal_solution() const;
   const rmm::device_uvector<f_t>& get_initial_dual_solution() const;
 
@@ -177,8 +252,8 @@ class pdlp_solver_settings_t {
     f_t relative_primal_tolerance   = 1.0e-4;
     f_t absolute_gap_tolerance      = 1.0e-4;
     f_t relative_gap_tolerance      = 1.0e-4;
-    f_t primal_infeasible_tolerance = 1.0e-8;
-    f_t dual_infeasible_tolerance   = 1.0e-8;
+    f_t primal_infeasible_tolerance = 1.0e-10;
+    f_t dual_infeasible_tolerance   = 1.0e-10;
   };
 
   tolerances_t get_tolerances() const noexcept;
@@ -189,12 +264,13 @@ class pdlp_solver_settings_t {
   bool detect_infeasibility{false};
   bool strict_infeasibility{false};
   i_t iteration_limit{std::numeric_limits<i_t>::max()};
-  double time_limit{std::numeric_limits<double>::infinity()};
+  f_t time_limit{std::numeric_limits<f_t>::infinity()};
   pdlp_solver_mode_t pdlp_solver_mode{pdlp_solver_mode_t::Stable3};
   bool log_to_console{true};
   std::string log_file{""};
   std::string sol_file{""};
   std::string user_problem_file{""};
+  std::string presolve_file{""};
   bool per_constraint_residual{false};
   bool crossover{false};
   bool cudss_deterministic{false};
@@ -204,26 +280,53 @@ class pdlp_solver_settings_t {
   i_t ordering{-1};
   i_t barrier_dual_initial_point{-1};
   bool eliminate_dense_columns{true};
+  pdlp_precision_t pdlp_precision{pdlp_precision_t::DefaultPrecision};
   bool save_best_primal_so_far{false};
   bool first_primal_feasible{false};
-  bool presolve{false};
+  presolver_t presolver{presolver_t::Default};
   bool dual_postsolve{true};
   int num_gpus{1};
   method_t method{method_t::Concurrent};
   bool inside_mip{false};
   // For concurrent termination
   std::atomic<int>* concurrent_halt{nullptr};
+  // Shared strong branching solved flags for cooperative DS + PDLP
+  cuda::std::span<std::atomic<int>> shared_sb_solved;
   static constexpr f_t minimal_absolute_tolerance = 1.0e-12;
+  pdlp_hyper_params::pdlp_hyper_params_t hyper_params;
+  // Holds the information of new variable lower and upper bounds for each climber in the format:
+  // (variable index, new lower bound, new upper bound)
+  // For each entry in the vector, a new version of the problem (climber) will be solved
+  // concurrently i.e. if new_bounds.size() == 2, then 2 versions of the problem with updated bounds
+  // will be solved concurrently
+  std::vector<std::tuple<i_t, f_t, f_t>> new_bounds;
+  // By default to save memory and speed we don't store and copy each climber's primal and dual
+  // solutions We only retrieve termination statistics and the objective values
+  bool generate_batch_primal_dual_solution{false};
+  // Used to force batch PDLP to solve a subbatch of the problems at a time
+  // The 0 default value will make the solver use its heuristic to determine the subbatch size
+  i_t sub_batch_size{0};
 
  private:
   /** Initial primal solution */
   std::shared_ptr<rmm::device_uvector<f_t>> initial_primal_solution_;
   /** Initial dual solution */
   std::shared_ptr<rmm::device_uvector<f_t>> initial_dual_solution_;
-  // For the C++ interface
+  /** Initial step size */
+  // TODO batch mode: tmp
+  std::optional<f_t> initial_step_size_;
+  /** Initial primal weight */
+  // TODO batch mode: tmp
+  std::optional<f_t> initial_primal_weight_;
+  /** Initial pdlp iteration */
+  // TODO batch mode: tmp
+  std::optional<i_t> initial_pdlp_iteration_;
+  /** GPU-backed warm start data (device_uvector), used by C++ API and local GPU solves */
   pdlp_warm_start_data_t<i_t, f_t> pdlp_warm_start_data_;
-  // For the Cython interface
+  /** Warm start data as spans over external memory, used by Cython/Python interface */
   pdlp_warm_start_data_view_t<i_t, f_t> pdlp_warm_start_data_view_;
+  /** CPU-backed warm start data (std::vector), used for remote execution on CPU-only hosts */
+  cpu_pdlp_warm_start_data_t<i_t, f_t> cpu_pdlp_warm_start_data_;
 
   friend class solver_settings_t<i_t, f_t>;
 };

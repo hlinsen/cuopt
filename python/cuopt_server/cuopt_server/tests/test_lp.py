@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
@@ -70,15 +70,15 @@ def get_std_data_for_lp():
             "time_limit": 5,
             "tolerances": {
                 "optimality": 0.0001,
-                "absolute_primal": 0.0001,
-                "absolute_dual": 0.0001,
-                "absolute_gap": 0.0001,
-                "relative_primal": 0.0001,
-                "relative_dual": 0.0001,
-                "relative_gap": 0.0001,
-                "primal_infeasible": 0.00000001,
-                "dual_infeasible": 0.00000001,
-                "integrality_tolerance": 0.00001,
+                "absolute_primal_tolerance": 0.0001,
+                "absolute_dual_tolerance": 0.0001,
+                "absolute_gap_tolerance": 0.0001,
+                "relative_primal_tolerance": 0.0001,
+                "relative_dual_tolerance": 0.0001,
+                "relative_gap_tolerance": 0.0001,
+                "primal_infeasible_tolerance": 0.00000001,
+                "dual_infeasible_tolerance": 0.00000001,
+                "mip_integrality_tolerance": 0.00001,
             },
         },
     }
@@ -88,7 +88,7 @@ def get_std_data_for_milp():
     data = get_std_data_for_lp()
     data["variable_types"] = ["I", "C"]
     data["maximize"] = True
-    data["solver_config"]["mip_scaling"] = False
+    data["solver_config"]["mip_scaling"] = 0
     return data
 
 
@@ -107,10 +107,10 @@ def test_sample_lp(cuoptproc):  # noqa
 @pytest.mark.parametrize(
     "maximize, scaling, expected_status, heuristics_only",
     [
-        (True, True, MILPTerminationStatus.Optimal.name, True),
-        (False, True, MILPTerminationStatus.Optimal.name, False),
-        (True, False, MILPTerminationStatus.Optimal.name, True),
-        (False, False, MILPTerminationStatus.Optimal.name, False),
+        (True, 1, MILPTerminationStatus.Optimal.name, True),
+        (False, 1, MILPTerminationStatus.Optimal.name, False),
+        (True, 0, MILPTerminationStatus.Optimal.name, True),
+        (False, 0, MILPTerminationStatus.Optimal.name, False),
     ],
 )
 def test_sample_milp(
@@ -123,7 +123,7 @@ def test_sample_milp(
     data = get_std_data_for_milp()
     data["maximize"] = maximize
     data["solver_config"]["mip_scaling"] = scaling
-    data["solver_config"]["heuristics_only"] = heuristics_only
+    data["solver_config"]["mip_heuristics_only"] = heuristics_only
     data["solver_config"]["num_cpu_threads"] = 4
     res = get_lp(client, data)
 

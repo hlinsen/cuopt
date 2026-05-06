@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 set -euo pipefail
@@ -25,9 +25,18 @@ cuopt-sh-client @ file://$(echo ${CUOPT_SH_CLIENT_WHEELHOUSE}/cuopt_sh_client-*.
 libcuopt-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo ${LIBCUOPT_WHEELHOUSE}/libcuopt_${RAPIDS_PY_CUDA_SUFFIX}-*.whl)
 EOF
 
-# echo to expand wildcard before adding `[extra]` requires for pip
+# generate constraints (possibly pinning to oldest support versions of dependencies)
+rapids-generate-pip-constraints test_python "${PIP_CONSTRAINT}"
+
+# notes:
+#
+#   * echo to expand wildcard before adding `[test]` requires for pip
+#   * just providing --constraint="${PIP_CONSTRAINT}" to be explicit, and because
+#     that environment variable is ignored if any other --constraint are passed via the CLI
+#
 rapids-pip-retry install \
-    --extra-index-url=https://pypi.nvidia.com \
+    --prefer-binary \
+    --constraint "${PIP_CONSTRAINT}" \
     --constraint "${PIP_CONSTRAINT}" \
     "${CUOPT_MPS_PARSER_WHEELHOUSE}"/cuopt_mps_parser*.whl \
     "$(echo "${CUOPT_WHEELHOUSE}"/cuopt*.whl)[test]" \
@@ -54,6 +63,14 @@ cd -
 RAPIDS_DATASET_ROOT_DIR="$(realpath datasets)"
 export RAPIDS_DATASET_ROOT_DIR
 
+RAPIDS_TESTS_DIR=${RAPIDS_TESTS_DIR:-"${PWD}/test-results"}
+export RAPIDS_TESTS_DIR
+mkdir -p "${RAPIDS_TESTS_DIR}"
+
+EXITCODE=0
+trap "EXITCODE=1" ERR
+set +e
+
 # Run CLI tests
 timeout 10m bash ./python/libcuopt/libcuopt/tests/test_cli.sh
 
@@ -62,10 +79,20 @@ timeout 10m bash ./python/libcuopt/libcuopt/tests/test_cli.sh
 # Due to race condition in certain cases UCX might not be able to cleanup properly, so we set the number of threads to 1
 export OMP_NUM_THREADS=1
 
-timeout 30m ./ci/run_cuopt_pytests.sh --verbose --capture=no
+timeout 30m ./ci/run_cuopt_pytests.sh \
+  --junitxml="${RAPIDS_TESTS_DIR}/junit-wheel-cuopt.xml" \
+  --verbose --capture=no
 
 # run thirdparty integration tests for only nightly builds
 if [[ "${RAPIDS_BUILD_TYPE}" == "nightly" ]]; then
     ./ci/thirdparty-testing/run_jump_tests.sh
     ./ci/thirdparty-testing/run_cvxpy_tests.sh
+    ./ci/thirdparty-testing/run_pulp_tests.sh
+    ./ci/thirdparty-testing/run_pyomo_tests.sh
 fi
+
+# Generate nightly test report
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/utils/nightly_report_helper.sh"
+generate_nightly_report "wheel-python" --with-python-version
+
+exit ${EXITCODE}

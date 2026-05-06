@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -11,11 +11,12 @@
 #include <cuopt/error.hpp>
 #include <cuopt/linear_programming/solve.hpp>
 #include <cuopt/linear_programming/utilities/internals.hpp>
-#include <linear_programming/utilities/problem_checking.cuh>
-#include <mip/feasibility_jump/feasibility_jump.cuh>
-#include <mip/solution/solution.cuh>
-#include <mip/solver_context.cuh>
+#include <mip_heuristics/feasibility_jump/feasibility_jump.cuh>
+#include <mip_heuristics/mip_scaling_strategy.cuh>
+#include <mip_heuristics/solution/solution.cuh>
+#include <mip_heuristics/solver_context.cuh>
 #include <mps_parser/parser.hpp>
+#include <pdlp/utilities/problem_checking.cuh>
 #include <utilities/common_utils.hpp>
 
 #include <raft/sparse/detail/cusparse_wrappers.h>
@@ -77,16 +78,7 @@ static fj_state_t run_fj(std::string test_instance,
   // run the problem constructor of MIP, so that we do bounds standardization
   detail::problem_t<int, double> problem(op_problem);
   problem.preprocess_problem();
-  detail::pdhg_solver_t<int, double> pdhg_solver(problem.handle_ptr, problem);
-  detail::pdlp_initial_scaling_strategy_t<int, double> scaling(&handle_,
-                                                               problem,
-                                                               10,
-                                                               1.0,
-                                                               pdhg_solver,
-                                                               problem.reverse_coefficients,
-                                                               problem.reverse_offsets,
-                                                               problem.reverse_constraints,
-                                                               true);
+  detail::mip_scaling_strategy_t<int, double> scaling(problem);
 
   auto settings       = mip_solver_settings_t<int, double>{};
   settings.time_limit = 30.;

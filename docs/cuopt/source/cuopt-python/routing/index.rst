@@ -11,4 +11,4 @@ This section contains details on the cuOpt routing optimization Python API.
    :titlesonly:
 
    routing-api.rst
-   Routing Example <routing-example.ipynb>
+   routing-examples.rst

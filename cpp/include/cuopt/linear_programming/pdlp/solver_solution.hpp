@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -10,6 +10,7 @@
 #include <cuopt/linear_programming/constants.h>
 #include <cuopt/error.hpp>
 #include <cuopt/linear_programming/pdlp/pdlp_warm_start_data.hpp>
+#include <cuopt/linear_programming/pdlp/solver_settings.hpp>
 #include <cuopt/linear_programming/utilities/internals.hpp>
 
 #include <rmm/cuda_stream_view.hpp>
@@ -25,15 +26,16 @@ namespace cuopt::linear_programming {
 
 // Possible reasons for terminating
 enum class pdlp_termination_status_t : int8_t {
-  NoTermination    = CUOPT_TERIMINATION_STATUS_NO_TERMINATION,
-  NumericalError   = CUOPT_TERIMINATION_STATUS_NUMERICAL_ERROR,
-  Optimal          = CUOPT_TERIMINATION_STATUS_OPTIMAL,
-  PrimalInfeasible = CUOPT_TERIMINATION_STATUS_INFEASIBLE,
-  DualInfeasible   = CUOPT_TERIMINATION_STATUS_UNBOUNDED,
-  IterationLimit   = CUOPT_TERIMINATION_STATUS_ITERATION_LIMIT,
-  TimeLimit        = CUOPT_TERIMINATION_STATUS_TIME_LIMIT,
-  PrimalFeasible   = CUOPT_TERIMINATION_STATUS_PRIMAL_FEASIBLE,
-  ConcurrentLimit  = CUOPT_TERIMINATION_STATUS_CONCURRENT_LIMIT
+  NoTermination         = CUOPT_TERMINATION_STATUS_NO_TERMINATION,
+  NumericalError        = CUOPT_TERMINATION_STATUS_NUMERICAL_ERROR,
+  Optimal               = CUOPT_TERMINATION_STATUS_OPTIMAL,
+  PrimalInfeasible      = CUOPT_TERMINATION_STATUS_INFEASIBLE,
+  DualInfeasible        = CUOPT_TERMINATION_STATUS_UNBOUNDED,
+  IterationLimit        = CUOPT_TERMINATION_STATUS_ITERATION_LIMIT,
+  TimeLimit             = CUOPT_TERMINATION_STATUS_TIME_LIMIT,
+  PrimalFeasible        = CUOPT_TERMINATION_STATUS_PRIMAL_FEASIBLE,
+  ConcurrentLimit       = CUOPT_TERMINATION_STATUS_CONCURRENT_LIMIT,
+  UnboundedOrInfeasible = CUOPT_TERMINATION_STATUS_UNBOUNDED_OR_INFEASIBLE
 };
 
 /**
@@ -88,8 +90,8 @@ class optimization_problem_solution_t : public base_solution_t {
     /** Solve time in seconds */
     double solve_time{std::numeric_limits<double>::signaling_NaN()};
 
-    /** Whether the problem was solved by PDLP or Dual Simplex */
-    bool solved_by_pdlp{false};
+    /** Whether the problem was solved by PDLP, Barrier or Dual Simplex */
+    method_t solved_by = method_t::Unset;
   };
 
   /**
@@ -125,24 +127,26 @@ class optimization_problem_solution_t : public base_solution_t {
    * @param[in] termination_stats The termination statistics
    * @param[in] termination_status_ The termination reason
    */
-  optimization_problem_solution_t(rmm::device_uvector<f_t>& final_primal_solution,
-                                  rmm::device_uvector<f_t>& final_dual_solution,
-                                  rmm::device_uvector<f_t>& final_reduced_cost,
-                                  pdlp_warm_start_data_t<i_t, f_t>& warm_start_data,
-                                  const std::string objective_name,
-                                  const std::vector<std::string>& var_names,
-                                  const std::vector<std::string>& row_names,
-                                  additional_termination_information_t& termination_stats,
-                                  pdlp_termination_status_t termination_status_);
+  optimization_problem_solution_t(
+    rmm::device_uvector<f_t>& final_primal_solution,
+    rmm::device_uvector<f_t>& final_dual_solution,
+    rmm::device_uvector<f_t>& final_reduced_cost,
+    pdlp_warm_start_data_t<i_t, f_t>&& warm_start_data,
+    const std::string objective_name,
+    const std::vector<std::string>& var_names,
+    const std::vector<std::string>& row_names,
+    std::vector<additional_termination_information_t>&& termination_stats,
+    std::vector<pdlp_termination_status_t>&& termination_status_);
 
-  optimization_problem_solution_t(rmm::device_uvector<f_t>& final_primal_solution,
-                                  rmm::device_uvector<f_t>& final_dual_solution,
-                                  rmm::device_uvector<f_t>& final_reduced_cost,
-                                  const std::string objective_name,
-                                  const std::vector<std::string>& var_names,
-                                  const std::vector<std::string>& row_names,
-                                  additional_termination_information_t& termination_stats,
-                                  pdlp_termination_status_t termination_status_);
+  optimization_problem_solution_t(
+    rmm::device_uvector<f_t>& final_primal_solution,
+    rmm::device_uvector<f_t>& final_dual_solution,
+    rmm::device_uvector<f_t>& final_reduced_cost,
+    const std::string objective_name,
+    const std::vector<std::string>& var_names,
+    const std::vector<std::string>& row_names,
+    std::vector<additional_termination_information_t>&& termination_stats,
+    std::vector<pdlp_termination_status_t>&& termination_status_);
 
   /**
    * @brief Construct variant used in best_primal_so_far to do a deep copy instead of move since we
@@ -193,7 +197,7 @@ class optimization_problem_solution_t : public base_solution_t {
    * @brief Returns the final status as a human readable string
    * @return The human readable solver status string
    */
-  std::string get_termination_status_string() const;
+  std::string get_termination_status_string(i_t id = 0) const;
   static std::string get_termination_status_string(pdlp_termination_status_t termination_status);
 
   /**
@@ -202,13 +206,13 @@ class optimization_problem_solution_t : public base_solution_t {
    * solver.
    * @return Best objective value
    */
-  f_t get_objective_value() const;
+  f_t get_objective_value(i_t = 0) const;
 
   /**
    * @brief Returns the dual objective value of the solution as a `f_t`.
    * @return objective value of the dual problem
    */
-  f_t get_dual_objective_value() const;
+  f_t get_dual_objective_value(i_t = 0) const;
 
   /**
    * @brief Returns the solution for the values of the primal variables as a vector of `f_t`.
@@ -238,7 +242,8 @@ class optimization_problem_solution_t : public base_solution_t {
    * @brief Get termination reason
    * @return Termination reason
    */
-  pdlp_termination_status_t get_termination_status() const;
+  pdlp_termination_status_t get_termination_status(i_t id = 0) const;
+  std::vector<pdlp_termination_status_t>& get_terminations_status();
 
   /**
    * @brief Get the error status
@@ -251,7 +256,9 @@ class optimization_problem_solution_t : public base_solution_t {
    * statistics regarding the solution and solver state at the end of solving.
    * @return Additional termination information
    */
-  additional_termination_information_t get_additional_termination_information() const;
+  additional_termination_information_t get_additional_termination_information(i_t id = 0) const;
+  std::vector<additional_termination_information_t> get_additional_termination_informations() const;
+  std::vector<additional_termination_information_t>& get_additional_termination_informations();
 
   pdlp_warm_start_data_t<i_t, f_t>& get_pdlp_warm_start_data();
 
@@ -290,9 +297,9 @@ class optimization_problem_solution_t : public base_solution_t {
   rmm::device_uvector<f_t> reduced_cost_;
   pdlp_warm_start_data_t<i_t, f_t> pdlp_warm_start_data_;
 
-  pdlp_termination_status_t termination_status_;
+  std::vector<pdlp_termination_status_t> termination_status_{1};
 
-  additional_termination_information_t termination_stats_;
+  std::vector<additional_termination_information_t> termination_stats_{1};
 
   /** name of the objective (only a single objective is currently allowed) */
   std::string objective_name_;

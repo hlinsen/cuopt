@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SPDX-FileCopyrightText: Copyright (c) 2021-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 
@@ -15,11 +15,12 @@ REPODIR=$(cd "$(dirname "$0")"; pwd)
 LIBCUOPT_BUILD_DIR=${LIBCUOPT_BUILD_DIR:=${REPODIR}/cpp/build}
 LIBMPS_PARSER_BUILD_DIR=${LIBMPS_PARSER_BUILD_DIR:=${REPODIR}/cpp/libmps_parser/build}
 
-VALIDARGS="clean libcuopt libmps_parser cuopt_mps_parser cuopt cuopt_server cuopt_sh_client docs deb -a -b -g -fsanitize -v -l= --verbose-pdlp --build-lp-only  --no-fetch-rapids --skip-c-python-adapters --skip-tests-build --skip-routing-build --skip-fatbin-write --host-lineinfo [--cmake-args=\\\"<args>\\\"] [--cache-tool=<tool>] -n --allgpuarch --ci-only-arch --show_depr_warn -h --help"
+VALIDARGS="clean libcuopt cuopt_grpc_server libmps_parser cuopt_mps_parser cuopt cuopt_server cuopt_sh_client docs deb -a -b -g -fsanitize -tsan -msan -v -l= --verbose-pdlp --build-lp-only  --no-fetch-rapids --skip-c-python-adapters --skip-tests-build --skip-routing-build --skip-grpc-build --skip-fatbin-write --host-lineinfo [--cmake-args=\\\"<args>\\\"] [--cache-tool=<tool>] -n --allgpuarch --ci-only-arch --show_depr_warn -h --help"
 HELP="$0 [<target> ...] [<flag> ...]
  where <target> is:
    clean            - remove all existing build artifacts and configuration (start over)
    libcuopt         - build the cuopt C++ code
+   cuopt_grpc_server - build only the gRPC server binary (configures + builds libcuopt as needed)
    libmps_parser    - build the libmps_parser C++ code
    cuopt_mps_parser - build the cuopt_mps_parser python package
    cuopt            - build the cuopt Python package
@@ -32,7 +33,9 @@ HELP="$0 [<target> ...] [<flag> ...]
    -g               - build for debug
    -a               - Enable assertion (by default in debug mode)
    -b               - Build with benchmark settings
-   -fsanitize       - Build with sanitizer
+   -fsanitize       - Build with AddressSanitizer and UndefinedBehaviorSanitizer
+   -tsan            - Build with ThreadSanitizer (cannot be used with -fsanitize or -msan)
+   -msan            - Build with MemorySanitizer (cannot be used with -fsanitize or -tsan)
    -n               - no install step
    --no-fetch-rapids  - don't fetch rapids dependencies
    -l=              - log level. Options are: TRACE | DEBUG | INFO | WARN | ERROR | CRITICAL | OFF. Default=INFO
@@ -41,6 +44,7 @@ HELP="$0 [<target> ...] [<flag> ...]
    --skip-c-python-adapters - skip building C and Python adapter files (cython_solve.cu and cuopt_c.cpp)
    --skip-tests-build  - disable building of all tests
    --skip-routing-build - skip building routing components
+   --skip-grpc-build    - skip building gRPC and protobuf components (auto-enabled with -tsan)
    --skip-fatbin-write      - skip the fatbin write
    --host-lineinfo           - build with debug line information for host code
    --cache-tool=<tool> - pass the build cache tool (eg: ccache, sccache, distcc) that will be used
@@ -51,7 +55,7 @@ HELP="$0 [<target> ...] [<flag> ...]
    --show_depr_warn - show cmake deprecation warnings
    -h               - print this text
 
- default action (no args) is to build and install 'libcuopt' then 'cuopt' then 'docs' targets
+ default action (no args) is to build and install 'libmps_parser', 'libcuopt', 'cuopt', 'cuopt_mps_parser', 'cuopt_server', and 'cuopt_sh_client' targets (pass 'docs' explicitly to build documentation)
 
  libcuopt build dir is: ${LIBCUOPT_BUILD_DIR}
 
@@ -76,15 +80,19 @@ BUILD_ALL_GPU_ARCH=0
 BUILD_CI_ONLY=0
 BUILD_LP_ONLY=0
 BUILD_SANITIZER=0
+BUILD_TSAN=0
+BUILD_MSAN=0
 SKIP_C_PYTHON_ADAPTERS=0
 SKIP_TESTS_BUILD=0
 SKIP_ROUTING_BUILD=0
+SKIP_GRPC_BUILD=0
 WRITE_FATBIN=1
 HOST_LINEINFO=0
 CACHE_ARGS=()
 PYTHON_ARGS_FOR_INSTALL=("-m" "pip" "install" "--no-build-isolation" "--no-deps")
 LOGGING_ACTIVE_LEVEL="INFO"
 FETCH_RAPIDS=ON
+PARALLEL_LEVEL=${PARALLEL_LEVEL:=$(nproc)}
 
 # Set defaults for vars that may not have been defined externally
 #  FIXME: if PREFIX is not set, check CONDA_PREFIX, but there is no fallback
@@ -230,6 +238,13 @@ fi
 if hasArg -fsanitize; then
     BUILD_SANITIZER=1
 fi
+if hasArg -tsan; then
+    BUILD_TSAN=1
+    SKIP_GRPC_BUILD=1
+fi
+if hasArg -msan; then
+    BUILD_MSAN=1
+fi
 if hasArg --skip-c-python-adapters; then
     SKIP_C_PYTHON_ADAPTERS=1
 fi
@@ -238,6 +253,9 @@ if hasArg --skip-tests-build; then
 fi
 if hasArg --skip-routing-build; then
     SKIP_ROUTING_BUILD=1
+fi
+if hasArg --skip-grpc-build; then
+    SKIP_GRPC_BUILD=1
 fi
 if hasArg --skip-fatbin-write; then
     WRITE_FATBIN=0
@@ -298,6 +316,24 @@ if [ ${BUILD_LP_ONLY} -eq 1 ] && [ ${SKIP_C_PYTHON_ADAPTERS} -eq 0 ]; then
     exit 1
 fi
 
+if [ ${BUILD_SANITIZER} -eq 1 ] && [ ${BUILD_TSAN} -eq 1 ]; then
+    echo "ERROR: -fsanitize and -tsan cannot be used together"
+    echo "AddressSanitizer and ThreadSanitizer are mutually exclusive"
+    exit 1
+fi
+
+if [ ${BUILD_SANITIZER} -eq 1 ] && [ ${BUILD_MSAN} -eq 1 ]; then
+    echo "ERROR: -fsanitize and -msan cannot be used together"
+    echo "AddressSanitizer and MemorySanitizer are mutually exclusive"
+    exit 1
+fi
+
+if [ ${BUILD_TSAN} -eq 1 ] && [ ${BUILD_MSAN} -eq 1 ]; then
+    echo "ERROR: -tsan and -msan cannot be used together"
+    echo "ThreadSanitizer and MemorySanitizer are mutually exclusive"
+    exit 1
+fi
+
 if  [ ${BUILD_ALL_GPU_ARCH} -eq 1 ]; then
     CUOPT_CMAKE_CUDA_ARCHITECTURES="RAPIDS"
     echo "Building for *ALL* supported GPU architectures..."
@@ -329,8 +365,8 @@ if buildAll || hasArg libmps_parser; then
 fi
 
 ################################################################################
-# Configure, build, and install libcuopt
-if buildAll || hasArg libcuopt; then
+# Configure and build libcuopt (and optionally just the gRPC server)
+if buildAll || hasArg libcuopt || hasArg cuopt_grpc_server; then
     mkdir -p "${LIBCUOPT_BUILD_DIR}"
     cd "${LIBCUOPT_BUILD_DIR}"
     cmake -DDEFINE_ASSERT=${DEFINE_ASSERT} \
@@ -344,19 +380,28 @@ if buildAll || hasArg libcuopt; then
           -DFETCH_RAPIDS=${FETCH_RAPIDS} \
           -DBUILD_LP_ONLY=${BUILD_LP_ONLY} \
           -DBUILD_SANITIZER=${BUILD_SANITIZER} \
+          -DBUILD_TSAN=${BUILD_TSAN} \
+          -DBUILD_MSAN=${BUILD_MSAN} \
           -DSKIP_C_PYTHON_ADAPTERS=${SKIP_C_PYTHON_ADAPTERS} \
           -DBUILD_TESTS=$((1 - ${SKIP_TESTS_BUILD})) \
           -DSKIP_ROUTING_BUILD=${SKIP_ROUTING_BUILD} \
+          -DSKIP_GRPC_BUILD=${SKIP_GRPC_BUILD} \
           -DWRITE_FATBIN=${WRITE_FATBIN} \
           -DHOST_LINEINFO=${HOST_LINEINFO} \
+          -DPARALLEL_LEVEL="${PARALLEL_LEVEL}" \
           -DINSTALL_TARGET="${INSTALL_TARGET}" \
           "${CACHE_ARGS[@]}" \
           "${EXTRA_CMAKE_ARGS[@]}" \
           "${REPODIR}"/cpp
-    if hasArg -n; then
-        cmake --build "${LIBCUOPT_BUILD_DIR}" ${VERBOSE_FLAG}
+    JFLAG="${PARALLEL_LEVEL:+-j${PARALLEL_LEVEL}}"
+    if hasArg cuopt_grpc_server && ! hasArg libcuopt && ! buildAll; then
+        # Build only the gRPC server (ninja resolves libcuopt as a dependency)
+        cmake --build "${LIBCUOPT_BUILD_DIR}" --target cuopt_grpc_server ${VERBOSE_FLAG} ${JFLAG}
+    elif hasArg -n; then
+        # Manual make invocation to start its jobserver
+        make ${JFLAG} -C "${REPODIR}/cpp" LIBCUOPT_BUILD_DIR="${LIBCUOPT_BUILD_DIR}" VERBOSE_FLAG="${VERBOSE_FLAG}" PARALLEL_LEVEL="${PARALLEL_LEVEL}" ninja-build
     else
-        cmake --build "${LIBCUOPT_BUILD_DIR}" --target ${INSTALL_TARGET} ${VERBOSE_FLAG} -j"${PARALLEL_LEVEL}"
+        cmake --build "${LIBCUOPT_BUILD_DIR}" --target ${INSTALL_TARGET} ${VERBOSE_FLAG} ${JFLAG}
     fi
 fi
 
@@ -405,8 +450,8 @@ if buildAll || hasArg cuopt_sh_client; then
     python "${PYTHON_ARGS_FOR_INSTALL[@]}" .
 fi
 
-# Build the docs
-if buildAll || hasArg docs; then
+# Build the docs (opt-in; pass 'docs' explicitly to build)
+if hasArg docs; then
     cd "${REPODIR}"/cpp/doxygen
     doxygen Doxyfile
 

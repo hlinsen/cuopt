@@ -1,5 +1,5 @@
 # cmake-format: off
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # cmake-format: on
 
@@ -15,6 +15,12 @@ project(
   VERSION "${RAPIDS_VERSION}"
   LANGUAGES CXX
 )
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Disable C++20 module scanning as the codebase doesn't use modules
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF CACHE BOOL "Disable C++20 module scanning")
 
 # Write the version header
 rapids_cmake_write_version_file(include/mps_parser/version_config.hpp)
@@ -77,11 +83,8 @@ add_library(mps_parser SHARED
 set_target_properties(mps_parser
   PROPERTIES BUILD_RPATH "\$ORIGIN"
   INSTALL_RPATH "\$ORIGIN"
-
-  # set target compile options
-  CXX_STANDARD 17
-  CXX_STANDARD_REQUIRED ON
   INTERFACE_POSITION_INDEPENDENT_CODE ON
+  CXX_SCAN_FOR_MODULES OFF
 )
 
 target_compile_options(mps_parser
@@ -107,6 +110,7 @@ add_library(cuopt::mps_parser ALIAS mps_parser)
 target_include_directories(mps_parser
   PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src"
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -131,8 +135,9 @@ endif(BUILD_TESTS)
 
 # ##################################################################################################
 # * mps_parser Install ----------------------------------------------------------------------------
+rapids_cmake_install_lib_dir(mps_parser_lib_dir)
 install(TARGETS mps_parser
-  DESTINATION lib
+  DESTINATION ${mps_parser_lib_dir}
   EXPORT mps-parser-exports)
 
 install(DIRECTORY include/mps_parser/

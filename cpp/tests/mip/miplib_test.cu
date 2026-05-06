@@ -1,13 +1,13 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
 
 #include "../linear_programming/utilities/pdlp_test_utilities.cuh"
+#include "branch_and_bound/branch_and_bound.hpp"
 #include "cuopt/linear_programming/mip/solver_settings.hpp"
-#include "dual_simplex/branch_and_bound.hpp"
 #include "dual_simplex/simplex_solver_settings.hpp"
 #include "mip_utils.cuh"
 
@@ -68,6 +68,26 @@ TEST(mip_solve, run_small_tests)
   for (const auto& test_instance : test_instances) {
     test_miplib_file(test_instance, settings);
   }
+}
+
+// See https://github.com/NVIDIA/cuopt/pull/1111
+TEST(mip_solve, low_thread_count_test)
+{
+  mip_solver_settings_t<int, double> settings;
+  settings.num_cpu_threads = 1;
+  settings.time_limit      = 30;
+
+  const raft::handle_t handle_{};
+
+  auto path = make_path_absolute("mip/dominating_set.mps");
+  cuopt::mps_parser::mps_data_model_t<int, double> problem =
+    cuopt::mps_parser::parse_mps<int, double>(path, false);
+  handle_.sync_stream();
+
+  mip_solution_t<int, double> solution = solve_mip(&handle_, problem, settings);
+  EXPECT_EQ(solution.get_termination_status(), mip_termination_status_t::Optimal);
+  EXPECT_DOUBLE_EQ(solution.get_objective_value(), 3.0);
+  test_variable_bounds(problem, solution.get_solution(), settings);
 }
 
 }  // namespace cuopt::linear_programming::test

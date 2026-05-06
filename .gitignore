@@ -52,6 +52,9 @@ cpp/doxygen/xml
 token_cache.json
 version_cache.json
 
+# Clang compilation database
+compile_commands.json
+
 # Local Server Error Log
 error_log.txt
 
@@ -68,3 +71,6 @@ docs/cuopt/build
 cpp/include/cuopt/semantic_version.hpp
 !datasets/quadratic_programming
 !datasets/quadratic_programming/**
+
+# conda env (recommended name)
+.cuopt_env

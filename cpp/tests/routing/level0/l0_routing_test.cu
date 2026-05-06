@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -10,8 +10,6 @@
 #include <routing/utilities/check_constraints.hpp>
 #include <routing/utilities/data_model.hpp>
 #include <routing/utilities/retail_params.hpp>
-
-#include <raft/random/rng.cuh>
 
 #include <thrust/iterator/constant_iterator.h>
 #include <thrust/sequence.h>
@@ -320,7 +318,7 @@ class routing_retail_test_t : public base_test_t<i_t, f_t>,
     this->populate_device_vectors();
   }
 
-  void TearDown() {}
+  void TearDown() override {}
 
   void test_cvrptw()
   {

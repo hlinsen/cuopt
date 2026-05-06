@@ -1,5 +1,5 @@
 # cmake-format: off
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # cmake-format: on
 
@@ -12,17 +12,16 @@ function(ConfigureTest CMAKE_TEST_NAME)
 
     set_target_properties(${CMAKE_TEST_NAME}
         PROPERTIES
-        # set target compile options
-        CXX_STANDARD 17
-        CXX_STANDARD_REQUIRED ON
-        INTERFACE_POSITION_INDEPENDENT_CODE ON
-        )
+        POSITION_INDEPENDENT_CODE ON
+        CXX_SCAN_FOR_MODULES OFF
+    )
 
     target_include_directories(${CMAKE_TEST_NAME}
         PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../include"
         "${CMAKE_CURRENT_SOURCE_DIR}/../src"
         "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests"
     )
 
     target_link_libraries(${CMAKE_TEST_NAME}
@@ -50,4 +49,5 @@ endfunction()
  ConfigureTest(MPS_PARSER_TEST
      mps_parser_test.cpp
  )
+ set_tests_properties(MPS_PARSER_TEST PROPERTIES LABELS "numopt")
 ###################################################################################################

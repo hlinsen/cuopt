@@ -8,11 +8,11 @@
 #include "../linear_programming/utilities/pdlp_test_utilities.cuh"
 #include "mip_utils.cuh"
 
-#include <linear_programming/pdlp.cuh>
-#include <linear_programming/utilities/problem_checking.cuh>
-#include <mip/presolve/trivial_presolve.cuh>
-#include <mip/relaxed_lp/relaxed_lp.cuh>
+#include <mip_heuristics/presolve/trivial_presolve.cuh>
+#include <mip_heuristics/relaxed_lp/relaxed_lp.cuh>
 #include <mps_parser/parser.hpp>
+#include <pdlp/pdlp.cuh>
+#include <pdlp/utilities/problem_checking.cuh>
 #include <utilities/common_utils.hpp>
 #include <utilities/error.hpp>
 
@@ -41,13 +41,6 @@ void init_handler(const raft::handle_t* handle_ptr)
     handle_ptr->get_cublas_handle(), CUBLAS_POINTER_MODE_DEVICE, handle_ptr->get_stream()));
   RAFT_CUSPARSE_TRY(raft::sparse::detail::cusparsesetpointermode(
     handle_ptr->get_cusparse_handle(), CUSPARSE_POINTER_MODE_DEVICE, handle_ptr->get_stream()));
-}
-
-void setup_pdlp(rmm::cuda_stream_view stream_view)
-{
-  detail::set_adaptive_step_size_hyper_parameters(stream_view);
-  detail::set_restart_hyper_parameters(stream_view);
-  detail::set_pdlp_hyper_parameters(stream_view);
 }
 
 std::vector<int> select_k_random(int population_size, int sample_size)
@@ -140,7 +133,6 @@ void test_elim_var_solution(std::string test_instance)
   handle_.sync_stream();
   auto op_problem = mps_data_model_to_optimization_problem(&handle_, mps_problem);
   problem_checking_t<int, double>::check_problem_representation(op_problem);
-  setup_pdlp(handle_.get_stream());
   init_handler(op_problem.get_handle_ptr());
   // run the problem constructor of MIP, so that we do bounds standardization
   detail::problem_t<int, double> standardized_problem(op_problem);
@@ -160,8 +152,8 @@ void test_elim_var_solution(std::string test_instance)
   auto result_1 = detail::get_relaxed_lp_solution(standardized_problem, solution_1, lp_settings);
   solution_1.compute_feasibility();
   // the solution might not be feasible per row as we are getting the result of pdlp
-  bool sol_1_feasible = (int)result_1.get_termination_status() == CUOPT_TERIMINATION_STATUS_OPTIMAL;
-  EXPECT_EQ((int)result_1.get_termination_status(), CUOPT_TERIMINATION_STATUS_OPTIMAL);
+  bool sol_1_feasible = (int)result_1.get_termination_status() == CUOPT_TERMINATION_STATUS_OPTIMAL;
+  EXPECT_EQ((int)result_1.get_termination_status(), CUOPT_TERMINATION_STATUS_OPTIMAL);
   standardized_problem.post_process_solution(solution_1);
   solution_1.problem_ptr = &original_problem;
   auto opt_sol_1         = solution_1.get_solution(sol_1_feasible, solver_stats_t<int, double>{});
@@ -189,8 +181,8 @@ void test_elim_var_solution(std::string test_instance)
   // run the problem through pdlp
   auto result_2 = detail::get_relaxed_lp_solution(sub_problem, solution_2, lp_settings_2);
   solution_2.compute_feasibility();
-  bool sol_2_feasible = (int)result_2.get_termination_status() == CUOPT_TERIMINATION_STATUS_OPTIMAL;
-  EXPECT_EQ((int)result_2.get_termination_status(), CUOPT_TERIMINATION_STATUS_OPTIMAL);
+  bool sol_2_feasible = (int)result_2.get_termination_status() == CUOPT_TERMINATION_STATUS_OPTIMAL;
+  EXPECT_EQ((int)result_2.get_termination_status(), CUOPT_TERMINATION_STATUS_OPTIMAL);
   sub_problem.post_process_solution(solution_2);
   solution_2.problem_ptr = &original_problem;
   auto opt_sol_2         = solution_2.get_solution(sol_2_feasible, solver_stats_t<int, double>{});

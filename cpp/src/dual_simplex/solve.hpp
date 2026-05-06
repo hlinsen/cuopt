@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -13,22 +13,46 @@
 #include <dual_simplex/simplex_solver_settings.hpp>
 #include <dual_simplex/types.hpp>
 
+namespace cuopt {
+struct work_limit_context_t;
+}
+
 namespace cuopt::linear_programming::dual_simplex {
 
 template <typename i_t, typename f_t>
 bool is_mip(const user_problem_t<i_t, f_t>& problem);
 
 enum class lp_status_t {
-  OPTIMAL          = 0,
-  INFEASIBLE       = 1,
-  UNBOUNDED        = 2,
-  ITERATION_LIMIT  = 3,
-  TIME_LIMIT       = 4,
-  NUMERICAL_ISSUES = 5,
-  CUTOFF           = 6,
-  CONCURRENT_LIMIT = 7,
-  UNSET            = 8
+  OPTIMAL                 = 0,
+  INFEASIBLE              = 1,
+  UNBOUNDED               = 2,
+  UNBOUNDED_OR_INFEASIBLE = 3,
+  ITERATION_LIMIT         = 4,
+  TIME_LIMIT              = 5,
+  NUMERICAL_ISSUES        = 6,
+  CUTOFF                  = 7,
+  CONCURRENT_LIMIT        = 8,
+  WORK_LIMIT              = 9,
+  UNSET                   = 10
 };
+
+static std::string lp_status_to_string(lp_status_t status)
+{
+  switch (status) {
+    case lp_status_t::OPTIMAL: return "OPTIMAL";
+    case lp_status_t::INFEASIBLE: return "INFEASIBLE";
+    case lp_status_t::UNBOUNDED: return "UNBOUNDED";
+    case lp_status_t::UNBOUNDED_OR_INFEASIBLE: return "UNBOUNDED_OR_INFEASIBLE";
+    case lp_status_t::ITERATION_LIMIT: return "ITERATION_LIMIT";
+    case lp_status_t::TIME_LIMIT: return "TIME_LIMIT";
+    case lp_status_t::NUMERICAL_ISSUES: return "NUMERICAL_ISSUES";
+    case lp_status_t::CUTOFF: return "CUTOFF";
+    case lp_status_t::CONCURRENT_LIMIT: return "CONCURRENT_LIMIT";
+    case lp_status_t::WORK_LIMIT: return "WORK_LIMIT";
+    case lp_status_t::UNSET: return "UNSET";
+  }
+  return "UNKNOWN";
+}
 
 template <typename i_t, typename f_t>
 f_t compute_objective(const lp_problem_t<i_t, f_t>& problem, const std::vector<f_t>& x);
@@ -45,7 +69,8 @@ lp_status_t solve_linear_program_advanced(const lp_problem_t<i_t, f_t>& original
                                           const simplex_solver_settings_t<i_t, f_t>& settings,
                                           lp_solution_t<i_t, f_t>& original_solution,
                                           std::vector<variable_status_t>& vstatus,
-                                          std::vector<f_t>& edge_norms);
+                                          std::vector<f_t>& edge_norms,
+                                          work_limit_context_t* work_unit_context = nullptr);
 
 // Solve the LP using dual simplex and keep the `basis_update_mpf_t`
 // for future use.
@@ -59,7 +84,8 @@ lp_status_t solve_linear_program_with_advanced_basis(
   std::vector<i_t>& basic_list,
   std::vector<i_t>& nonbasic_list,
   std::vector<variable_status_t>& vstatus,
-  std::vector<f_t>& edge_norms);
+  std::vector<f_t>& edge_norms,
+  work_limit_context_t* work_unit_context = nullptr);
 
 template <typename i_t, typename f_t>
 lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& user_problem,
@@ -67,8 +93,20 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
                                               lp_solution_t<i_t, f_t>& solution);
 
 template <typename i_t, typename f_t>
+lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& user_problem,
+                                              const simplex_solver_settings_t<i_t, f_t>& settings,
+                                              f_t start_time,
+                                              lp_solution_t<i_t, f_t>& solution);
+
+template <typename i_t, typename f_t>
 lp_status_t solve_linear_program(const user_problem_t<i_t, f_t>& user_problem,
                                  const simplex_solver_settings_t<i_t, f_t>& settings,
+                                 lp_solution_t<i_t, f_t>& solution);
+
+template <typename i_t, typename f_t>
+lp_status_t solve_linear_program(const user_problem_t<i_t, f_t>& user_problem,
+                                 const simplex_solver_settings_t<i_t, f_t>& settings,
+                                 f_t start_time,
                                  lp_solution_t<i_t, f_t>& solution);
 
 template <typename i_t, typename f_t>

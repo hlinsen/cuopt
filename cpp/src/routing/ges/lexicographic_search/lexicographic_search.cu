@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -123,7 +123,7 @@ __global__ void lexicographic_search(typename solution_t<i_t, f_t, REQUEST>::vie
   cuopt_assert(request_id != nullptr, "Request id should not be nullptr");
   cuopt_assert(request_id->is_valid(solution.problem.order_info.depot_included),
                "Request id should be positive");
-  cuopt_assert(solution.get_num_orders() > 0, "Number of orders must be stricly positive");
+  cuopt_assert(solution.get_num_orders() > 0, "Number of orders must be strictly positive");
 
   // the name is very verbose not to confuse this with node_ids or intra_route_index
   // this is specifying which position in the 2k + 1 items is the delivery
@@ -685,13 +685,6 @@ bool guided_ejection_search_t<i_t, f_t, REQUEST>::run_lexicographic_search(
     k_max = 4;
   }
 
-  // As we fix the insertion we don't need to try k_max permutations of insertion for cvrptw
-  i_t n_blocks_lexico = (solution_ptr->get_num_orders() + solution_ptr->get_n_routes() -
-                         solution_ptr->problem_ptr->order_info.depot_included_);
-  if constexpr (REQUEST == request_t::PDP) {
-    n_blocks_lexico *= max_neighbors<i_t, REQUEST>(k_max);
-  }
-
   size_t sh_size = 0;
   bool is_set    = false;
   while (k_max > 1) {
@@ -705,6 +698,14 @@ bool guided_ejection_search_t<i_t, f_t, REQUEST>::run_lexicographic_search(
   }
 
   if (k_max == 1 || !is_set) { return false; }
+
+  // Compute n_blocks_lexico after k_max is finalized by the while-loop above
+  i_t n_blocks_lexico = (solution_ptr->get_num_orders() + solution_ptr->get_n_routes() -
+                         solution_ptr->problem_ptr->order_info.depot_included_);
+  if constexpr (REQUEST == request_t::PDP) {
+    n_blocks_lexico *= max_neighbors<i_t, REQUEST>(k_max);
+  }
+
   // Init global min before call to lexicographic
   const auto max = std::numeric_limits<typename decltype(global_min_p_)::value_type>::max();
   const i_t zero = 0;

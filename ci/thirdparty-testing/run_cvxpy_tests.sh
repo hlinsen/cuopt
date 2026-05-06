@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 set -e -u -o pipefail
@@ -25,7 +25,6 @@ pip wheel \
 echo "installing 'cvxpy' with cuopt"
 python -m pip install \
     --constraint "${PIP_CONSTRAINT}" \
-    --extra-index-url=https://pypi.nvidia.com \
     --extra-index-url=https://pypi.anaconda.org/rapidsai-wheels-nightly/simple \
     'pytest-error-for-skips>=2.0.2' \
     "$(echo ./dist/cvxpy*.whl)[CUOPT,testing]"
@@ -33,10 +32,14 @@ python -m pip install \
 # ensure that environment is still consistent (i.e. cvxpy requirements do not conflict with cuopt's)
 pip check
 
+RAPIDS_TESTS_DIR="${RAPIDS_TESTS_DIR:-${PWD}/test-results}"
+mkdir -p "${RAPIDS_TESTS_DIR}"
+
 echo "running 'cvxpy' tests"
 timeout 3m python -m pytest \
     --verbose \
     --capture=no \
     --error-for-skips \
+    --junitxml="${RAPIDS_TESTS_DIR}/junit-thirdparty-cvxpy.xml" \
     -k "TestCUOPT" \
     ./cvxpy/tests/test_conic_solvers.py

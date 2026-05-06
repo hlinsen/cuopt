@@ -9,12 +9,12 @@
 #include "mip_utils.cuh"
 
 #include <raft/sparse/detail/cusparse_wrappers.h>
-#include <linear_programming/initial_scaling_strategy/initial_scaling.cuh>
-#include <linear_programming/utilities/problem_checking.cuh>
-#include <mip/presolve/bounds_presolve.cuh>
-#include <mip/presolve/load_balanced_bounds_presolve.cuh>
-#include <mip/problem/load_balanced_problem.cuh>
+#include <mip_heuristics/mip_scaling_strategy.cuh>
+#include <mip_heuristics/presolve/bounds_presolve.cuh>
+#include <mip_heuristics/presolve/load_balanced_bounds_presolve.cuh>
+#include <mip_heuristics/problem/load_balanced_problem.cuh>
 #include <mps_parser/parser.hpp>
+#include <pdlp/utilities/problem_checking.cuh>
 #include <raft/core/handle.hpp>
 #include <raft/util/cudart_utils.hpp>
 #include <utilities/common_utils.hpp>
@@ -32,7 +32,7 @@
 
 namespace cuopt::linear_programming::test {
 
-inline auto make_async() { return std::make_shared<rmm::mr::cuda_async_memory_resource>(); }
+inline auto make_async() { return rmm::mr::cuda_async_memory_resource(); }
 
 void init_handler(const raft::handle_t* handle_ptr)
 {
@@ -119,7 +119,7 @@ bounds_probe_results(detail::bound_presolve_t<int, double>& bnd_prb_0,
 void test_multi_probe(std::string path)
 {
   auto memory_resource = make_async();
-  rmm::mr::set_current_device_resource(memory_resource.get());
+  rmm::mr::set_current_device_resource(memory_resource);
   const raft::handle_t handle_{};
   cuopt::mps_parser::mps_data_model_t<int, double> mps_problem =
     cuopt::mps_parser::parse_mps<int, double>(path, false);
@@ -128,16 +128,7 @@ void test_multi_probe(std::string path)
   problem_checking_t<int, double>::check_problem_representation(op_problem);
   detail::problem_t<int, double> problem(op_problem);
   mip_solver_settings_t<int, double> default_settings{};
-  detail::pdhg_solver_t<int, double> pdhg_solver(problem.handle_ptr, problem);
-  detail::pdlp_initial_scaling_strategy_t<int, double> scaling(&handle_,
-                                                               problem,
-                                                               10,
-                                                               1.0,
-                                                               problem.reverse_coefficients,
-                                                               problem.reverse_offsets,
-                                                               problem.reverse_constraints,
-                                                               nullptr,
-                                                               true);
+  detail::mip_scaling_strategy_t<int, double> scaling(problem);
   detail::mip_solver_t<int, double> solver(problem, default_settings, scaling, cuopt::timer_t(0));
   detail::load_balanced_problem_t<int, double> lb_problem(problem);
   detail::load_balanced_bounds_presolve_t<int, double> lb_prs(lb_problem, solver.context);

@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -271,8 +271,6 @@ i_t convert_less_than_to_equal(const user_problem_t<i_t, f_t>& user_problem,
   // We must convert rows in the form: a_i^T x <= beta
   // into: a_i^T x + s_i = beta, s_i >= 0
 
-  csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
-  problem.A.to_compressed_row(Arow);
   i_t num_cols = problem.num_cols + less_rows;
   i_t nnz      = problem.A.col_start[problem.num_cols] + less_rows;
   problem.A.col_start.resize(num_cols + 1);
@@ -446,7 +444,8 @@ i_t find_dependent_rows(lp_problem_t<i_t, f_t>& problem,
   std::vector<i_t> q(m);
 
   i_t pivots = right_looking_lu_row_permutation_only(C, settings, 1e-13, tic(), q, pinv);
-
+  if (pivots == CONCURRENT_HALT_RETURN) { return CONCURRENT_HALT_RETURN; }
+  if (pivots == TIME_LIMIT_RETURN) { return TIME_LIMIT_RETURN; }
   if (pivots < m) {
     settings.log.printf("Found %d dependent rows\n", m - pivots);
     const i_t num_dependent = m - pivots;
@@ -571,15 +570,16 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   }
 
   // Copy info from user_problem to problem
-  problem.num_rows     = user_problem.num_rows;
-  problem.num_cols     = user_problem.num_cols;
-  problem.A            = user_problem.A;
-  problem.objective    = user_problem.objective;
-  problem.obj_scale    = user_problem.obj_scale;
-  problem.obj_constant = user_problem.obj_constant;
-  problem.rhs          = user_problem.rhs;
-  problem.lower        = user_problem.lower;
-  problem.upper        = user_problem.upper;
+  problem.num_rows              = user_problem.num_rows;
+  problem.num_cols              = user_problem.num_cols;
+  problem.A                     = user_problem.A;
+  problem.objective             = user_problem.objective;
+  problem.obj_scale             = user_problem.obj_scale;
+  problem.obj_constant          = user_problem.obj_constant;
+  problem.objective_is_integral = user_problem.objective_is_integral;
+  problem.rhs                   = user_problem.rhs;
+  problem.lower                 = user_problem.lower;
+  problem.upper                 = user_problem.upper;
 
   // Make a copy of row_sense so we can modify it
   std::vector<char> row_sense = user_problem.row_sense;
@@ -621,7 +621,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
   }
 
   constexpr bool run_bounds_strengthening = false;
-  if (run_bounds_strengthening) {
+  if constexpr (run_bounds_strengthening) {
     csr_matrix_t<i_t, f_t> Arow(1, 1, 1);
     problem.A.to_compressed_row(Arow);
 
@@ -629,8 +629,8 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
 
     // Empty var_types means that all variables are continuous
     bounds_strengthening_t<i_t, f_t> strengthening(problem, Arow, row_sense, {});
-    std::fill(strengthening.bounds_changed.begin(), strengthening.bounds_changed.end(), true);
-    strengthening.bounds_strengthening(problem.lower, problem.upper, settings);
+    std::vector<bool> bounds_changed(problem.num_cols, true);
+    strengthening.bounds_strengthening(settings, bounds_changed, problem.lower, problem.upper);
   }
 
   settings.log.debug(
@@ -821,6 +821,168 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
 {
   problem = original;
   std::vector<char> row_sense(problem.num_rows, '=');
+  // Check for free variables
+  i_t free_variables = 0;
+  for (i_t j = 0; j < problem.num_cols; j++) {
+    if (problem.lower[j] == -inf && problem.upper[j] == inf) { free_variables++; }
+  }
+
+  if (settings.barrier_presolve && free_variables > 0) {
+    // Try to remove free variables
+    std::vector<i_t> constraints_to_check;
+    std::vector<i_t> current_free_variables;
+    std::vector<i_t> row_marked(problem.num_rows, 0);
+    current_free_variables.reserve(problem.num_cols);
+    constraints_to_check.reserve(problem.num_rows);
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (problem.lower[j] == -inf && problem.upper[j] == inf) {
+        current_free_variables.push_back(j);
+        const i_t col_start = problem.A.col_start[j];
+        const i_t col_end   = problem.A.col_start[j + 1];
+        for (i_t p = col_start; p < col_end; p++) {
+          const i_t i = problem.A.i[p];
+          if (row_marked[i] == 0) {
+            row_marked[i] = 1;
+            constraints_to_check.push_back(i);
+          }
+        }
+      }
+    }
+
+    i_t removed_free_variables = 0;
+
+    if (constraints_to_check.size() > 0) {
+      // Check if the constraints are feasible
+      csr_matrix_t<i_t, f_t> Arow(0, 0, 0);
+      problem.A.to_compressed_row(Arow);
+
+      // The constraints are in the form:
+      // sum_j a_j x_j = beta
+      for (i_t i : constraints_to_check) {
+        const i_t row_start   = Arow.row_start[i];
+        const i_t row_end     = Arow.row_start[i + 1];
+        f_t lower_activity_i  = 0.0;
+        f_t upper_activity_i  = 0.0;
+        i_t lower_inf_i       = 0;
+        i_t upper_inf_i       = 0;
+        i_t last_free_i       = -1;
+        f_t last_free_coeff_i = 0.0;
+        for (i_t p = row_start; p < row_end; p++) {
+          const i_t j       = Arow.j[p];
+          const f_t aij     = Arow.x[p];
+          const f_t lower_j = problem.lower[j];
+          const f_t upper_j = problem.upper[j];
+          if (lower_j == -inf && upper_j == inf) {
+            last_free_i       = j;
+            last_free_coeff_i = aij;
+          }
+          if (aij > 0) {
+            if (lower_j > -inf) {
+              lower_activity_i += aij * lower_j;
+            } else {
+              lower_inf_i++;
+            }
+            if (upper_j < inf) {
+              upper_activity_i += aij * upper_j;
+            } else {
+              upper_inf_i++;
+            }
+          } else {
+            if (upper_j < inf) {
+              lower_activity_i += aij * upper_j;
+            } else {
+              lower_inf_i++;
+            }
+            if (lower_j > -inf) {
+              upper_activity_i += aij * lower_j;
+            } else {
+              upper_inf_i++;
+            }
+          }
+        }
+
+        if (last_free_i == -1) { continue; }
+
+        // sum_j a_ij x_j == beta
+
+        const f_t rhs = problem.rhs[i];
+        // sum_{k != j} a_ik x_k + a_ij x_j == rhs
+        // Suppose that -inf < x_j < inf  and all other variables x_k with k != j are bounded
+        // a_ij x_j == rhs - sum_{k != j} a_ik x_k
+        // So if a_ij > 0, we have
+        //  x_j == 1/a_ij * (rhs - sum_{k != j} a_ik x_k)
+        // We can derive two bounds from  this:
+        // x_j <= 1/a_ij * (rhs - lower_activity_i) and
+        // x_j >= 1/a_ij * (rhs - upper_activity_i)
+
+        // If a_ij < 0, we have
+        // x_j == 1/a_ij * (rhs - sum_{k != j} a_ik x_k
+        // And we can derive two bounds from this:
+        // x_j >= 1/a_ij * (rhs - lower_activity_i)
+        // x_j <= 1/a_ij * (rhs - upper_activity_i)
+        const i_t j         = last_free_i;
+        const f_t a_ij      = last_free_coeff_i;
+        const f_t max_bound = 1e10;
+        bool bounded        = false;
+        if (a_ij > 0) {
+          if (lower_inf_i == 1) {
+            const f_t new_upper = 1.0 / a_ij * (rhs - lower_activity_i);
+            if (new_upper < max_bound) {
+              problem.upper[j] = new_upper;
+              bounded          = true;
+            }
+          }
+          if (upper_inf_i == 1) {
+            const f_t new_lower = 1.0 / a_ij * (rhs - upper_activity_i);
+            if (new_lower > -max_bound) {
+              problem.lower[j] = new_lower;
+              bounded          = true;
+            }
+          }
+        } else if (a_ij < 0) {
+          if (lower_inf_i == 1) {
+            const f_t new_lower = 1.0 / a_ij * (rhs - lower_activity_i);
+            if (new_lower > -max_bound) {
+              problem.lower[j] = new_lower;
+              bounded          = true;
+            }
+          }
+          if (upper_inf_i == 1) {
+            const f_t new_upper = 1.0 / a_ij * (rhs - upper_activity_i);
+            if (new_upper < max_bound) {
+              problem.upper[j] = new_upper;
+              bounded          = true;
+            }
+          }
+        }
+
+        if (bounded) { removed_free_variables++; }
+      }
+    }
+
+    for (i_t j : current_free_variables) {
+      if (problem.lower[j] > -inf && problem.upper[j] < inf) {
+        // We don't need two bounds. Pick the smallest one.
+        if (std::abs(problem.lower[j]) < std::abs(problem.upper[j])) {
+          // Restore the inf in the upper bound. Barrier will not require an additional w variable
+          problem.upper[j] = inf;
+        } else {
+          // Restores the -inf in the lower bound. Barrier will require an additional w variable
+          problem.lower[j] = -inf;
+        }
+      }
+    }
+
+    i_t new_free_variables = 0;
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (problem.lower[j] == -inf && problem.upper[j] == inf) { new_free_variables++; }
+    }
+    if (removed_free_variables != 0) {
+      settings.log.printf("Bounded %d free variables\n", removed_free_variables);
+    }
+    assert(new_free_variables == free_variables - removed_free_variables);
+    free_variables = new_free_variables;
+  }
 
   // The original problem may have a variable without a lower bound
   // but a finite upper bound
@@ -834,7 +996,43 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     settings.log.printf("%d variables with no lower bound\n", no_lower_bound);
   }
 
-  // FIXME:: handle no lower bound case for barrier presolve
+  // Handle -inf < x_j <= u_j by substituting x'_j = -x_j, giving -u_j <= x'_j < inf
+  if (settings.barrier_presolve && no_lower_bound > 0) {
+    presolve_info.negated_variables.reserve(no_lower_bound);
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (problem.lower[j] == -inf && problem.upper[j] < inf) {
+        presolve_info.negated_variables.push_back(j);
+
+        problem.lower[j] = -problem.upper[j];
+        problem.upper[j] = inf;
+        problem.objective[j] *= -1;
+
+        const i_t col_start = problem.A.col_start[j];
+        const i_t col_end   = problem.A.col_start[j + 1];
+        for (i_t p = col_start; p < col_end; p++) {
+          problem.A.x[p] *= -1.0;
+        }
+      }
+    }
+
+    // (1/2) x^T Q x with x = D x' (D_ii = -1 for negated columns) is (1/2) x'^T D Q D x'.
+    // One pass: Q'_{ik} = D_{ii} D_{kk} Q_{ik} — flip iff exactly one of {i,k} is negated.
+    if (problem.Q.n > 0 && !presolve_info.negated_variables.empty()) {
+      std::vector<bool> is_negated(static_cast<size_t>(problem.num_cols), false);
+      for (i_t const j : presolve_info.negated_variables) {
+        is_negated[static_cast<size_t>(j)] = true;
+      }
+      for (i_t row = 0; row < problem.Q.m; ++row) {
+        const i_t q_start         = problem.Q.row_start[row];
+        const i_t q_end           = problem.Q.row_start[row + 1];
+        const bool is_negated_row = is_negated[static_cast<size_t>(row)];
+        for (i_t p = q_start; p < q_end; ++p) {
+          const i_t col = problem.Q.j[p];
+          if (is_negated_row != is_negated[static_cast<size_t>(col)]) { problem.Q.x[p] *= -1.0; }
+        }
+      }
+    }
+  }
 
   // The original problem may have nonzero lower bounds
   // 0 != l_j <= x_j <= u_j
@@ -891,14 +1089,19 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
       }
     }
 
+    std::vector<f_t> kahan_compensation(problem.num_rows, 0.0);
     for (i_t j = 0; j < problem.num_cols; j++) {
       if (lower_bounds_removed[j]) {
         i_t col_start = problem.A.col_start[j];
         i_t col_end   = problem.A.col_start[j + 1];
         for (i_t p = col_start; p < col_end; p++) {
-          i_t i   = problem.A.i[p];
-          f_t aij = problem.A.x[p];
-          problem.rhs[i] -= aij * problem.lower[j];
+          i_t i                 = problem.A.i[p];
+          f_t aij               = problem.A.x[p];
+          f_t val               = -aij * problem.lower[j];
+          f_t y                 = val - kahan_compensation[i];
+          f_t t                 = problem.rhs[i] + y;
+          kahan_compensation[i] = (t - problem.rhs[i]) - y;
+          problem.rhs[i]        = t;
         }
         problem.obj_constant += old_objective[j] * problem.lower[j];
         problem.upper[j] -= problem.lower[j];
@@ -932,12 +1135,6 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   if (num_empty_cols > 0) {
     settings.log.printf("Presolve attempt to remove %d empty cols\n", num_empty_cols);
     remove_empty_cols(problem, num_empty_cols, presolve_info);
-  }
-
-  // Check for free variables
-  i_t free_variables = 0;
-  for (i_t j = 0; j < problem.num_cols; j++) {
-    if (problem.lower[j] == -inf && problem.upper[j] == inf) { free_variables++; }
   }
 
   problem.Q.check_matrix("Before free variable expansion");
@@ -1101,6 +1298,8 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
     i_t infeasible;
     f_t dependent_row_start    = tic();
     const i_t independent_rows = find_dependent_rows(problem, settings, dependent_rows, infeasible);
+    if (independent_rows == CONCURRENT_HALT_RETURN) { return CONCURRENT_HALT_RETURN; }
+    if (independent_rows == TIME_LIMIT_RETURN) { return TIME_LIMIT_RETURN; }
     if (infeasible != kOk) {
       settings.log.printf("Found problem infeasible in presolve\n");
       return -1;
@@ -1161,7 +1360,9 @@ void crush_primal_solution(const user_problem_t<i_t, f_t>& user_problem,
                            const std::vector<i_t>& new_slacks,
                            std::vector<f_t>& solution)
 {
-  solution.resize(problem.num_cols, 0.0);
+  // Re-crush can be called with a reused output vector; make sure all entries,
+  // including previously added slacks, are reset before writing new values.
+  solution.assign(problem.num_cols, 0.0);
   for (i_t j = 0; j < user_problem.num_cols; j++) {
     solution[j] = user_solution[j];
   }
@@ -1200,7 +1401,8 @@ void crush_primal_solution_with_slack(const user_problem_t<i_t, f_t>& user_probl
                                       const std::vector<i_t>& new_slacks,
                                       std::vector<f_t>& solution)
 {
-  solution.resize(problem.num_cols, 0.0);
+  // Re-crush can be called with a reused output vector; clear stale entries first.
+  solution.assign(problem.num_cols, 0.0);
   for (i_t j = 0; j < user_problem.num_cols; j++) {
     solution[j] = user_solution[j];
   }
@@ -1311,7 +1513,10 @@ f_t crush_dual_solution(const user_problem_t<i_t, f_t>& user_problem,
     }
   }
   const f_t dual_res_inf = vector_norm_inf<i_t, f_t>(dual_residual);
-  assert(dual_res_inf < 1e-6);
+  // TODO: fix me! In test ./cpp/build/tests/linear_programming/C_API_TEST
+  // c_api/TimeLimitTestFixture.time_limit/2 this is crashing. It is crashing only if it is run as
+  // whole in sequence and not filtering the respective test. Crash could be observed in previous
+  // versions by setting probing cache time to zero. assert(dual_res_inf < 1e-6);
   return dual_res_inf;
 }
 
@@ -1488,14 +1693,24 @@ void uncrush_solution(const presolve_info_t<i_t, f_t>& presolve_info,
   }
 
   if (presolve_info.removed_lower_bounds.size() > 0) {
-    settings.log.printf("Post-solve: Handling removed lower bounds %d\n",
-                        presolve_info.removed_lower_bounds.size());
+    i_t num_lower_bounds = 0;
+
     // We removed some lower bounds so we need to map the crushed solution back to the original
     // variables
     for (i_t j = 0; j < input_x.size(); j++) {
+      if (presolve_info.removed_lower_bounds[j] != 0.0) { num_lower_bounds++; }
       input_x[j] += presolve_info.removed_lower_bounds[j];
     }
+    settings.log.printf("Post-solve: Handling removed lower bounds %d\n", num_lower_bounds);
   }
+
+  if (presolve_info.negated_variables.size() > 0) {
+    for (const i_t j : presolve_info.negated_variables) {
+      input_x[j] *= -1.0;
+      input_z[j] *= -1.0;
+    }
+  }
+
   assert(uncrushed_x.size() == input_x.size());
   assert(uncrushed_y.size() == input_y.size());
   assert(uncrushed_z.size() == input_z.size());

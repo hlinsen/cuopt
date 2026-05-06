@@ -1,15 +1,19 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
 
+#include <cuopt/linear_programming/backend_selection.hpp>
+#include <cuopt/linear_programming/cpu_optimization_problem.hpp>
 #include <cuopt/linear_programming/mip/solver_settings.hpp>
 #include <cuopt/linear_programming/optimization_problem.hpp>
+#include <cuopt/linear_programming/optimization_problem_utils.hpp>
 #include <cuopt/linear_programming/solve.hpp>
 #include <mps_parser/parser.hpp>
 #include <utilities/logger.hpp>
+#include <utilities/timer.hpp>
 
 #include <raft/core/device_setter.hpp>
 #include <raft/core/handle.hpp>
@@ -74,39 +78,30 @@ inline auto make_async() { return std::make_shared<rmm::mr::cuda_async_memory_re
 inline cuopt::init_logger_t dummy_logger(
   const cuopt::linear_programming::solver_settings_t<int, double>& settings)
 {
-  return cuopt::init_logger_t(settings.get_parameter<std::string>(CUOPT_LOG_FILE),
-                              settings.get_parameter<bool>(CUOPT_LOG_TO_CONSOLE));
+  return cuopt::init_logger_t(settings.template get_parameter<std::string>(CUOPT_LOG_FILE),
+                              settings.template get_parameter<bool>(CUOPT_LOG_TO_CONSOLE));
 }
 
 /**
  * @brief Run a single file
  * @param file_path Path to the MPS format input file containing the optimization problem
  * @param initial_solution_file Path to initial solution file in SOL format
- * @param settings_strings Map of solver parameters
+ * @param settings Merged solver settings (config file loaded in main, then CLI overrides applied)
  */
 int run_single_file(const std::string& file_path,
                     const std::string& initial_solution_file,
                     bool solve_relaxation,
-                    const std::map<std::string, std::string>& settings_strings)
+                    cuopt::linear_programming::solver_settings_t<int, double>& settings)
 {
-  const raft::handle_t handle_{};
-  cuopt::linear_programming::solver_settings_t<int, double> settings;
-
-  try {
-    for (auto& [key, val] : settings_strings) {
-      settings.set_parameter_from_string(key, val);
-    }
-  } catch (const std::exception& e) {
-    auto log = dummy_logger(settings);
-    CUOPT_LOG_ERROR("Error: %s", e.what());
-    return -1;
-  }
+  cuopt::init_logger_t log(settings.get_parameter<std::string>(CUOPT_LOG_FILE),
+                           settings.get_parameter<bool>(CUOPT_LOG_TO_CONSOLE));
 
   std::string base_filename = file_path.substr(file_path.find_last_of("/\\") + 1);
 
   constexpr bool input_mps_strict = false;
   cuopt::mps_parser::mps_data_model_t<int, double> mps_data_model;
   bool parsing_failed = false;
+  auto timer          = cuopt::timer_t(settings.get_parameter<double>(CUOPT_TIME_LIMIT));
   {
     CUOPT_LOG_INFO("Reading file %s", base_filename.c_str());
     try {
@@ -121,14 +116,32 @@ int run_single_file(const std::string& file_path,
     CUOPT_LOG_ERROR("Parsing MPS failed. Exiting!");
     return -1;
   }
+  CUOPT_LOG_INFO("Read file %s in %.2f seconds", base_filename.c_str(), timer.elapsed_time());
 
-  auto op_problem =
-    cuopt::linear_programming::mps_data_model_to_optimization_problem(&handle_, mps_data_model);
+  // Determine memory backend and create problem using interface
+  // Create handle only for GPU memory backend (avoid CUDA init on CPU-only hosts)
+  auto memory_backend = cuopt::linear_programming::get_memory_backend_type();
+  std::unique_ptr<raft::handle_t> handle_ptr;
+  std::unique_ptr<cuopt::linear_programming::optimization_problem_interface_t<int, double>>
+    problem_interface;
 
-  const bool is_mip =
-    (op_problem.get_problem_category() == cuopt::linear_programming::problem_category_t::MIP ||
-     op_problem.get_problem_category() == cuopt::linear_programming::problem_category_t::IP) &&
-    !solve_relaxation;
+  if (memory_backend == cuopt::linear_programming::memory_backend_t::GPU) {
+    handle_ptr = std::make_unique<raft::handle_t>();
+    problem_interface =
+      std::make_unique<cuopt::linear_programming::optimization_problem_t<int, double>>(
+        handle_ptr.get());
+  } else {
+    problem_interface =
+      std::make_unique<cuopt::linear_programming::cpu_optimization_problem_t<int, double>>();
+  }
+
+  cuopt::linear_programming::populate_from_mps_data_model(problem_interface.get(), mps_data_model);
+
+  const bool is_mip = (problem_interface->get_problem_category() ==
+                         cuopt::linear_programming::problem_category_t::MIP ||
+                       problem_interface->get_problem_category() ==
+                         cuopt::linear_programming::problem_category_t::IP) &&
+                      !solve_relaxation;
 
   try {
     auto initial_solution =
@@ -157,12 +170,13 @@ int run_single_file(const std::string& file_path,
   try {
     if (is_mip) {
       auto& mip_settings = settings.get_mip_settings();
-      auto solution      = cuopt::linear_programming::solve_mip(op_problem, mip_settings);
+      auto solution = cuopt::linear_programming::solve_mip(problem_interface.get(), mip_settings);
     } else {
       auto& lp_settings = settings.get_pdlp_settings();
-      auto solution     = cuopt::linear_programming::solve_lp(op_problem, lp_settings);
+      auto solution     = cuopt::linear_programming::solve_lp(problem_interface.get(), lp_settings);
     }
   } catch (const std::exception& e) {
+    fprintf(stderr, "cuopt_cli error: %s\n", e.what());
     CUOPT_LOG_ERROR("Error: %s", e.what());
     return -1;
   }
@@ -238,6 +252,21 @@ int set_cuda_module_loading(int argc, char* argv[])
  */
 int main(int argc, char* argv[])
 {
+  // Handle dump flags before argparse so no other args are required
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--dump-hyper-params") {
+      cuopt::linear_programming::solver_settings_t<int, double> settings;
+      settings.dump_parameters_to_file("/dev/stdout", true);
+      return 0;
+    }
+    if (arg == "--dump-params") {
+      cuopt::linear_programming::solver_settings_t<int, double> settings;
+      settings.dump_parameters_to_file("/dev/stdout", false);
+      return 0;
+    }
+  }
+
   if (set_cuda_module_loading(argc, argv) != 0) { return 1; }
 
   // Get the version string from the version_config.hpp file
@@ -266,7 +295,32 @@ int main(int argc, char* argv[])
     .default_value(true)
     .implicit_value(true);
 
+  program.add_argument("--params-file")
+    .help("path to parameter config file (key = value format, supports all parameters)")
+    .default_value(std::string(""));
+
+  program.add_argument("--dump-hyper-params")
+    .help("print hyper-parameters only in config file format and exit")
+    .default_value(false)
+    .implicit_value(true);
+
+  program.add_argument("--dump-params")
+    .help("print all parameters in config file format and exit")
+    .default_value(false)
+    .implicit_value(true);
+
   std::map<std::string, std::string> arg_name_to_param_name;
+
+  // Register --pdlp-precision with string-to-int mapping so that it flows
+  // through the settings_strings map like other settings.
+  program.add_argument("--pdlp-precision")
+    .help(
+      "PDLP precision mode. default: native type, single: FP32 internally, "
+      "double: FP64 explicitly, mixed: mixed-precision SpMV (FP32 matrix, FP64 vectors).")
+    .default_value(std::string("-1"))
+    .choices("default", "single", "double", "mixed", "-1", "0", "1", "2");
+  arg_name_to_param_name["--pdlp-precision"] = CUOPT_PDLP_PRECISION;
+
   {
     // Add all solver settings as arguments
     cuopt::linear_programming::solver_settings_t<int, double> dummy_settings;
@@ -280,16 +334,17 @@ int main(int argc, char* argv[])
       std::string arg_name = param_name_to_arg_name(param.param_name);
       // handle duplicate parameters appearing in MIP and LP settings
       if (arg_name_to_param_name.count(arg_name) == 0) {
-        program.add_argument(arg_name.c_str()).default_value(param.default_value);
+        auto& arg = program.add_argument(arg_name.c_str()).default_value(param.default_value);
+        if (param.param_name.find("hyper_") != std::string::npos) { arg.hidden(); }
         arg_name_to_param_name[arg_name] = param.param_name;
       }
     }
 
     for (auto& param : double_params) {
       std::string arg_name = param_name_to_arg_name(param.param_name);
-      // handle duplicate parameters appearing in MIP and LP settings
       if (arg_name_to_param_name.count(arg_name) == 0) {
-        program.add_argument(arg_name.c_str()).default_value(param.default_value);
+        auto& arg = program.add_argument(arg_name.c_str()).default_value(param.default_value);
+        if (param.param_name.find("hyper_") != std::string::npos) { arg.hidden(); }
         arg_name_to_param_name[arg_name] = param.param_name;
       }
     }
@@ -297,20 +352,21 @@ int main(int argc, char* argv[])
     for (auto& param : bool_params) {
       std::string arg_name = param_name_to_arg_name(param.param_name);
       if (arg_name_to_param_name.count(arg_name) == 0) {
-        program.add_argument(arg_name.c_str()).default_value(param.default_value);
+        auto& arg = program.add_argument(arg_name.c_str()).default_value(param.default_value);
+        if (param.param_name.find("hyper_") != std::string::npos) { arg.hidden(); }
         arg_name_to_param_name[arg_name] = param.param_name;
       }
     }
 
     for (auto& param : string_params) {
       std::string arg_name = param_name_to_arg_name(param.param_name);
-      // handle duplicate parameters appearing in MIP and LP settings
       if (arg_name_to_param_name.count(arg_name) == 0) {
-        program.add_argument(arg_name.c_str()).default_value(param.default_value);
+        auto& arg = program.add_argument(arg_name.c_str()).default_value(param.default_value);
+        if (param.param_name.find("hyper_") != std::string::npos) { arg.hidden(); }
         arg_name_to_param_name[arg_name] = param.param_name;
       }
-    }  // done with solver settings
-  }
+    }
+  }  // done with solver settings
 
   // Parse arguments
   try {
@@ -321,11 +377,20 @@ int main(int argc, char* argv[])
     return 1;
   }
 
+  // Map symbolic pdlp-precision names to integer values
+  static const std::map<std::string, std::string> precision_name_to_value = {
+    {"default", "-1"}, {"single", "0"}, {"double", "1"}, {"mixed", "2"}};
+
   // Read everything as a string
   std::map<std::string, std::string> settings_strings;
   for (auto& [arg_name, param_name] : arg_name_to_param_name) {
     if (program.is_used(arg_name.c_str())) {
-      settings_strings[param_name] = program.get<std::string>(arg_name.c_str());
+      auto val = program.get<std::string>(arg_name.c_str());
+      if (param_name == CUOPT_PDLP_PRECISION) {
+        auto it = precision_name_to_value.find(val);
+        if (it != precision_name_to_value.end()) { val = it->second; }
+      }
+      settings_strings[param_name] = val;
     }
   }
   // Get the values
@@ -333,20 +398,35 @@ int main(int argc, char* argv[])
 
   const auto initial_solution_file = program.get<std::string>("--initial-solution");
   const auto solve_relaxation      = program.get<bool>("--relaxation");
+  const auto params_file           = program.get<std::string>("--params-file");
 
-  // All arguments are parsed as string, default values are parsed as int if unused.
-  const auto num_gpus = program.is_used("--num-gpus")
-                          ? std::stoi(program.get<std::string>("--num-gpus"))
-                          : program.get<int>("--num-gpus");
-
-  std::vector<std::shared_ptr<rmm::mr::device_memory_resource>> memory_resources;
-
-  for (int i = 0; i < std::min(raft::device_setter::get_device_count(), num_gpus); ++i) {
-    cudaSetDevice(i);
-    memory_resources.push_back(make_async());
-    rmm::mr::set_per_device_resource(rmm::cuda_device_id{i}, memory_resources.back().get());
+  cuopt::linear_programming::solver_settings_t<int, double> settings;
+  try {
+    if (!params_file.empty()) { settings.load_parameters_from_file(params_file); }
+    for (auto& [key, val] : settings_strings) {
+      settings.set_parameter_from_string(key, val);
+    }
+  } catch (const std::exception& e) {
+    auto log = dummy_logger(settings);
+    CUOPT_LOG_ERROR("Error: %s", e.what());
+    return -1;
   }
-  cudaSetDevice(0);
 
-  return run_single_file(file_name, initial_solution_file, solve_relaxation, settings_strings);
+  // Only initialize CUDA resources if using GPU memory backend (not remote execution)
+  auto memory_backend = cuopt::linear_programming::get_memory_backend_type();
+  std::vector<rmm::mr::cuda_async_memory_resource> memory_resources;
+
+  if (memory_backend == cuopt::linear_programming::memory_backend_t::GPU) {
+    const int num_gpus = settings.get_parameter<int>(CUOPT_NUM_GPUS);
+
+    memory_resources.reserve(std::min(raft::device_setter::get_device_count(), num_gpus));
+    for (int i = 0; i < std::min(raft::device_setter::get_device_count(), num_gpus); ++i) {
+      RAFT_CUDA_TRY(cudaSetDevice(i));
+      memory_resources.emplace_back();
+      rmm::mr::set_per_device_resource(rmm::cuda_device_id{i}, memory_resources.back());
+    }
+    RAFT_CUDA_TRY(cudaSetDevice(0));
+  }
+
+  return run_single_file(file_name, initial_solution_file, solve_relaxation, settings);
 }

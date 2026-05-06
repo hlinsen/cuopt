@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 set -euo pipefail
@@ -16,6 +16,16 @@ fi
 
 # Install Boost and TBB
 bash ci/utils/install_boost_tbb.sh
+
+# Install libuuid (needed by cuopt_grpc_server)
+if command -v dnf &> /dev/null; then
+    dnf install -y libuuid-devel
+elif command -v apt-get &> /dev/null; then
+    apt-get update && apt-get install -y uuid-dev
+fi
+
+# Install Protobuf + gRPC (protoc + grpc_cpp_plugin)
+bash ci/utils/install_protobuf_grpc.sh
 
 export SKBUILD_CMAKE_ARGS="-DCUOPT_BUILD_WHEELS=ON;-DDISABLE_DEPRECATION_WARNING=ON"
 

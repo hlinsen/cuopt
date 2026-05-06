@@ -8,7 +8,7 @@ General FAQ
 .. dropdown:: Where can I find cuOpt container images?
 
     There are two options:
-    - NVIDIA docker hub (https://hub.docker.com/r/nvidia/)
+    - NVIDIA Docker Hub (https://hub.docker.com/r/nvidia/cuopt)
     - NVIDIA NGC registry (https://catalog.ngc.nvidia.com/orgs/nvidia/teams/cuopt/containers/cuopt/tags) with NVAIE license.
 
 .. dropdown:: How to get a NVAIE license?
@@ -156,6 +156,21 @@ General FAQ
 
         while openssl x509 -noout -text; do :; done < test.pem.txt
 
+gRPC remote execution (``cuopt_grpc_server``)
+-----------------------------------------------
+
+.. dropdown:: Where are log files for the gRPC server / StreamLogs?
+
+   Workers write per-job solver logs under ``/tmp/cuopt_logs/job_<job_id>.log``. The ``StreamLogs`` RPC tails that file. Operational limits and behavior are summarized in :doc:`gRPC server behavior <cuopt-grpc/grpc-server-architecture>`.
+
+.. dropdown:: What happens if a ``cuopt_grpc_server`` worker crashes?
+
+   Jobs that worker was running are marked **FAILED**. The server monitor can detect the crash and spawn a replacement worker; other workers keep running. For more detail, see :doc:`gRPC server behavior <cuopt-grpc/grpc-server-architecture>` and the contributor reference ``cpp/docs/grpc-server-architecture.md`` in the repository.
+
+.. dropdown:: Does ``CancelJob`` stop a solve immediately?
+
+   Cancellation is honored **before** the solver starts. If the solve has already begun, it **runs to completion**; there is no mid-solve cancellation path. See :doc:`gRPC server behavior <cuopt-grpc/grpc-server-architecture>`.
+
 Routing FAQ
 ------------------------------
 
@@ -283,7 +298,7 @@ Routing FAQ
 
     So in either case, task locations are actually integer indices into another structure.
 
-    If you have (lat, long) values, then you can generate a cost matrix using a map API. cuOpt does not directly connect to a third-party map engine, but that can be done outside of cuOpt as shown `here <https://github.com/NVIDIA/cuOpt-Resources/blob/main/notebooks/routing/service/cost_matrix_creation.ipynb>`__.
+    If you have (lat, long) values, then you can generate a cost matrix using a map API. cuOpt does not directly connect to a third-party map engine, but that can be done outside of cuOpt and the resulting cost matrix passed in.
 
 .. dropdown:: Is it possible to define constraints such as refrigerated vehicles required for certain orders?
 
@@ -372,9 +387,13 @@ Linear Programming FAQs
 
 .. dropdown:: Does cuOpt implement presolve reductions?
 
-    We use PaPILO presolve at the root node. It is enabled by default for MIP and disabled by default for LP.
-    For LP, dual postsolve is not supported, for this reason dual solution and reduced costs are filled with Nans.
+    cuOpt supports presolve reductions using PSLP or Papilo for linear programming (LP) problems, and Papilo for mixed-integer programming (MIP) problems. For MIP problems, Papilo presolve is always enabled by default. For LP problems, PSLP presolve is always enabled by default. Presolve is controlled by the ``CUOPT_PRESOLVE`` setting.
 
+.. dropdown:: How do I use warm start with PDLP?
+
+    To use warm start functionality with PDLP, you must explicitly disable presolve by setting ``CUOPT_PRESOLVE=0`` in solver_config.
+    This is required because presolve transforms the problem, and the warm start solution from the original problem
+    cannot be applied to the presolved problem.
 
 Mixed Integer Linear Programming FAQs
 --------------------------------------

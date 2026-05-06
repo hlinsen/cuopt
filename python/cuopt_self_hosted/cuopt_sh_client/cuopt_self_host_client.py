@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import json
@@ -200,7 +200,7 @@ def create_lp_response(response_dict):
                 nb_iterations=sol["lp_statistics"]["nb_iterations"],
                 primal_objective=sol["primal_objective"],
                 dual_objective=sol["dual_objective"],
-                solved_by_pdlp=sol["solved_by_pdlp"],
+                solved_by=sol["solved_by"],
             )
         return status, solution_obj
 
@@ -257,8 +257,6 @@ class CuOptServiceSelfHostClient:
     polling_interval : int
             The duration in seconds between
             consecutive polling attempts. Defaults to 1.
-    request_excess_timeout : int
-            Note: Deprecated, Use polling_timeout instead
     only_validate : boolean
             Only validates input. Defaults to False.
     polling_timeout : int
@@ -303,7 +301,6 @@ class CuOptServiceSelfHostClient:
         use_https: bool = False,
         self_signed_cert="",
         polling_interval=1,
-        request_excess_timeout=None,
         only_validate=False,
         polling_timeout=600,
         timeout_exception=True,
@@ -361,11 +358,7 @@ class CuOptServiceSelfHostClient:
             self.solution_url = f"{self.protocol}://{self.ip}/cuopt/solution"  # noqa
 
         self.polling_interval = polling_interval
-        self.timeout = (
-            request_excess_timeout
-            if request_excess_timeout is not None
-            else polling_timeout
-        )
+        self.timeout = polling_timeout
 
     def _get_response(self, response):
         if response.headers["content-type"] == mime_type.JSON.value:
@@ -504,6 +497,7 @@ class CuOptServiceSelfHostClient:
 
         poll_start = time.time()
         try:
+            do_final_incumbent_fetch = False
             while True:
                 # just a reqId means the request is still pending
                 if not (len(response) == 1 and "reqId" in response):
@@ -544,10 +538,20 @@ class CuOptServiceSelfHostClient:
                         response, reqId
                     )
                     raise ValueError(err)
+            do_final_incumbent_fetch = True
             return response
 
         finally:
             stop_threads(log_t, inc_t, done)
+            if (
+                do_final_incumbent_fetch
+                and incumbent_callback is not None
+                and reqId is not None
+            ):
+                try:
+                    self._get_incumbents(reqId, incumbent_callback)
+                except Exception:
+                    pass
             if complete and delete and reqId is not None:
                 self._delete(reqId)
 
