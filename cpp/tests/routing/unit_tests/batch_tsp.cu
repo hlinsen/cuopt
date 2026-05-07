@@ -9,9 +9,15 @@
 #include <cuopt/routing/solve.hpp>
 #include <utilities/copy_helpers.hpp>
 
+#include <cuda_runtime_api.h>
+
 #include <raft/core/handle.hpp>
 
 #include <gtest/gtest.h>
+#include <rmm/mr/cuda_async_memory_resource.hpp>
+#include <rmm/mr/per_device_resource.hpp>
+#include <rmm/mr/pool_memory_resource.hpp>
+#include <rmm/resource_ref.hpp>
 
 #include <vector>
 
@@ -45,6 +51,21 @@ std::vector<f_t> create_small_tsp_cost_matrix(i_t n_locations)
  */
 TEST(batch_tsp, varying_sizes)
 {
+  std::size_t free_mem{};
+  std::size_t total_mem{};
+  ASSERT_EQ(cudaSuccess, cudaMemGetInfo(&free_mem, &total_mem));
+
+  auto const initial_pool_size = ((total_mem / 2) / 256) * 256;
+  ASSERT_GT(initial_pool_size, 0);
+  ASSERT_LE(initial_pool_size, free_mem);
+
+  auto async_upstream = rmm::mr::cuda_async_memory_resource{};
+  auto pool_resource =
+    rmm::mr::pool_memory_resource{async_upstream, initial_pool_size, initial_pool_size};
+  auto pool_resource_ref = rmm::device_async_resource_ref{pool_resource};
+  rmm::mr::set_current_device_resource(pool_resource);
+  ASSERT_TRUE(rmm::mr::get_current_device_resource_ref() == pool_resource_ref);
+
   std::vector<i_t> tsp_sizes = {150, 150, 150, 150, 150, 150};
   const i_t n_problems       = static_cast<i_t>(tsp_sizes.size());
 

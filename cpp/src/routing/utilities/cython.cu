@@ -183,7 +183,7 @@ std::vector<std::unique_ptr<vehicle_routing_ret_t>> call_batch_solve(
   }
 #endif
 
-  int device_id = raft::resource::get_device_id(*(data_models[0]->get_handle_ptr()));
+  // int device_id = raft::resource::get_device_id(*(data_models[0]->get_handle_ptr()));
 
 #pragma omp parallel for num_threads(max_thread)
   for (std::size_t i = 0; i < size; ++i) {

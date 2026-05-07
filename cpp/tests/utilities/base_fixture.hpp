@@ -58,12 +58,13 @@ inline auto make_binning()
  * @throw cuopt::logic_error if the `allocation_mode` is unsupported.
  *
  * @param allocation_mode String identifies which resource type.
- *        Accepted types are "pool", "cuda", and "managed" only.
+ *        Accepted types are "async", "binning", "pool", "cuda", and "managed".
  * @return Memory resource instance
  */
 inline cuda::mr::any_resource<cuda::mr::device_accessible> create_memory_resource(
   std::string const& allocation_mode)
 {
+  if (allocation_mode == "async") return make_async();
   if (allocation_mode == "binning") return make_binning();
   if (allocation_mode == "cuda") return make_cuda();
   if (allocation_mode == "pool") return make_pool();
@@ -81,7 +82,7 @@ inline cuda::mr::any_resource<cuda::mr::device_accessible> create_memory_resourc
  * @brief Parses the cuOpt test command line options.
  *
  * Currently only supports 'rmm_mode' string paramater, which set the rmm
- * allocation mode. The default value of the parameter is 'pool'.
+ * allocation mode. The default value of the parameter is 'async'.
  *
  * @return Parsing results in the form of cxxopts::ParseResult
  */
@@ -90,7 +91,7 @@ inline auto parse_test_options(int argc, char** argv)
   try {
     cxxopts::Options options(argv[0], " - cuOpt tests command line options");
     options.allow_unrecognised_options().add_options()(
-      "rmm_mode", "RMM allocation mode", cxxopts::value<std::string>()->default_value("pool"));
+      "rmm_mode", "RMM allocation mode", cxxopts::value<std::string>()->default_value("async"));
 
     return options.parse(argc, argv);
   } catch (const std::exception& e) {

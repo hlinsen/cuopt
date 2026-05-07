@@ -520,7 +520,7 @@ bool local_search_t<i_t, f_t, REQUEST>::perform_sliding_tsp(
       cuopt::make_span(locks_));
   RAFT_CHECK_CUDA(sol.sol_handle->get_stream());
 
-  n_moves_found = thrust::count_if(rmm::exec_policy(sol.sol_handle->get_stream()),
+  n_moves_found = thrust::count_if(rmm::exec_policy_nosync(sol.sol_handle->get_stream()),
                                    sampled_tsp_data_.begin(),
                                    sampled_tsp_data_.end(),
                                    is_sliding_tsp_initialized_t<i_t>());
@@ -543,7 +543,7 @@ bool local_search_t<i_t, f_t, REQUEST>::perform_sliding_tsp(
 
   if (!set_shmem_of_kernel(execute_sliding_moves_tsp<i_t, f_t, REQUEST>, sh_size)) { return false; }
 
-  thrust::sort(rmm::exec_policy(sol.sol_handle->get_stream()),
+  thrust::sort(rmm::exec_policy_nosync(sol.sol_handle->get_stream()),
                sampled_tsp_data_.begin(),
                sampled_tsp_data_.end(),
                [] __device__(sliding_tsp_cand_t<i_t> cand1, sliding_tsp_cand_t<i_t> cand2) -> bool {
