@@ -7,6 +7,7 @@
 
 #include <cuopt/routing/cython/cython.hpp>
 #include <cuopt/routing/solve.hpp>
+#include <raft/core/error.hpp>
 #include <raft/core/handle.hpp>
 #include <raft/core/nvtx.hpp>
 #include <rmm/device_buffer.hpp>
@@ -128,10 +129,10 @@ std::vector<std::unique_ptr<vehicle_routing_ret_t>> call_batch_solve(
 
   auto total_SMs = initial_device_GPU_resources.sm.smCount;
 
-  printf("Total SMs: %u\n", total_SMs);
+  // printf("Total SMs: %u\n", total_SMs);
   // Divide SMs equally based on number of orders (data_models)
   auto sms_per_context = std::max(1u, total_SMs / static_cast<unsigned>(size));
-  printf("SMS per context: %u\n", sms_per_context);
+  // printf("SMS per context: %u\n", sms_per_context);
 
   auto cuDevSmResourceSplitByCount_func =
     cuopt::detail::get_driver_entry_point("cuDevSmResourceSplitByCount");
@@ -143,27 +144,38 @@ std::vector<std::unique_ptr<vehicle_routing_ret_t>> call_batch_solve(
 
   // Split resources into n_groups = size (number of problems)
   std::vector<CUdevResource> resources(size);
-  auto n_groups  = static_cast<unsigned>(size);
-  auto use_flags = CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING;
-  CU_CHECK(reinterpret_cast<decltype(::cuDevSmResourceSplitByCount)*>(
-             cuDevSmResourceSplitByCount_func)(resources.data(),
-                                               &n_groups,
-                                               &initial_device_GPU_resources,
-                                               nullptr,
-                                               use_flags,
-                                               sms_per_context),
-           reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
+  auto requested_groups = static_cast<unsigned>(size);
+  auto n_groups         = requested_groups;
+  auto use_flags        = CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING;
+  CUresult split_result = CUDA_SUCCESS;
+  do {
+    n_groups     = requested_groups;
+    split_result = reinterpret_cast<decltype(::cuDevSmResourceSplitByCount)*>(
+      cuDevSmResourceSplitByCount_func)(resources.data(),
+                                        &n_groups,
+                                        &initial_device_GPU_resources,
+                                        nullptr,
+                                        use_flags,
+                                        sms_per_context);
+    CU_CHECK(split_result, reinterpret_cast<decltype(::cuGetErrorString)*>(cuGetErrorString_func));
+    if (split_result == CUDA_SUCCESS && n_groups == requested_groups) { break; }
+    --sms_per_context;
+  } while (sms_per_context > 0);
+  RAFT_EXPECTS(split_result == CUDA_SUCCESS && n_groups == requested_groups,
+               "Unable to split %u SMs into %u green context groups",
+               total_SMs,
+               requested_groups);
 
-  printf(
-    "Resources were split into %u groups (had requested %zu) with %u SMs each (had requested %u)\n",
-    n_groups,
-    size,
-    resources[0].sm.smCount,
-    sms_per_context);
+  // printf(
+  //   "Resources were split into %u groups (had requested %zu) with %u SMs each (had requested %u)\n",
+  //   n_groups,
+  //   size,
+  //   resources[0].sm.smCount,
+  //   sms_per_context);
 
   // Create green contexts and streams for each solve
   for (std::size_t i = 0; i < size; ++i) {
-    printf("Problem %zu: %u SMs\n", i, resources[i].sm.smCount);
+    // printf("Problem %zu: %u SMs\n", i, resources[i].sm.smCount);
 
     CUdevResourceDesc resource_desc;
     CU_CHECK(reinterpret_cast<decltype(::cuDevResourceGenerateDesc)*>(
