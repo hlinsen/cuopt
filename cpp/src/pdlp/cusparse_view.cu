@@ -338,6 +338,10 @@ bool is_cusparse_runtime_12_8_or_newer()
   return (major > 12) || (major == 12 && minor >= 8);
 }
 
+}  // namespace
+
+// Exported (declared in cusparse_view.hpp) so other solvers (e.g. the barrier solver) can size
+// the external buffer that must be allocated before creating an SpMVOp descriptor.
 cusparseStatus_t cusparse_spmvop_buffer_size(cusparseHandle_t handle,
                                              cusparseOperation_t opA,
                                              cusparseSpMatDescr_t matA,
@@ -359,8 +363,6 @@ cusparseStatus_t cusparse_spmvop_buffer_size(cusparseHandle_t handle,
     dynamic_load_runtime::function<cusparseSpMVOp_bufferSize_12_7_sig>("cusparseSpMVOp_bufferSize");
   return (*fn)(handle, opA, matA, vecX, vecY, vecZ, computeType, bufferSize);
 }
-
-}  // namespace
 
 cusparseStatus_t cusparse_spmvop_descr_wrapper_t::dlsym_create(cusparseHandle_t handle,
                                                                cusparseSpMVOpDescr_t* descr,

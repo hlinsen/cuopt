@@ -71,5 +71,20 @@ class cusparse_view_t {
   rmm::device_scalar<f_t> d_one_;
   rmm::device_scalar<f_t> d_minus_one_;
   rmm::device_scalar<f_t> d_zero_;
+
+  // Fused SpMVOp acceleration. A plan is built once per matrix (A and A_T) and reused across all
+  // barrier iterations, which is cheaper than the generic cusparseSpMV path. This mirrors the
+  // SpMVOp speed-up adopted by PDLP. When the runtime cuSPARSE lacks the SpMVOp symbols (or f_t is
+  // not double) spmvop_enabled_ stays false and spmv()/transpose_spmv() fall back to cusparseSpMV.
+  bool spmvop_enabled_{false};
+#if CUOPT_CUSPARSE_VER_12_7_UP
+  rmm::device_uvector<uint8_t> spmvop_buffer_;
+  rmm::device_uvector<uint8_t> spmvop_buffer_transpose_;
+  // descr declared before plan so the destructor tears the plan down first
+  detail::cusparse_spmvop_descr_wrapper_t spmv_op_descr_A_;
+  detail::cusparse_spmvop_plan_wrapper_t spmv_op_plan_A_;
+  detail::cusparse_spmvop_descr_wrapper_t spmv_op_descr_A_T_;
+  detail::cusparse_spmvop_plan_wrapper_t spmv_op_plan_A_T_;
+#endif  // CUOPT_CUSPARSE_VER_12_7_UP
 };
 }  // namespace cuopt::linear_programming::dual_simplex

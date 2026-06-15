@@ -360,6 +360,18 @@ bool is_cusparse_runtime_mixed_precision_supported();
 bool is_cusparse_runtime_spmvop_supported();
 
 #if CUOPT_CUSPARSE_VER_12_7_UP
+// Sizes the external buffer required before creating an SpMVOp descriptor. Resolved via dlsym so
+// callers never reference the symbol statically. Caller must have verified
+// is_cusparse_runtime_spmvop_supported().
+cusparseStatus_t cusparse_spmvop_buffer_size(cusparseHandle_t handle,
+                                             cusparseOperation_t opA,
+                                             cusparseSpMatDescr_t matA,
+                                             cusparseDnVecDescr_t vecX,
+                                             cusparseDnVecDescr_t vecY,
+                                             cusparseDnVecDescr_t vecZ,
+                                             cudaDataType computeType,
+                                             size_t* bufferSize);
+
 // Dispatches to the runtime cusparseSpMVOp via dlsym so callers (e.g., pdhg.cu) never
 // reference the symbol statically. Caller must have verified
 // is_cusparse_runtime_spmvop_supported().

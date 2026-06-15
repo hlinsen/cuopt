@@ -138,6 +138,11 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
     d_one_(f_t(1), handle_ptr->get_stream()),
     d_minus_one_(f_t(-1), handle_ptr->get_stream()),
     d_zero_(f_t(0), handle_ptr->get_stream())
+#if CUOPT_CUSPARSE_VER_12_7_UP
+    ,
+    spmvop_buffer_(0, handle_ptr->get_stream()),
+    spmvop_buffer_transpose_(0, handle_ptr->get_stream())
+#endif  // CUOPT_CUSPARSE_VER_12_7_UP
 {
   RAFT_CUBLAS_TRY(raft::linalg::detail::cublassetpointermode(
     handle_ptr->get_cublas_handle(), CUBLAS_POINTER_MODE_DEVICE, handle_ptr->get_stream()));
@@ -243,6 +248,65 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
                              get_spmv_alg(A_T_offsets_.size() - 1),
                              spmv_buffer_transpose_.data(),
                              handle_ptr->get_stream());
+
+#if CUOPT_CUSPARSE_VER_12_7_UP
+  // Build fused SpMVOp plans for A (non-transpose) and A_T. Each plan is created once here and
+  // reused by every spmv()/transpose_spmv() call, avoiding the per-call setup of cusparseSpMV.
+  // Only x/y sizes and types matter at plan-creation time, so binding the temporary x/y
+  // descriptors (destroyed just below) is fine; the actual vectors are supplied at run time.
+  // f_t is double for every instantiation, hence the CUDA_R_64F compute type below.
+  if constexpr (std::is_same_v<f_t, double>) {
+    if (nnz > 0 && detail::is_cusparse_runtime_spmvop_supported()) {
+      RAFT_CUSPARSE_TRY(
+        cusparseSetStream(handle_ptr_->get_cusparse_handle(), handle_ptr_->get_stream().value()));
+
+      // A * x : vecX has cols entries (x), vecY/vecZ have rows entries (y)
+      size_t buffer_size_A = 0;
+      RAFT_CUSPARSE_TRY(detail::cusparse_spmvop_buffer_size(handle_ptr_->get_cusparse_handle(),
+                                                            CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                            A_,
+                                                            x,
+                                                            y,
+                                                            y,
+                                                            CUDA_R_64F,
+                                                            &buffer_size_A));
+      spmvop_buffer_.resize(buffer_size_A, handle_ptr_->get_stream());
+      spmv_op_descr_A_.create(handle_ptr_->get_cusparse_handle(),
+                              CUSPARSE_OPERATION_NON_TRANSPOSE,
+                              A_,
+                              x,
+                              y,
+                              y,
+                              CUDA_R_64F,
+                              spmvop_buffer_);
+      spmv_op_plan_A_.create(handle_ptr_->get_cusparse_handle(), spmv_op_descr_A_);
+
+      // A_T * y : vecX has rows entries (y), vecY/vecZ have cols entries (x)
+      size_t buffer_size_A_T = 0;
+      RAFT_CUSPARSE_TRY(detail::cusparse_spmvop_buffer_size(handle_ptr_->get_cusparse_handle(),
+                                                            CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                                            A_T_,
+                                                            y,
+                                                            x,
+                                                            x,
+                                                            CUDA_R_64F,
+                                                            &buffer_size_A_T));
+      spmvop_buffer_transpose_.resize(buffer_size_A_T, handle_ptr_->get_stream());
+      spmv_op_descr_A_T_.create(handle_ptr_->get_cusparse_handle(),
+                                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                A_T_,
+                                y,
+                                x,
+                                x,
+                                CUDA_R_64F,
+                                spmvop_buffer_transpose_);
+      spmv_op_plan_A_T_.create(handle_ptr_->get_cusparse_handle(), spmv_op_descr_A_T_);
+
+      spmvop_enabled_ = true;
+    }
+  }
+#endif  // CUOPT_CUSPARSE_VER_12_7_UP
+
   RAFT_CUSPARSE_TRY(cusparseDestroyDnVec(x));
   RAFT_CUSPARSE_TRY(cusparseDestroyDnVec(y));
 }
@@ -250,6 +314,17 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
 template <typename i_t, typename f_t>
 cusparse_view_t<i_t, f_t>::~cusparse_view_t()
 {
+#if CUOPT_CUSPARSE_VER_12_7_UP
+  // The SpMVOp plans/descriptors reference A_ / A_T_, so tear them down (plan before its descr)
+  // here, while the matrix descriptors are still alive. Member destructors only run after this
+  // body, i.e. after the cusparseDestroySpMat calls below, so declaration order alone is not
+  // enough to guarantee correct teardown ordering. Move-assigning a default-constructed wrapper
+  // destroys the currently held plan/descriptor immediately.
+  spmv_op_plan_A_    = detail::cusparse_spmvop_plan_wrapper_t{};
+  spmv_op_descr_A_   = detail::cusparse_spmvop_descr_wrapper_t{};
+  spmv_op_plan_A_T_  = detail::cusparse_spmvop_plan_wrapper_t{};
+  spmv_op_descr_A_T_ = detail::cusparse_spmvop_descr_wrapper_t{};
+#endif  // CUOPT_CUSPARSE_VER_12_7_UP
   CUOPT_CUSPARSE_TRY_NO_THROW(cusparseDestroySpMat(A_));
   CUOPT_CUSPARSE_TRY_NO_THROW(cusparseDestroySpMat(A_T_));
 }
@@ -303,6 +378,19 @@ void cusparse_view_t<i_t, f_t>::spmv(f_t alpha,
     d_beta = &d_zero_;
   else if (beta == f_t(-1))
     d_beta = &d_minus_one_;
+#if CUOPT_CUSPARSE_VER_12_7_UP
+  if (spmvop_enabled_) {
+    detail::cusparse_spmvop_run(handle_ptr_->get_cusparse_handle(),
+                                spmv_op_plan_A_,
+                                (alpha == 1) ? d_one_.data() : d_minus_one_.data(),
+                                d_beta->data(),
+                                x,
+                                y,
+                                y,
+                                handle_ptr_->get_stream().value());
+    return;
+  }
+#endif  // CUOPT_CUSPARSE_VER_12_7_UP
   raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
                                      (alpha == 1) ? d_one_.data() : d_minus_one_.data(),
@@ -356,6 +444,19 @@ void cusparse_view_t<i_t, f_t>::transpose_spmv(
     d_beta = &d_zero_;
   else if (beta == f_t(-1))
     d_beta = &d_minus_one_;
+#if CUOPT_CUSPARSE_VER_12_7_UP
+  if (spmvop_enabled_) {
+    detail::cusparse_spmvop_run(handle_ptr_->get_cusparse_handle(),
+                                spmv_op_plan_A_T_,
+                                (alpha == 1) ? d_one_.data() : d_minus_one_.data(),
+                                d_beta->data(),
+                                x,
+                                y,
+                                y,
+                                handle_ptr_->get_stream().value());
+    return;
+  }
+#endif  // CUOPT_CUSPARSE_VER_12_7_UP
   raft::sparse::detail::cusparsespmv(handle_ptr_->get_cusparse_handle(),
                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
                                      (alpha == 1) ? d_one_.data() : d_minus_one_.data(),
