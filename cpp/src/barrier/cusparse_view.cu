@@ -12,6 +12,7 @@
 #include <dual_simplex/sparse_matrix.hpp>
 
 #include <utilities/copy_helpers.hpp>
+#include <utilities/logger.hpp>
 #include <utilities/macros.cuh>
 
 #include <cuopt/error.hpp>
@@ -303,6 +304,8 @@ cusparse_view_t<i_t, f_t>::cusparse_view_t(raft::handle_t const* handle_ptr,
       spmv_op_plan_A_T_.create(handle_ptr_->get_cusparse_handle(), spmv_op_descr_A_T_);
 
       spmvop_enabled_ = true;
+      CUOPT_LOG_INFO(
+        "Barrier: cuSPARSE SpMVOp enabled for SpMV (rows=%d, cols=%d, nnz=%d)", rows, cols, nnz);
     }
   }
 #endif  // CUOPT_CUSPARSE_VER_12_7_UP
