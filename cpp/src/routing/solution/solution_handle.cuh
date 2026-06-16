@@ -1,6 +1,6 @@
 /* clang-format off */
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 /* clang-format on */
@@ -42,6 +42,16 @@ class solution_handle_t {
   }
 
   rmm::exec_policy& get_thrust_policy() const noexcept { return *thrust_policy_; }
+  // Non-synchronizing thrust policy. Use for thrust calls captured into a CUDA
+  // graph (or that otherwise must stay stream-ordered without a host sync):
+  // unlike get_thrust_policy(), thrust will not synchronize the stream after the
+  // algorithm. Note this does NOT make value-returning algorithms (e.g.
+  // thrust::count / thrust::reduce that copy a scalar back to the host) async --
+  // those still sync; keep their results in device memory instead.
+  rmm::exec_policy_nosync& get_thrust_policy_nosync() const noexcept
+  {
+    return *thrust_policy_nosync_;
+  }
   rmm::cuda_stream_view get_stream() const noexcept { return stream_view_; }
   i_t get_device() const { return dev_id_; }
   void sync_stream() const { stream_view_.synchronize(); };
@@ -64,7 +74,11 @@ class solution_handle_t {
   }
 
  private:
-  void create_resources() { thrust_policy_ = std::make_shared<rmm::exec_policy>(stream_view_); }
+  void create_resources()
+  {
+    thrust_policy_        = std::make_shared<rmm::exec_policy>(stream_view_);
+    thrust_policy_nosync_ = std::make_shared<rmm::exec_policy_nosync>(stream_view_);
+  }
 
   const i_t dev_id_{0};
   mutable cudaDeviceProp prop_;
@@ -75,6 +89,7 @@ class solution_handle_t {
   rmm::cuda_stream_view stream_view_{};
   // this is a shared pointer to be able to copy construct and keep a copy of a solution
   std::shared_ptr<rmm::exec_policy> thrust_policy_{nullptr};
+  std::shared_ptr<rmm::exec_policy_nosync> thrust_policy_nosync_{nullptr};
 };
 
 }  // namespace detail
