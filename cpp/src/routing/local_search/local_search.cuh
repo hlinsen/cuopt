@@ -14,6 +14,7 @@
 #include "hvrp/vehicle_assignment.cuh"
 #include "sliding_tsp.cuh"
 
+#include <rmm/device_scalar.hpp>
 #include <rmm/device_uvector.hpp>
 
 #include <deque>
@@ -202,11 +203,20 @@ class local_search_t {
   rmm::device_uvector<NodeInfo<i_t>> moved_region_node_infos_;
   rmm::device_uvector<sliding_tsp_cand_t<i_t>> sampled_tsp_data_;
   rmm::device_uvector<int> locks_;
+  // device-side count of sliding-TSP moves found, so the find/apply step can run
+  // in a single conditional graph launch without a host count_if sync
+  rmm::device_scalar<i_t> n_sliding_tsp_moves_;
+  // pre-allocated cub scratch for the sliding-TSP move count and candidate sort;
+  // sized before graph capture so the in-graph cub primitives never allocate
+  // mid-capture
+  rmm::device_uvector<char> sliding_tsp_reduce_temp_;
+  rmm::device_uvector<char> sliding_tsp_sort_temp_;
   // random number generator
   std::mt19937 rng;
 
   // graphs
   cuda_graph_t sliding_cuda_graph;
+  conditional_cuda_graph_t sliding_tsp_graph;
 };
 
 }  // namespace detail

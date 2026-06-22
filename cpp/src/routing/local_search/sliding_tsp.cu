@@ -10,6 +10,7 @@
 #include "../utilities/cuopt_utils.cuh"
 #include "local_search.cuh"
 
+#include <thrust/iterator/transform_iterator.h>
 #include <thrust/pair.h>
 #include <cub/cub.cuh>
 
@@ -476,6 +477,37 @@ void compute_cumulative_distances(solution_t<i_t, f_t, REQUEST>& sol,
                                 sol.sol_handle->get_stream());
 }
 
+// Orders sliding-TSP candidates by ascending selection delta (best first).
+// Used by cub::DeviceMergeSort, whose scratch is pre-allocated so the sort is
+// capture-safe inside the conditional graph body.
+template <typename i_t>
+struct sliding_tsp_delta_less_t {
+  __device__ bool operator()(const sliding_tsp_cand_t<i_t>& a,
+                             const sliding_tsp_cand_t<i_t>& b) const
+  {
+    return a.selection_delta < b.selection_delta;
+  }
+};
+
+// Maps a candidate to 1 if it holds a move, else 0. Fed to cub::DeviceReduce to
+// count initialized candidates into a device scalar (no host count_if sync).
+template <typename i_t>
+struct sliding_tsp_initialized_count_t {
+  __device__ i_t operator()(const sliding_tsp_cand_t<i_t>& x) const
+  {
+    return x.window_size != -1 ? i_t{1} : i_t{0};
+  }
+};
+
+// Sets the conditional handle from the device-side move count, so the IF body
+// (apply moves) executes only when at least one move was found.
+template <typename i_t>
+__global__ void set_sliding_tsp_conditional_kernel(cudaGraphConditionalHandle handle,
+                                                   const i_t* n_moves_found)
+{
+  cudaGraphSetConditional(handle, (*n_moves_found > 0) ? 1u : 0u);
+}
+
 template <typename i_t, typename f_t, request_t REQUEST>
 bool local_search_t<i_t, f_t, REQUEST>::perform_sliding_tsp(
   solution_t<i_t, f_t, REQUEST>& sol, move_candidates_t<i_t, f_t>& move_candidates)
@@ -487,11 +519,12 @@ bool local_search_t<i_t, f_t, REQUEST>::perform_sliding_tsp(
   [[maybe_unused]] double cost_before = 0., cost_after = 0.;
 
   auto constexpr const n_threads = 128;
+  auto const stream              = sol.sol_handle->get_stream();
 
   auto shared_route_size = sol.check_routes_can_insert_and_get_sh_size(0);
   sol.compute_max_active();
   moved_region_node_infos_.resize(sol.get_n_routes() * sol.get_max_active_nodes_for_all_routes(),
-                                  sol.sol_handle->get_stream());
+                                  stream);
   auto n_nodes              = sol.problem_ptr->order_info.get_num_depot_excluded_orders();
   size_t temp_storage_bytes = 0;
   resize_temp_storage<i_t, f_t, REQUEST>(sol, move_candidates, n_nodes, temp_storage_bytes);
@@ -500,60 +533,103 @@ bool local_search_t<i_t, f_t, REQUEST>::perform_sliding_tsp(
     sol, move_candidates, n_nodes, n_threads, temp_storage_bytes);
 
   auto n_blocks = move_candidates.nodes_to_search.n_sampled_nodes;
-  async_fill(sampled_tsp_data_,
-             is_sliding_tsp_uinitialized_t<i_t>::init_data(),
-             sol.sol_handle->get_stream());
 
-  auto sh_size =
+  // Shared-memory attributes are host-side (cudaFuncSetAttribute) and must be
+  // set before stream capture begins, for both captured kernels.
+  auto const find_sh_size =
     raft::alignTo(shared_route_size, sizeof(double)) + max_window_size * sizeof(double);
+  auto const exec_sh_size = shared_route_size;
+  if (!set_shmem_of_kernel(find_sliding_moves_tsp<i_t, f_t, REQUEST>, find_sh_size)) {
+    return false;
+  }
+  if (!set_shmem_of_kernel(execute_sliding_moves_tsp<i_t, f_t, REQUEST>, exec_sh_size)) {
+    return false;
+  }
 
-  if (!set_shmem_of_kernel(find_sliding_moves_tsp<i_t, f_t, REQUEST>, sh_size)) { return false; }
-
-  find_sliding_moves_tsp<i_t, f_t, REQUEST>
-    <<<n_blocks, n_threads, sh_size, sol.sol_handle->get_stream()>>>(
-      sol.view(),
-      move_candidates.view(),
-      cuopt::make_span(sampled_tsp_data_),
-      cuopt::make_span(locks_));
-  RAFT_CHECK_CUDA(sol.sol_handle->get_stream());
-
-  n_moves_found = thrust::count_if(rmm::exec_policy(sol.sol_handle->get_stream()),
-                                   sampled_tsp_data_.begin(),
-                                   sampled_tsp_data_.end(),
-                                   is_sliding_tsp_initialized_t<i_t>());
-  if (!n_moves_found) { return false; }
-
-  async_fill(moved_region_node_infos_, NodeInfo<i_t>{}, sol.sol_handle->get_stream());
-
-  set_moved_regions_kernel<i_t, f_t, REQUEST>
-    <<<sol.get_n_routes(), 64, 0, sol.sol_handle->get_stream()>>>(
-      sol.view(), cuopt::make_span(moved_region_node_infos_));
-  RAFT_CHECK_CUDA(sol.sol_handle->get_stream());
-
-  cuopt_func_call(
-    move_candidates.debug_delta.set_value_to_zero_async(sol.sol_handle->get_stream()));
+  // Cost bookkeeping for the debug assertions must happen before the (captured)
+  // apply step and stay out of the captured region.
+  cuopt_func_call(move_candidates.debug_delta.set_value_to_zero_async(stream));
   cuopt_func_call(sol.compute_cost());
   cuopt_func_call(cost_before = sol.get_total_cost(move_candidates.weights) -
                                 sol.get_cost(false, move_candidates.weights));
 
-  sh_size = shared_route_size;
+  // Counts initialized candidates into the device scalar via cub::DeviceReduce
+  // over a 0/1 transform of the candidates -- no host count_if, no custom kernel.
+  auto const count_it = thrust::make_transform_iterator(sampled_tsp_data_.data(),
+                                                        sliding_tsp_initialized_count_t<i_t>{});
 
-  if (!set_shmem_of_kernel(execute_sliding_moves_tsp<i_t, f_t, REQUEST>, sh_size)) { return false; }
+  // Pre-size the cub scratch (host-side queries) before capture so the in-graph
+  // reduce and merge sort below allocate nothing during capture.
+  size_t reduce_temp_bytes = 0;
+  cub::DeviceReduce::Sum(static_cast<void*>(nullptr),
+                         reduce_temp_bytes,
+                         count_it,
+                         n_sliding_tsp_moves_.data(),
+                         sampled_tsp_data_.size(),
+                         stream);
+  if (reduce_temp_bytes > sliding_tsp_reduce_temp_.size()) {
+    sliding_tsp_reduce_temp_.resize(reduce_temp_bytes, stream);
+  }
 
-  thrust::sort(rmm::exec_policy(sol.sol_handle->get_stream()),
-               sampled_tsp_data_.begin(),
-               sampled_tsp_data_.end(),
-               [] __device__(sliding_tsp_cand_t<i_t> cand1, sliding_tsp_cand_t<i_t> cand2) -> bool {
-                 return cand1.selection_delta < cand2.selection_delta;
-               });
+  size_t sort_temp_bytes = 0;
+  cub::DeviceMergeSort::SortKeys(static_cast<void*>(nullptr),
+                                 sort_temp_bytes,
+                                 sampled_tsp_data_.data(),
+                                 sampled_tsp_data_.size(),
+                                 sliding_tsp_delta_less_t<i_t>{},
+                                 stream);
+  if (sort_temp_bytes > sliding_tsp_sort_temp_.size()) {
+    sliding_tsp_sort_temp_.resize(sort_temp_bytes, stream);
+  }
 
+  // Build a single conditional graph: an unconditional prologue (find moves +
+  // count them on the device + set the IF condition) followed by an IF node
+  // whose body applies the moves. This replaces the host thrust::count_if sync
+  // that previously gated the early return -- the decision is now made on the
+  // device, so the sliding kernels run from one graph launch.
+  auto handle = sliding_tsp_graph.begin_prologue_capture(stream, cudaGraphCondTypeIf);
+
+  // --- prologue (always runs) ---
+  async_fill(sampled_tsp_data_, is_sliding_tsp_uinitialized_t<i_t>::init_data(), stream);
+  find_sliding_moves_tsp<i_t, f_t, REQUEST>
+    <<<n_blocks, n_threads, find_sh_size, stream>>>(sol.view(),
+                                                    move_candidates.view(),
+                                                    cuopt::make_span(sampled_tsp_data_),
+                                                    cuopt::make_span(locks_));
+  cub::DeviceReduce::Sum(sliding_tsp_reduce_temp_.data(),
+                         reduce_temp_bytes,
+                         count_it,
+                         n_sliding_tsp_moves_.data(),
+                         sampled_tsp_data_.size(),
+                         stream);
+  set_sliding_tsp_conditional_kernel<i_t><<<1, 1, 0, stream>>>(handle, n_sliding_tsp_moves_.data());
+
+  // --- conditional body (runs iff at least one move was found) ---
+  sliding_tsp_graph.begin_body_capture(stream);
+  async_fill(moved_region_node_infos_, NodeInfo<i_t>{}, stream);
+  set_moved_regions_kernel<i_t, f_t, REQUEST>
+    <<<sol.get_n_routes(), 64, 0, stream>>>(sol.view(), cuopt::make_span(moved_region_node_infos_));
+  cub::DeviceMergeSort::SortKeys(sliding_tsp_sort_temp_.data(),
+                                 sort_temp_bytes,
+                                 sampled_tsp_data_.data(),
+                                 sampled_tsp_data_.size(),
+                                 sliding_tsp_delta_less_t<i_t>{},
+                                 stream);
   execute_sliding_moves_tsp<i_t, f_t, REQUEST>
-    <<<sol.get_n_routes(), n_threads, sh_size, sol.sol_handle->get_stream()>>>(
+    <<<sol.get_n_routes(), n_threads, exec_sh_size, stream>>>(
       sol.view(),
       move_candidates.view(),
       cuopt::make_span(sampled_tsp_data_),
       cuopt::make_span(moved_region_node_infos_));
-  RAFT_CHECK_CUDA(sol.sol_handle->get_stream());
+
+  sliding_tsp_graph.end_body_capture(stream);
+  sliding_tsp_graph.launch_graph(stream);
+
+  // Single read of the device-side move count for the return value. The caller
+  // (run_sliding_search) synchronizes the stream right after, so this is not an
+  // extra sync beyond what already happens per call.
+  n_moves_found = n_sliding_tsp_moves_.value(stream);
+  if (!n_moves_found) { return false; }
 
   compute_cumulative_distances<i_t, f_t, REQUEST, false>(
     sol, move_candidates, n_nodes, n_threads, temp_storage_bytes);
@@ -562,8 +638,7 @@ bool local_search_t<i_t, f_t, REQUEST>::perform_sliding_tsp(
   cuopt_func_call(cost_after = sol.get_total_cost(move_candidates.weights) -
                                sol.get_cost(false, move_candidates.weights));
 
-  cuopt_assert(abs((cost_before - cost_after) +
-                   move_candidates.debug_delta.value(sol.sol_handle->get_stream())) <
+  cuopt_assert(abs((cost_before - cost_after) + move_candidates.debug_delta.value(stream)) <
                  EPSILON * (1 + abs(cost_before)),
                "Cost mismatch on sliding_tsp costs!");
   cuopt_assert(cost_before - cost_after >= EPSILON, "Cost should improve!");
