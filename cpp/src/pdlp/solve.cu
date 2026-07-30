@@ -1531,11 +1531,13 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   // Make sure allocations are done on the original stream
   problem.handle_ptr->sync_stream();
 
-  // Stand-alone LP always runs all three concurrently. MIP gates the barrier so we don't
-  // overshoot num_cpu_threads (need 1 PDLP + 1 dual simplex + 1 barrier).
+  // Skip barrier for large problems and when MIP lacks a thread for each concurrent solver.
+  constexpr i_t concurrent_barrier_nnz_limit = 50'000'000;
   const int available_threads = omp_in_parallel() ? omp_get_num_threads() : omp_get_max_threads();
   const bool enable_barrier =
-    !settings.inside_mip || available_threads >= CUOPT_CONCURRENT_LP_BARRIER_REQUIRED_THREAD_COUNT;
+    problem.nnz <= concurrent_barrier_nnz_limit &&
+    (!settings.inside_mip ||
+     available_threads >= CUOPT_CONCURRENT_LP_BARRIER_REQUIRED_THREAD_COUNT);
 
   if (settings.num_gpus > 1) {
     int device_count = raft::device_setter::get_device_count();
@@ -1566,11 +1568,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   // library init is now recovered by manual_cuda_graph_t::run, so the previous main-thread
   // preflight (eager handle construction + cuDSS warmup) is no longer needed.
   std::unique_ptr<raft::handle_t> barrier_handle_ptr;
-  if (!enable_barrier) {
-    CUOPT_LOG_DEBUG("MIP: skipping concurrent barrier, %d threads available < %d required.",
-                    available_threads,
-                    CUOPT_CONCURRENT_LP_BARRIER_REQUIRED_THREAD_COUNT);
-  }
+  if (!enable_barrier) { CUOPT_LOG_DEBUG("Skipping concurrent barrier."); }
 
   // Dispatch barrier + dual simplex as OMP tasks (not std::threads) so they consume slots from
   // the upstream MIP OMP team and respect num_cpu_threads. PDLP runs synchronously on the
@@ -1585,7 +1583,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   auto dispatch_concurrent_solvers = [&]() {
 #pragma omp taskgroup
     {
-      // Barrier task — always on for stand-alone LP, gated on enable_barrier for MIP.
+      // Barrier task — gated by problem size and available MIP threads.
       if (enable_barrier) {
 #pragma omp task default(shared)
         {
