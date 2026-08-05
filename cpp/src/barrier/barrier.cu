@@ -940,6 +940,10 @@ class iteration_data_t {
     auto adat_nnz       = device_ADAT.row_start.element(device_ADAT.m, handle_ptr->get_stream());
     float64_t adat_time = toc(start_form_adat);
 
+    // Emit every ADAT formation, not just the first one, so benchmark logs can
+    // account for the total time spent forming A * D * A^T over the full solve.
+    settings_.log.printf("ADAT formation time         : %.9fs\n", adat_time);
+
     if (num_factorizations == 0) {
       settings_.log.printf("ADAT time                   : %.2fs\n", adat_time);
       settings_.log.printf("ADAT nonzeros               : %.2e\n",
