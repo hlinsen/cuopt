@@ -387,9 +387,9 @@ class branch_and_bound_t {
                     i_t submip_level,
                     std::string_view log_prefix,
                     submip_stats_t& stats,
-                    const std::vector<i_t>& local_branching_variables,
-                    const std::vector<f_t>& local_branching_coefficients,
-                    f_t local_branching_rhs);
+                    const std::vector<i_t>& local_branching_variables = {},
+                    const std::vector<f_t>& local_branching_coefficients = {},
+                    f_t local_branching_rhs = f_t{0});
 
   // Creates and solves the RINS sub-MIP
   void rins(diving_worker_t<i_t, f_t>* rins_worker, const std::vector<f_t>& node_solution);

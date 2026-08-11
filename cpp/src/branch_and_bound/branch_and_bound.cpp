@@ -2623,8 +2623,6 @@ void branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* dins_worker,
   const bool use_local_branching = neighborhood.soft_variables.size() >
                                    static_cast<std::size_t>(settings_.submip_settings.dins_radius);
   const i_t num_restricted = neighborhood.num_hard_fixed + neighborhood.num_rebounded;
-  static const std::vector<i_t> no_variables;
-  static const std::vector<f_t> no_coefficients;
 
   settings_.log.debug_format("{}hard-fixed={}, rebound={}, soft={}, radius={}\n",
                              log_prefix,
@@ -2633,16 +2631,26 @@ void branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* dins_worker,
                              neighborhood.soft_variables.size(),
                              settings_.submip_settings.dins_radius);
 
-  solve_submip(dins_worker,
-               current_incumbent,
-               num_restricted,
-               num_integers,
-               submip_level,
-               log_prefix,
-               dins_stats_,
-               use_local_branching ? neighborhood.soft_variables : no_variables,
-               use_local_branching ? neighborhood.soft_coefficients : no_coefficients,
-               neighborhood.soft_rhs);
+  if (use_local_branching) {
+    solve_submip(dins_worker,
+                 current_incumbent,
+                 num_restricted,
+                 num_integers,
+                 submip_level,
+                 log_prefix,
+                 dins_stats_,
+                 neighborhood.soft_variables,
+                 neighborhood.soft_coefficients,
+                 neighborhood.soft_rhs);
+  } else {
+    solve_submip(dins_worker,
+                 current_incumbent,
+                 num_restricted,
+                 num_integers,
+                 submip_level,
+                 log_prefix,
+                 dins_stats_);
+  }
 
   settings_.log.debug_format("{}success={}, infeasible={}, calls={}\n",
                              log_prefix,
@@ -2871,18 +2879,13 @@ void branch_and_bound_t<i_t, f_t>::rins(diving_worker_t<i_t, f_t>* rins_worker,
       }
 
     } else {
-      static const std::vector<i_t> no_variables;
-      static const std::vector<f_t> no_coefficients;
       solve_submip(rins_worker,
                    current_incumbent,
                    num_var_fixed,
                    num_integers,
                    submip_level,
                    log_prefix,
-                   rins_stats_,
-                   no_variables,
-                   no_coefficients,
-                   f_t{0});
+                   rins_stats_);
     }
   }
 
