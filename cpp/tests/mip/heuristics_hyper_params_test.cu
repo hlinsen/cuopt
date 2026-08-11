@@ -72,6 +72,8 @@ TEST_F(HeuristicsHyperParamsTest, CustomValuesRoundTrip)
     f << "mip_hyper_heuristic_cycle_detection_length = 50\n";
     f << "mip_hyper_heuristic_relaxed_lp_time_limit = 2\n";
     f << "mip_hyper_heuristic_related_vars_time_limit = 60\n";
+    f << "mip_dins = 1\n";
+    f << "mip_hyper_submip_dins_radius = 7\n";
   }
 
   settings_t settings;
@@ -93,6 +95,8 @@ TEST_F(HeuristicsHyperParamsTest, CustomValuesRoundTrip)
   EXPECT_EQ(hp.cycle_detection_length, 50);
   EXPECT_DOUBLE_EQ(hp.relaxed_lp_time_limit, 2.0);
   EXPECT_DOUBLE_EQ(hp.related_vars_time_limit, 60.0);
+  EXPECT_EQ(settings.get_mip_settings().submip_params.dins, 1);
+  EXPECT_EQ(settings.get_mip_settings().submip_params.dins_radius, 7);
 }
 
 TEST_F(HeuristicsHyperParamsTest, PartialConfigKeepsDefaults)
@@ -198,6 +202,16 @@ TEST_F(HeuristicsHyperParamsTest, RangeViolationFixRateThrows)
   {
     std::ofstream f(tmp_path);
     f << "mip_hyper_heuristic_rins_fix_rate = 2.0\n";
+  }
+  settings_t settings;
+  EXPECT_THROW(settings.load_parameters_from_file(tmp_path), cuopt::logic_error);
+}
+
+TEST_F(HeuristicsHyperParamsTest, NegativeDinsRadiusThrows)
+{
+  {
+    std::ofstream f(tmp_path);
+    f << "mip_hyper_submip_dins_radius = -1\n";
   }
   settings_t settings;
   EXPECT_THROW(settings.load_parameters_from_file(tmp_path), cuopt::logic_error);

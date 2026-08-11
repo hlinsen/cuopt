@@ -77,6 +77,7 @@
 #define CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS       "mip_strong_chvatal_gomory_cuts"
 #define CUOPT_MIP_REDUCED_COST_STRENGTHENING       "mip_reduced_cost_strengthening"
 #define CUOPT_MIP_RINS                             "mip_rins"
+#define CUOPT_MIP_DINS                             "mip_dins"
 #define CUOPT_MIP_OBJECTIVE_STEP                   "mip_objective_step"
 #define CUOPT_MIP_CUT_CHANGE_THRESHOLD             "mip_cut_change_threshold"
 #define CUOPT_MIP_CUT_MIN_ORTHOGONALITY            "mip_cut_min_orthogonality"
@@ -135,7 +136,8 @@
 /* @brief Show per-strategy diving symbol in logs instead of a generic 'D' */
 #define CUOPT_MIP_HYPER_DIVING_SHOW_TYPE "mip_hyper_diving_show_type"
 
-/* @brief Recursive sub-MIP (RINS) hyper-parameters */
+/* @brief Recursive neighborhood sub-MIP (RINS/DINS) hyper-parameters */
+#define CUOPT_MIP_HYPER_SUBMIP_DINS_RADIUS           "mip_hyper_submip_dins_radius"
 #define CUOPT_MIP_HYPER_SUBMIP_BASE_TARGET_FIXRATE   "mip_hyper_submip_base_target_fixrate"
 #define CUOPT_MIP_HYPER_SUBMIP_MIN_FIXRATE           "mip_hyper_submip_min_fixrate"
 #define CUOPT_MIP_HYPER_SUBMIP_MIN_FIXRATE_CAP       "mip_hyper_submip_min_fixrate_cap"

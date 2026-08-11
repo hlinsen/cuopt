@@ -272,9 +272,12 @@ class branch_and_bound_t {
   // Worker pool dedicated to diving
   diving_worker_pool_t<i_t, f_t> diving_worker_pool_;
 
-  // Worker pool dedicated to recursive RINS
-  diving_worker_pool_t<i_t, f_t> rins_worker_pool_;
+  // Worker pool and adaptive statistics dedicated to recursive neighborhood sub-MIPs.
+  diving_worker_pool_t<i_t, f_t> submip_worker_pool_;
   submip_stats_t rins_stats_;
+  submip_stats_t dins_stats_;
+  std::vector<f_t> dins_previous_incumbent_;
+  std::vector<bool> dins_changed_incumbent_;
 
   // Global status of the solver.
   omp_atomic_t<mip_status_t> solver_status_;
@@ -366,23 +369,33 @@ class branch_and_bound_t {
   // to find integer feasible solutions.
   void dive_with(diving_worker_t<i_t, f_t>* worker, i_t backtrack_limit);
 
-  // Launch a new RINS worker
-  bool launch_rins_worker(const std::vector<f_t>& sol);
+  enum class submip_heuristic_t { RINS, DINS };
+
+  // Launch a new neighborhood sub-MIP worker.
+  bool launch_submip_worker(const std::vector<f_t>& sol, submip_heuristic_t heuristic);
   void set_solution_from_submip(const std::vector<f_t>& solution,
                                 const third_party_presolve_t<i_t, f_t>& presolver,
                                 f_t fixrate,
-                                f_t obj);
+                                f_t obj,
+                                submip_stats_t& stats);
 
-  // Solve the RINS sub-MIP
+  // Solve a neighborhood sub-MIP, optionally with a local-branching inequality.
   void solve_submip(diving_worker_t<i_t, f_t>* worker,
                     const std::vector<f_t>& current_incumbent,
                     i_t num_var_fixed,
                     i_t num_integers,
                     i_t submip_level,
-                    std::string_view log_prefix);
+                    std::string_view log_prefix,
+                    submip_stats_t& stats,
+                    const std::vector<i_t>& local_branching_variables,
+                    const std::vector<f_t>& local_branching_coefficients,
+                    f_t local_branching_rhs);
 
   // Creates and solves the RINS sub-MIP
   void rins(diving_worker_t<i_t, f_t>* rins_worker, const std::vector<f_t>& node_solution);
+
+  // Creates and solves the DINS sub-MIP
+  void dins(diving_worker_t<i_t, f_t>* dins_worker, const std::vector<f_t>& node_solution);
 
   // Get the simplex settings for solving the LP of a single node
   simplex::simplex_solver_settings_t<i_t, f_t> get_node_lp_settings();

@@ -15,6 +15,12 @@ struct mip_submip_hyper_params_t {
   // Enable or disable (recursive) RINS: -1 automatic, 0 disabled, 1 enabled
   i_t rins = -1;
 
+  // Enable or disable (recursive) DINS: -1 automatic, 0 disabled, 1 enabled
+  i_t dins = -1;
+
+  // Local-branching radius for the DINS neighborhood.
+  i_t dins_radius = 5;
+
   // Base for calculating the target fix rate for the neighbourhood. Actual target value is
   // determined automatically according to the success and infeasible rate.
   f_t base_target_fixrate = 0.6;
