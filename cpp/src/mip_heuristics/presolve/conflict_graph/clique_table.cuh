@@ -201,16 +201,17 @@ struct clique_table_t {
   typename mip_solver_settings_t<i_t, f_t>::tolerances_t tolerances;
 };
 
-// Builds the conflict-graph clique table for `problem`. Consumers MUST set
-// `*signal_extend` and join the producing task before reading the table (see
-// prepare_fractional_sub_conflict_graph), since the extension phase keeps
-// mutating the table after its base cliques are built.
+// Builds the conflict-graph clique table for `problem`. Consumers may read it
+// after an acquire load of `*complete` returns true. Otherwise they MUST set
+// `*signal_extend` and join the producing task before reading it, since the
+// extension phase keeps mutating the table.
 template <typename i_t, typename f_t>
 void find_initial_cliques(simplex::user_problem_t<i_t, f_t>& problem,
                           typename mip_solver_settings_t<i_t, f_t>::tolerances_t tolerances,
                           clique_table_t<i_t, f_t>& clique_table,
                           cuopt::timer_t& timer,
-                          omp_atomic_t<bool>* signal_extend = nullptr);
+                          omp_atomic_t<bool>* signal_extend = nullptr,
+                          omp_atomic_t<bool>* complete      = nullptr);
 
 template <typename i_t, typename f_t>
 void build_clique_table(const simplex::user_problem_t<i_t, f_t>& problem,

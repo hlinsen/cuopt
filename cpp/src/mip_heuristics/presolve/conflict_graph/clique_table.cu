@@ -672,7 +672,8 @@ void find_initial_cliques(user_problem_t<i_t, f_t>& problem,
                           typename mip_solver_settings_t<i_t, f_t>::tolerances_t tolerances,
                           clique_table_t<i_t, f_t>& clique_table,
                           cuopt::timer_t& timer,
-                          omp_atomic_t<bool>* signal_extend)
+                          omp_atomic_t<bool>* signal_extend,
+                          omp_atomic_t<bool>* complete)
 {
   cuopt::timer_t stage_timer(std::numeric_limits<double>::infinity());
 #ifdef DEBUG_CLIQUE_TABLE
@@ -751,6 +752,7 @@ void find_initial_cliques(user_problem_t<i_t, f_t>& problem,
     find_work_estimate,
     extend_work);
 #endif
+  if (complete != nullptr) { complete->store(true, std::memory_order_release); }
 }
 
 #define INSTANTIATE(F_TYPE)                                                                    \
@@ -759,7 +761,8 @@ void find_initial_cliques(user_problem_t<i_t, f_t>& problem,
     typename mip_solver_settings_t<int, F_TYPE>::tolerances_t tolerances,                      \
     clique_table_t<int, F_TYPE> & clique_table,                                                \
     cuopt::timer_t & timer,                                                                    \
-    omp_atomic_t<bool> * signal_extend);                                                       \
+    omp_atomic_t<bool> * signal_extend,                                                        \
+    omp_atomic_t<bool> * complete);                                                            \
   template void build_clique_table<int, F_TYPE>(                                               \
     const user_problem_t<int, F_TYPE>& problem,                                                \
     clique_table_t<int, F_TYPE>& clique_table,                                                 \
