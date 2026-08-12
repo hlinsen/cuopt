@@ -49,6 +49,19 @@ namespace {
 
 enum class clique_cut_build_status_t : int8_t { NO_CUT = 0, CUT_ADDED = 1, INFEASIBLE = 2 };
 
+template <typename i_t, typename f_t>
+bool concurrent_cut_generation_halted(const simplex_solver_settings_t<i_t, f_t>& settings)
+{
+  return settings.concurrent_halt != nullptr &&
+         settings.concurrent_halt->load(std::memory_order_acquire) != 0;
+}
+
+template <typename i_t, typename f_t>
+bool cut_generation_stopped(const simplex_solver_settings_t<i_t, f_t>& settings, f_t start_time)
+{
+  return toc(start_time) >= settings.time_limit || concurrent_cut_generation_halted(settings);
+}
+
 // Shared crash-tolerant debug logger: writes a prefixed line to stderr and
 // flushes immediately so the last line is visible even if the process
 // aborts/terminates right after. Each channel below enables it through its own
@@ -215,6 +228,7 @@ struct bk_bitset_context_t {
   size_t words;
   f_t* work_estimate;
   f_t max_work_estimate;
+  std::atomic<int>* concurrent_halt;
   i_t num_calls{0};
   bool work_limit_reached{false};
   bool call_limit_reached{false};
@@ -233,6 +247,12 @@ struct bk_bitset_context_t {
   }
 
   bool over_call_limit() const { return call_limit_reached || num_calls >= max_calls; }
+
+  bool stopped() const
+  {
+    return toc(start_time) >= time_limit ||
+           (concurrent_halt != nullptr && concurrent_halt->load(std::memory_order_acquire) != 0);
+  }
 };
 
 inline size_t bitset_words(size_t n) { return (n + 63) / 64; }
@@ -279,7 +299,7 @@ void bron_kerbosch(bk_bitset_context_t<i_t, f_t>& ctx,
                    f_t weight_R)
 {
   if (ctx.over_work_limit() || ctx.over_call_limit()) { return; }
-  if (toc(ctx.start_time) >= ctx.time_limit) { return; }
+  if (ctx.stopped()) { return; }
   ctx.num_calls++;
   // stop the recursion, for perf reasons
   if (ctx.num_calls > ctx.max_calls) {
@@ -358,7 +378,7 @@ void bron_kerbosch(bk_bitset_context_t<i_t, f_t>& ctx,
       ctx.call_limit_reached = true;
       return;
     }
-    if (toc(ctx.start_time) >= ctx.time_limit) { return; }
+    if (ctx.stopped()) { return; }
 
     R.push_back(v);
     std::vector<uint64_t> P_next(ctx.words, 0);
@@ -1045,7 +1065,8 @@ std::vector<std::vector<int>> find_maximal_cliques_for_test(
                                        time_limit,
                                        words,
                                        &work_estimate,
-                                       max_work_estimate};
+                                       max_work_estimate,
+                                       nullptr};
 
   std::vector<int> R;
   std::vector<uint64_t> P(words, 0);
@@ -1616,6 +1637,7 @@ knapsack_generation_t<i_t, f_t>::knapsack_generation_t(
   }
 
   for (i_t i = 0; i < lp.num_rows; i++) {
+    if (concurrent_cut_generation_halted(settings)) { break; }
     inequality_t<i_t, f_t> inequality(Arow, i, lp.rhs[i]);
     inequality_t<i_t, f_t> rational_inequality = inequality;
     if (!rational_coefficients(var_types, inequality, rational_inequality)) { continue; }
@@ -1690,6 +1712,7 @@ flow_cover_generation_t<i_t, f_t>::flow_cover_generation_t(
   // generate_cut.
   flow_cover_constraints_.reserve(2 * lp.num_rows);
   for (i_t i = 0; i < lp.num_rows; i++) {
+    if (concurrent_cut_generation_halted(settings)) { break; }
     if (Arow.row_start[i + 1] <= Arow.row_start[i]) { continue; }
     i_t slack_col   = -1;
     f_t slack_coeff = 0.0;
@@ -3240,6 +3263,9 @@ f_t knapsack_generation_t<i_t, f_t>::solve_knapsack_problem(const std::vector<f_
 
   // 4. Dynamic programming
   for (i_t j = 1; j <= n; ++j) {
+    if (concurrent_cut_generation_halted(settings_)) {
+      return std::numeric_limits<f_t>::quiet_NaN();
+    }
     for (i_t v = 0; v <= sum_value; ++v) {
       // Do not take item i-1
       dp(j, v) = dp(j - 1, v);
@@ -3313,7 +3339,9 @@ f_t knapsack_generation_t<i_t, f_t>::exact_knapsack_problem_integer_values_fract
 
   // 4. Dynamic programming
   for (i_t j = 1; j <= n; ++j) {
-    if (toc(start_time) >= settings_.time_limit) { return std::numeric_limits<f_t>::quiet_NaN(); }
+    if (cut_generation_stopped(settings_, start_time)) {
+      return std::numeric_limits<f_t>::quiet_NaN();
+    }
     for (i_t v = 0; v <= sum_value; ++v) {
       // Do not take item i-1
       dp(j, v) = dp(j - 1, v);
@@ -3369,7 +3397,9 @@ void cut_generation_t<i_t, f_t>::generate_implied_bound_cuts(
   constexpr f_t generated_cut_work = 16.0;
 
   for (i_t j = 0; j < n_cols; j++) {
-    if (work_estimate > max_work_estimate || toc(start_time) >= settings.time_limit) { return; }
+    if (work_estimate > max_work_estimate || cut_generation_stopped(settings, start_time)) {
+      return;
+    }
     if (var_types[j] == variable_type_t::CONTINUOUS) { continue; }
     const f_t xstar_j = xstar[j];
 
@@ -3380,6 +3410,7 @@ void cut_generation_t<i_t, f_t>::generate_implied_bound_cuts(
     const i_t one_end    = probing_implied_bound_.one_offsets[j + 1];
     for (i_t p = zero_begin; p < zero_end; p++) {
       work_estimate += implication_work;
+      if ((p - zero_begin) % 1024 == 0 && concurrent_cut_generation_halted(settings)) { return; }
       const i_t i = probing_implied_bound_.zero_variables[p];
       if (i == j) { continue; }
       const f_t l_i = lp.lower[i];
@@ -3428,6 +3459,7 @@ void cut_generation_t<i_t, f_t>::generate_implied_bound_cuts(
     // x_j = 1 implications
     for (i_t p = one_begin; p < one_end; p++) {
       work_estimate += implication_work;
+      if ((p - one_begin) % 1024 == 0 && concurrent_cut_generation_halted(settings)) { return; }
       const i_t i = probing_implied_bound_.one_variables[p];
       if (i == j) { continue; }
       const f_t l_i = lp.lower[i];
@@ -3508,7 +3540,7 @@ void cut_generation_t<i_t, f_t>::prepare_fractional_sub_conflict_graph(
   sub_cg_.clear();
 
   if (settings.clique_cuts == 0 && settings.zero_half_cuts == 0) { return; }
-  if (toc(start_time) >= settings.time_limit) { return; }
+  if (cut_generation_stopped(settings, start_time)) { return; }
 
   // The clique table is produced by a background OpenMP task (spawned in
   // branch_and_bound). Its base cliques are published early, but the extension
@@ -3549,6 +3581,10 @@ void cut_generation_t<i_t, f_t>::prepare_fractional_sub_conflict_graph(
   sub_cg_.weights.reserve(static_cast<size_t>(num_vars) * 2);
 
   for (i_t j = 0; j < num_vars; ++j) {
+    if (cut_generation_stopped(settings, start_time)) {
+      sub_cg_.clear();
+      return;
+    }
     if (user_problem_.var_types[j] == variable_type_t::CONTINUOUS) { continue; }
     const f_t lower_bound = user_problem_.lower[j];
     const f_t upper_bound = user_problem_.upper[j];
@@ -3577,7 +3613,7 @@ void cut_generation_t<i_t, f_t>::prepare_fractional_sub_conflict_graph(
   sub_cg_.vertex_to_local.assign(static_cast<size_t>(2 * num_vars), -1);
   sub_cg_.in_subgraph.assign(static_cast<size_t>(2 * num_vars), 0);
   for (size_t idx = 0; idx < sub_cg_.vertices.size(); ++idx) {
-    if (toc(start_time) >= settings.time_limit) {
+    if (cut_generation_stopped(settings, start_time)) {
       sub_cg_.clear();
       return;
     }
@@ -3595,7 +3631,7 @@ void cut_generation_t<i_t, f_t>::prepare_fractional_sub_conflict_graph(
   size_t total_adj_entries = 0;
   size_t kept_adj_entries  = 0;
   for (size_t idx = 0; idx < sub_cg_.vertices.size(); ++idx) {
-    if (toc(start_time) >= settings.time_limit) {
+    if (cut_generation_stopped(settings, start_time)) {
       sub_cg_.clear();
       return;
     }
@@ -3638,6 +3674,10 @@ void cut_generation_t<i_t, f_t>::prepare_fractional_sub_conflict_graph(
 
     size_t raw_edge_bound = 0;
     for (i_t j = 0; j < num_vars; ++j) {
+      if (cut_generation_stopped(settings, start_time)) {
+        sub_cg_.clear();
+        return;
+      }
       if (!sub_cg_.in_subgraph[j]) { continue; }
       raw_edge_bound +=
         probing_implied_bound_.zero_offsets[j + 1] - probing_implied_bound_.zero_offsets[j];
@@ -3704,7 +3744,7 @@ void cut_generation_t<i_t, f_t>::prepare_fractional_sub_conflict_graph(
                                      std::max(source_local, candidate.second));
         }
       }
-      if (toc(start_time) >= settings.time_limit) {
+      if (cut_generation_stopped(settings, start_time)) {
         sub_cg_.clear();
         return;
       }
@@ -3796,7 +3836,7 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(
   // Generate Gomory and CG Cuts
   if (has_basis &&
       (settings.mixed_integer_gomory_cuts != 0 || settings.strong_chvatal_gomory_cuts != 0)) {
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     f_t cut_start_time = tic();
     generate_gomory_cuts(lp,
                          settings,
@@ -3816,7 +3856,7 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(
 
   // Generate Knapsack cuts
   if (settings.knapsack_cuts != 0) {
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     f_t cut_start_time = tic();
     generate_knapsack_cuts(lp, settings, Arow, new_slacks, var_types, xstar, start_time);
     f_t cut_generation_time = toc(cut_start_time);
@@ -3827,7 +3867,7 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(
 
   // Generate Flow Cover cuts
   if (settings.flow_cover_cuts != 0) {
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     f_t cut_start_time = tic();
     generate_flow_cover_cuts(lp, settings, Arow, var_types, xstar, variable_bounds, start_time);
     f_t cut_generation_time = toc(cut_start_time);
@@ -3838,7 +3878,7 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(
 
   // Generate MIR and CG cuts
   if (settings.mir_cuts != 0 || settings.strong_chvatal_gomory_cuts != 0) {
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     f_t cut_start_time = tic();
     generate_mir_cuts(
       lp, settings, Arow, new_slacks, var_types, xstar, ystar, variable_bounds, start_time);
@@ -3850,7 +3890,7 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(
 
   // Generate implied bound cuts
   if (settings.implied_bound_cuts != 0) {
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     f_t cut_start_time = tic();
     generate_implied_bound_cuts(lp, settings, var_types, xstar, start_time);
     f_t cut_generation_time = toc(cut_start_time);
@@ -3865,12 +3905,12 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(
   // each recomputing them. Done here, after the cut routines that don't
   // need the clique table, to give the background clique-table thread as
   // much time as possible to finish before we join it.
-  if (toc(start_time) >= settings.time_limit) { return true; }
+  if (cut_generation_stopped(settings, start_time)) { return true; }
   prepare_fractional_sub_conflict_graph(settings, xstar, start_time);
 
   // Generate Clique cuts (last to give background clique table generation maximum time)
   if (settings.clique_cuts != 0) {
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     f_t cut_start_time = tic();
     bool feasible      = generate_clique_cuts(lp, settings, var_types, xstar, zstar, start_time);
     if (!feasible) {
@@ -3885,7 +3925,7 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(
 
   // Generate Zero-half (odd-cycle / odd-wheel) cuts; reuses the clique table built above
   if (settings.zero_half_cuts != 0) {
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     ZERO_HALF_DEBUG("generate_cuts: about to call generate_zero_half_cuts");
     f_t cut_start_time = tic();
     bool feasible      = generate_zero_half_cuts(
@@ -3919,7 +3959,7 @@ void cut_generation_t<i_t, f_t>::generate_knapsack_cuts(
 {
   if (knapsack_generation_.num_knapsack_constraints() > 0) {
     for (i_t knapsack_row : knapsack_generation_.get_knapsack_constraints()) {
-      if (toc(start_time) >= settings.time_limit) { return; }
+      if (cut_generation_stopped(settings, start_time)) { return; }
       inequality_t<i_t, f_t> cut(lp.num_cols);
       i_t knapsack_status = knapsack_generation_.generate_knapsack_cut(
         lp, settings, Arow, new_slacks, var_types, xstar, knapsack_row, cut, start_time);
@@ -3943,7 +3983,7 @@ void cut_generation_t<i_t, f_t>::generate_flow_cover_cuts(
     flow_cover_generation_.preprocess_cut_pass(lp, variable_bounds, var_types, xstar);
     if (toc(start_time) >= settings.time_limit) { return; }
     for (const auto& flow_cover_row : flow_cover_generation_.get_constraints()) {
-      if (toc(start_time) >= settings.time_limit) { return; }
+      if (cut_generation_stopped(settings, start_time)) { return; }
       inequality_t<i_t, f_t> cut(lp.num_cols);
       i_t status = flow_cover_generation_.generate_cut(
         lp, settings, Arow, variable_bounds, var_types, xstar, flow_cover_row, cut);
@@ -3962,7 +4002,7 @@ bool cut_generation_t<i_t, f_t>::generate_clique_cuts(
   f_t start_time)
 {
   if (settings.clique_cuts == 0) { return true; }
-  if (toc(start_time) >= settings.time_limit) { return true; }
+  if (cut_generation_stopped(settings, start_time)) { return true; }
 
   const i_t num_vars = user_problem_.num_cols;
   CLIQUE_CUTS_DEBUG("generate_clique_cuts start num_vars=%lld time_limit=%g elapsed=%g",
@@ -4007,6 +4047,7 @@ bool cut_generation_t<i_t, f_t>::generate_clique_cuts(
   std::vector<std::vector<uint64_t>> adj_bitset(vertices.size(), std::vector<uint64_t>(words, 0));
   size_t local_adj_entries = 0;
   for (size_t v = 0; v < adj_local.size(); ++v) {
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     local_adj_entries += adj_local[v].size();
     for (const i_t neighbor : adj_local[v]) {
       bitset_set(adj_bitset[v], static_cast<size_t>(neighbor));
@@ -4026,7 +4067,8 @@ bool cut_generation_t<i_t, f_t>::generate_clique_cuts(
                                     settings.time_limit,
                                     words,
                                     &work_estimate,
-                                    max_work_estimate};
+                                    max_work_estimate,
+                                    settings.concurrent_halt};
   std::vector<i_t> R;
   std::vector<uint64_t> P(words, 0);
   std::vector<uint64_t> X(words, 0);
@@ -4046,7 +4088,7 @@ bool cut_generation_t<i_t, f_t>::generate_clique_cuts(
     ctx.over_call_limit() ? 1 : 0);
   if (ctx.over_call_limit()) { return true; }
   if (ctx.over_work_limit()) { return true; }
-  if (toc(start_time) >= settings.time_limit) { return true; }
+  if (cut_generation_stopped(settings, start_time)) { return true; }
   if (work_estimate > max_work_estimate) { return true; }
 
   sparse_vector_t<i_t, f_t> cut(lp.num_cols, 0);
@@ -4058,7 +4100,7 @@ bool cut_generation_t<i_t, f_t>::generate_clique_cuts(
   size_t extension_gain    = 0;
 #endif
   for (std::vector<i_t>& clique_local : ctx.cliques) {
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
 #if DEBUG_CLIQUE_CUTS
     candidate_cliques++;
 #endif
@@ -4086,7 +4128,7 @@ bool cut_generation_t<i_t, f_t>::generate_clique_cuts(
     extension_gain += clique_vertices.size() - size_before_extension;
 #endif
     if (work_estimate > max_work_estimate) { return true; }
-    if (toc(start_time) >= settings.time_limit) { return true; }
+    if (cut_generation_stopped(settings, start_time)) { return true; }
     const clique_cut_build_status_t build_status = build_clique_cut<i_t, f_t>(clique_vertices,
                                                                               num_vars,
                                                                               var_types,
@@ -4152,7 +4194,7 @@ bool cut_generation_t<i_t, f_t>::generate_zero_half_cuts(
   f_t start_time)
 {
   if (settings.zero_half_cuts == 0) { return true; }
-  if (toc(start_time) >= settings.time_limit) { return true; }
+  if (cut_generation_stopped(settings, start_time)) { return true; }
 
   const i_t num_vars = user_problem_.num_cols;
   ZERO_HALF_DEBUG(
@@ -4236,7 +4278,7 @@ bool cut_generation_t<i_t, f_t>::generate_zero_half_cuts(
   dijkstra_scratch_t<i_t, f_t> dijkstra_scratch;
 
   for (i_t s = 0; s < num_local; ++s) {
-    if (toc(start_time) >= settings.time_limit) { break; }
+    if (cut_generation_stopped(settings, start_time)) { break; }
     if (work_estimate > max_work_estimate) { break; }
     if (already_used[s]) { continue; }
     ZERO_HALF_DEBUG("separation loop s=%lld / %lld",
@@ -4362,10 +4404,12 @@ void cut_generation_t<i_t, f_t>::generate_mir_cuts(
 
   std::vector<f_t> scores;
   complemented_mir.compute_initial_scores_for_rows(lp, settings, Arow, xstar, ystar, scores);
+  if (cut_generation_stopped(settings, start_time)) { return; }
 
   // Push all the scores onto the priority queue
   std::priority_queue<std::pair<f_t, i_t>> score_queue;
   for (i_t i = 0; i < lp.num_rows; i++) {
+    if (cut_generation_stopped(settings, start_time)) { return; }
     score_queue.push(std::make_pair(scores[i], i));
   }
 
@@ -4379,11 +4423,12 @@ void cut_generation_t<i_t, f_t>::generate_mir_cuts(
   // Transform the relaxation solution
   std::vector<f_t> transformed_xstar;
   complemented_mir.bound_substitution(lp, variable_bounds, var_types, xstar, transformed_xstar);
+  if (cut_generation_stopped(settings, start_time)) { return; }
 
   f_t work_estimate  = 0.0;
   i_t cuts_processed = 0;
   while (cuts_processed < max_cuts && !score_queue.empty()) {
-    if (toc(start_time) >= settings.time_limit) { break; }
+    if (cut_generation_stopped(settings, start_time)) { break; }
     // Get the row with the highest score from the queue
     auto [max_score, i] = score_queue.top();
     score_queue.pop();
@@ -4643,7 +4688,7 @@ void cut_generation_t<i_t, f_t>::generate_gomory_cuts(
   complemented_mir.bound_substitution(lp, variable_bounds, var_types, xstar, transformed_xstar);
 
   for (i_t i = 0; i < lp.num_rows; i++) {
-    if (toc(start_time) >= settings.time_limit) { break; }
+    if (cut_generation_stopped(settings, start_time)) { break; }
     inequality_t<i_t, f_t> inequality(lp.num_cols);
     const i_t j = basic_list[i];
     if (var_types[j] != variable_type_t::INTEGER) { continue; }
@@ -5288,6 +5333,7 @@ void complemented_mixed_integer_rounding_cut_t<i_t, f_t>::compute_initial_scores
   // Compute initial scores for all rows
   scores.resize(lp.num_rows, 0.0);
   for (i_t i = 0; i < lp.num_rows; i++) {
+    if (concurrent_cut_generation_halted(settings)) { break; }
     const i_t row_start = Arow.row_start[i];
     const i_t row_end   = Arow.row_start[i + 1];
 

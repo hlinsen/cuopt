@@ -313,8 +313,13 @@ class branch_and_bound_t {
   void halt_solver();
 
   enum class cut_pass_action_t { CONTINUE, BREAK, RETURN };
+  struct cut_pass_result_t {
+    cut_pass_action_t action{cut_pass_action_t::CONTINUE};
+    mip_status_t status{mip_status_t::UNSET};
+  };
+  enum class cut_pass_mode_t { GENERATE_AND_APPLY, APPLY_EXISTING_POOL };
 
-  cut_pass_action_t do_cut_pass(i_t cut_pass,
+  cut_pass_result_t do_cut_pass(i_t cut_pass,
                                 simplex::mip_solution_t<i_t, f_t>& solution,
                                 i_t& num_fractional,
                                 std::vector<i_t>& fractional,
@@ -331,7 +336,8 @@ class branch_and_bound_t {
                                 f_t& last_objective,
                                 f_t root_relax_objective,
                                 i_t& cut_pool_size,
-                                const std::vector<f_t>& saved_solution);
+                                const std::vector<f_t>& saved_solution,
+                                cut_pass_mode_t mode = cut_pass_mode_t::GENERATE_AND_APPLY);
 
   // Set the solution when found at the root node
   void set_solution_at_root(simplex::mip_solution_t<i_t, f_t>& solution,
