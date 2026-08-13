@@ -19,10 +19,10 @@ TEST(DinsTest, BuildsReboundedHardAndSoftNeighborhood)
 {
   std::vector<variable_type_t> var_types{variable_type_t::INTEGER,
                                          variable_type_t::INTEGER,
-                                         variable_type_t::BINARY,
-                                         variable_type_t::BINARY,
-                                         variable_type_t::BINARY,
-                                         variable_type_t::BINARY,
+                                         variable_type_t::INTEGER,
+                                         variable_type_t::INTEGER,
+                                         variable_type_t::INTEGER,
+                                         variable_type_t::INTEGER,
                                          variable_type_t::CONTINUOUS};
   std::vector<double> incumbent{5.0, 4.0, 1.0, 0.0, 1.0, 0.0, 2.0};
   std::vector<double> node{4.3, 4.2, 1.0, 0.0, 0.7, 0.6, 1.5};
@@ -49,6 +49,48 @@ TEST(DinsTest, BuildsReboundedHardAndSoftNeighborhood)
   EXPECT_EQ(neighborhood.soft_variables, (std::vector<int>{3, 4}));
   EXPECT_EQ(neighborhood.soft_coefficients, (std::vector<double>{1.0, -1.0}));
   EXPECT_DOUBLE_EQ(neighborhood.soft_rhs, 4.0);
+
+  raft::handle_t handle;
+  simplex::user_problem_t<int, double> problem(&handle);
+  problem.num_rows    = 1;
+  problem.num_cols    = var_types.size();
+  problem.A           = csc_matrix_t<int, double>(1, problem.num_cols, 1);
+  problem.A.col_start = {0, 1, 1, 1, 1, 1, 1, 1};
+  problem.A.i         = {0};
+  problem.A.x         = {1.0};
+  problem.rhs         = {0.0};
+  problem.row_sense   = {'E'};
+
+  append_local_branching_constraint(problem, neighborhood);
+  csr_matrix_t<int, double> rows(problem.num_rows, problem.num_cols, 1);
+  ASSERT_EQ(problem.A.to_compressed_row(rows), 0);
+  EXPECT_EQ(problem.num_rows, 2);
+  EXPECT_EQ(rows.row_length(1), 2);
+}
+
+TEST(DinsTest, AdvancesRadiusSearchAccordingToPaper)
+{
+  dins_search_state_t<int> search(5);
+
+  EXPECT_TRUE(search.advance(false, true, true));
+  EXPECT_EQ(search.current_radius, 0);
+  EXPECT_TRUE(search.advance(true, true, true));
+  EXPECT_EQ(search.current_radius, 5);
+  EXPECT_FALSE(search.advance(false, false, true));
+
+  dins_search_state_t<int> empty_soft_set(5);
+  EXPECT_FALSE(empty_soft_set.advance(false, true, false));
+}
+
+TEST(DinsTest, SchedulesFirstIncumbentAndEveryHundredNodes)
+{
+  dins_schedule_t<int> schedule;
+
+  EXPECT_FALSE(schedule.should_launch(false, 25));
+  EXPECT_TRUE(schedule.should_launch(true, 25));
+  schedule.record_launch(25);
+  EXPECT_FALSE(schedule.should_launch(true, 124));
+  EXPECT_TRUE(schedule.should_launch(true, 125));
 }
 
 TEST(DinsTest, ReboundsTowardLargerNodeValue)

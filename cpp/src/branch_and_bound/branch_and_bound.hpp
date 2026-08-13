@@ -9,6 +9,7 @@
 
 #include <branch_and_bound/bb_event.hpp>
 #include <branch_and_bound/deterministic_workers.hpp>
+#include <branch_and_bound/dins.hpp>
 #include <branch_and_bound/mip_node.hpp>
 #include <branch_and_bound/node_queue.hpp>
 #include <branch_and_bound/pseudo_costs.hpp>
@@ -278,6 +279,9 @@ class branch_and_bound_t {
   submip_stats_t dins_stats_;
   std::vector<f_t> dins_previous_incumbent_;
   std::vector<bool> dins_changed_incumbent_;
+  omp_mutex_t mutex_dins_schedule_;
+  dins_schedule_t<i_t> dins_schedule_;
+  bool dins_launch_reserved_{false};
 
   // Global status of the solver.
   omp_atomic_t<mip_status_t> solver_status_;
@@ -371,25 +375,31 @@ class branch_and_bound_t {
 
   enum class submip_heuristic_t { RINS, DINS };
 
+  struct submip_result_t {
+    mip_status_t status{mip_status_t::UNSET};
+    bool improved{false};
+  };
+
   // Launch a new neighborhood sub-MIP worker.
   bool launch_submip_worker(const std::vector<f_t>& sol, submip_heuristic_t heuristic);
-  void set_solution_from_submip(const std::vector<f_t>& solution,
+  bool launch_scheduled_dins(const std::vector<f_t>& sol);
+  bool set_solution_from_submip(const std::vector<f_t>& solution,
                                 const third_party_presolve_t<i_t, f_t>& presolver,
                                 f_t fixrate,
                                 f_t obj,
                                 submip_stats_t& stats);
 
   // Solve a neighborhood sub-MIP, optionally with a local-branching inequality.
-  void solve_submip(diving_worker_t<i_t, f_t>* worker,
-                    const std::vector<f_t>& current_incumbent,
-                    i_t num_var_fixed,
-                    i_t num_integers,
-                    i_t submip_level,
-                    std::string_view log_prefix,
-                    submip_stats_t& stats,
-                    const std::vector<i_t>& local_branching_variables = {},
-                    const std::vector<f_t>& local_branching_coefficients = {},
-                    f_t local_branching_rhs = f_t{0});
+  submip_result_t solve_submip(diving_worker_t<i_t, f_t>* worker,
+                               const std::vector<f_t>& current_incumbent,
+                               i_t num_var_fixed,
+                               i_t num_integers,
+                               i_t submip_level,
+                               std::string_view log_prefix,
+                               submip_stats_t& stats,
+                               const std::vector<i_t>& local_branching_variables    = {},
+                               const std::vector<f_t>& local_branching_coefficients = {},
+                               f_t local_branching_rhs                              = f_t{0});
 
   // Creates and solves the RINS sub-MIP
   void rins(diving_worker_t<i_t, f_t>* rins_worker, const std::vector<f_t>& node_solution);

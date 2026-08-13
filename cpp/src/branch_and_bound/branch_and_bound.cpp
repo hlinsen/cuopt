@@ -654,7 +654,7 @@ void branch_and_bound_t<i_t, f_t>::set_solution_from_cpu_fj(f_t obj,
 // expects a solution on the user space. So we go from presolved space -> augmented space ->
 // user space.
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::set_solution_from_submip(
+bool branch_and_bound_t<i_t, f_t>::set_solution_from_submip(
   const std::vector<f_t>& solution,
   const third_party_presolve_t<i_t, f_t>& presolver,
   f_t fixrate,
@@ -673,6 +673,7 @@ void branch_and_bound_t<i_t, f_t>::set_solution_from_submip(
     stats.save_success(fixrate);
     if (settings_.solution_callback != nullptr) { settings_.solution_callback(user_sol, obj); }
   }
+  return success;
 }
 
 template <typename i_t, typename f_t>
@@ -1675,7 +1676,6 @@ void branch_and_bound_t<i_t, f_t>::plunge_with(bfs_worker_t<i_t, f_t>* worker,
   f_t abs_gap     = compute_user_abs_gap(original_lp_, upper_bound, lower_bound);
 
   bool can_launch_rins = true;
-  bool can_launch_dins = true;
 
   while (stack.size() > 0 && (solver_status_ == mip_status_t::UNSET && is_running_) &&
          rel_gap > settings_.relative_mip_gap_tol && abs_gap > settings_.absolute_mip_gap_tol) {
@@ -1785,9 +1785,7 @@ void branch_and_bound_t<i_t, f_t>::plunge_with(bfs_worker_t<i_t, f_t>* worker,
     worker->recompute_bounds = node_status != node_status_t::HAS_CHILDREN;
 
     if (node_status == node_status_t::HAS_CHILDREN) {
-      if (can_launch_dins) {
-        can_launch_dins = !launch_submip_worker(worker->leaf_solution.x, submip_heuristic_t::DINS);
-      }
+      launch_scheduled_dins(worker->leaf_solution.x);
       if (can_launch_rins) {
         can_launch_rins = !launch_submip_worker(worker->leaf_solution.x, submip_heuristic_t::RINS);
       }
@@ -2171,7 +2169,10 @@ bool branch_and_bound_t<i_t, f_t>::launch_submip_worker(const std::vector<f_t>& 
 {
   if (heuristic == submip_heuristic_t::RINS && settings_.submip_settings.rins == 0) return false;
   if (heuristic == submip_heuristic_t::DINS && settings_.submip_settings.dins == 0) return false;
-  if (!incumbent_.has_incumbent) return false;
+  mutex_upper_.lock();
+  const bool has_incumbent = incumbent_.has_incumbent;
+  mutex_upper_.unlock();
+  if (!has_incumbent) return false;
   if (submip_worker_pool_.num_idle() == 0) return false;
 
   diving_worker_t<i_t, f_t>* worker = submip_worker_pool_.pop_idle_worker();
@@ -2202,7 +2203,32 @@ bool branch_and_bound_t<i_t, f_t>::launch_submip_worker(const std::vector<f_t>& 
 }
 
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::solve_submip(
+bool branch_and_bound_t<i_t, f_t>::launch_scheduled_dins(const std::vector<f_t>& sol)
+{
+  if (settings_.submip_settings.dins == 0) { return false; }
+
+  const i_t nodes_explored = exploration_stats_.nodes_explored;
+  mutex_upper_.lock();
+  const bool has_incumbent = incumbent_.has_incumbent;
+  mutex_upper_.unlock();
+  mutex_dins_schedule_.lock();
+  const bool should_launch =
+    !dins_launch_reserved_ && dins_schedule_.should_launch(has_incumbent, nodes_explored);
+  if (should_launch) { dins_launch_reserved_ = true; }
+  mutex_dins_schedule_.unlock();
+  if (!should_launch) { return false; }
+
+  const bool launched = launch_submip_worker(sol, submip_heuristic_t::DINS);
+
+  mutex_dins_schedule_.lock();
+  if (launched) { dins_schedule_.record_launch(nodes_explored); }
+  dins_launch_reserved_ = false;
+  mutex_dins_schedule_.unlock();
+  return launched;
+}
+
+template <typename i_t, typename f_t>
+typename branch_and_bound_t<i_t, f_t>::submip_result_t branch_and_bound_t<i_t, f_t>::solve_submip(
   diving_worker_t<i_t, f_t>* worker,
   const std::vector<f_t>& current_incumbent,
   i_t num_var_fixed,
@@ -2227,7 +2253,7 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(
   if (!feasible) {
     // This should never happen since we are fixing bounds that are already in the incumbent.
     stats.save_infeasible(fixrate);
-    return;
+    return {mip_status_t::INFEASIBLE, false};
   }
 
   f_t user_lower = compute_user_objective(original_lp_, get_lower_bound());
@@ -2260,7 +2286,7 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(
   submip_settings.branch_and_bound_simplex_iteration_limit =
     exploration_stats_.total_simplex_iters * settings_.submip_settings.iteration_limit_ratio;
   submip_settings.time_limit = settings_.time_limit - toc(exploration_stats_.start_time);
-  if (submip_settings.time_limit < 0) { return; }
+  if (submip_settings.time_limit < 0) { return {mip_status_t::TIME_LIMIT, false}; }
 
   submip_settings.relative_mip_gap_tol =
     std::min(settings_.submip_settings.target_mip_gap, rel_gap);
@@ -2303,7 +2329,7 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(
       presolver_status == third_party_presolve_status_t::UNBNDORINFEAS ||
       presolver_status == third_party_presolve_status_t::UNBOUNDED) {
     stats.save_infeasible(fixrate);
-    return;
+    return {mip_status_t::INFEASIBLE, false};
   }
 
   // Also handle optimal
@@ -2330,16 +2356,19 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(
       obj += reduced_sol[j] * c;
     }
 
-    set_solution_from_submip(reduced_sol, presolver, fixrate, obj, stats);
-    return;
+    const bool improved = set_solution_from_submip(reduced_sol, presolver, fixrate, obj, stats);
+    return {mip_status_t::OPTIMAL, improved};
   }
 
+  std::atomic<bool> found_improvement{false};
   submip_settings.heuristic_preemption_callback   = nullptr;
   submip_settings.dual_simplex_objective_callback = nullptr;
   submip_settings.set_simplex_solution_callback   = nullptr;
-  submip_settings.solution_callback               = [this, &presolver, fixrate, &stats](
+  submip_settings.solution_callback = [this, &presolver, fixrate, &stats, &found_improvement](
                                         const std::vector<f_t>& solution, f_t obj) {
-    this->set_solution_from_submip(solution, presolver, fixrate, obj, stats);
+    if (this->set_solution_from_submip(solution, presolver, fixrate, obj, stats)) {
+      found_improvement.store(true);
+    }
   };
 
   submip_settings.log.debug_format("Sub-MIP: {} constraints, {} variables, {} nonzeros\n",
@@ -2421,21 +2450,26 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(
     presolve_time,
     submip_time);
 
-  if (submip_status == mip_status_t::NUMERICAL) { return; }
+  if (submip_status == mip_status_t::NUMERICAL) {
+    return {submip_status, found_improvement.load()};
+  }
   if (submip_status == mip_status_t::INFEASIBLE || submip_status == mip_status_t::UNBOUNDED) {
     stats.save_infeasible(fixrate);
-    return;
+    return {submip_status, found_improvement.load()};
   }
 
   if (submip_solution.has_incumbent) {
-    set_solution_from_submip(
-      submip_solution.x, presolver, fixrate, submip_solution.objective, stats);
+    if (set_solution_from_submip(
+          submip_solution.x, presolver, fixrate, submip_solution.objective, stats)) {
+      found_improvement.store(true);
+    }
   }
 
   // Accumulate simplex iterations to determine when to stop exploring the sub-MIP
   if (settings_.inside_submip) {
     exploration_stats_.total_simplex_iters += submip_solution.simplex_iterations;
   }
+  return {submip_status, found_improvement.load()};
 }
 
 template <typename i_t, typename f_t>
@@ -2574,82 +2608,98 @@ void branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* dins_worker,
   const std::string log_prefix = std::format("[DINS {}] ", submip_level);
   ++dins_stats_.total_calls;
 
-  dins_worker->leaf_problem.lower = original_lp_.lower;
-  dins_worker->leaf_problem.upper = original_lp_.upper;
-  std::fill(dins_worker->bounds_changed.begin(), dins_worker->bounds_changed.end(), false);
-
-  std::vector<f_t> current_incumbent;
-  std::vector<bool> changed_incumbent;
-  mutex_upper_.lock();
-  current_incumbent = incumbent_.x;
-  if (dins_previous_incumbent_.empty()) {
-    dins_changed_incumbent_.assign(current_incumbent.size(), false);
-  } else {
-    assert(dins_previous_incumbent_.size() == current_incumbent.size());
-    for (i_t j = 0; j < static_cast<i_t>(current_incumbent.size()); ++j) {
-      if (std::abs(current_incumbent[j] - dins_previous_incumbent_[j]) > settings_.integer_tol) {
-        dins_changed_incumbent_[j] = true;
+  auto snapshot_incumbent = [this]() {
+    std::vector<f_t> current_incumbent;
+    std::vector<bool> changed_incumbent;
+    mutex_upper_.lock();
+    current_incumbent = incumbent_.x;
+    if (dins_previous_incumbent_.empty()) {
+      dins_changed_incumbent_.assign(current_incumbent.size(), false);
+    } else {
+      assert(dins_previous_incumbent_.size() == current_incumbent.size());
+      for (i_t j = 0; j < static_cast<i_t>(current_incumbent.size()); ++j) {
+        if (std::abs(current_incumbent[j] - dins_previous_incumbent_[j]) > settings_.integer_tol) {
+          dins_changed_incumbent_[j] = true;
+        }
       }
     }
-  }
-  dins_previous_incumbent_ = current_incumbent;
-  changed_incumbent        = dins_changed_incumbent_;
-  mutex_upper_.unlock();
+    dins_previous_incumbent_ = current_incumbent;
+    changed_incumbent        = dins_changed_incumbent_;
+    mutex_upper_.unlock();
+    return std::make_pair(std::move(current_incumbent), std::move(changed_incumbent));
+  };
+
+  auto [current_incumbent, changed_incumbent] = snapshot_incumbent();
 
   std::vector<i_t> integer_list;
-  get_unfixed_integer_variables(dins_worker->leaf_problem.lower,
-                                dins_worker->leaf_problem.upper,
-                                var_types_,
-                                settings_.fixed_tol,
-                                integer_list);
+  get_unfixed_integer_variables(
+    original_lp_.lower, original_lp_.upper, var_types_, settings_.fixed_tol, integer_list);
   const i_t num_integers = integer_list.size();
   if (num_integers == 0) {
     submip_worker_pool_.return_worker_to_pool(dins_worker);
     return;
   }
 
-  auto neighborhood = build_dins_neighborhood<i_t, f_t>(node_solution,
-                                                        root_relax_soln_.x,
-                                                        current_incumbent,
-                                                        changed_incumbent,
-                                                        var_types_,
-                                                        settings_.fixed_tol,
-                                                        settings_.integer_tol,
-                                                        settings_.submip_settings.dins_radius,
-                                                        dins_worker->leaf_problem.lower,
-                                                        dins_worker->leaf_problem.upper,
-                                                        dins_worker->bounds_changed);
+  dins_search_state_t<i_t> search(settings_.submip_settings.dins_radius);
+  bool keep_searching = true;
+  while (keep_searching && solver_status_ == mip_status_t::UNSET && is_running_) {
+    dins_worker->leaf_problem.lower = original_lp_.lower;
+    dins_worker->leaf_problem.upper = original_lp_.upper;
+    std::fill(dins_worker->bounds_changed.begin(), dins_worker->bounds_changed.end(), false);
 
-  const bool use_local_branching = neighborhood.soft_variables.size() >
-                                   static_cast<std::size_t>(settings_.submip_settings.dins_radius);
-  const i_t num_restricted = neighborhood.num_hard_fixed + neighborhood.num_rebounded;
+    auto neighborhood = build_dins_neighborhood<i_t, f_t>(node_solution,
+                                                          root_relax_soln_.x,
+                                                          current_incumbent,
+                                                          changed_incumbent,
+                                                          var_types_,
+                                                          settings_.fixed_tol,
+                                                          settings_.integer_tol,
+                                                          search.current_radius,
+                                                          dins_worker->leaf_problem.lower,
+                                                          dins_worker->leaf_problem.upper,
+                                                          dins_worker->bounds_changed);
 
-  settings_.log.debug_format("{}hard-fixed={}, rebound={}, soft={}, radius={}\n",
-                             log_prefix,
-                             neighborhood.num_hard_fixed,
-                             neighborhood.num_rebounded,
-                             neighborhood.soft_variables.size(),
-                             settings_.submip_settings.dins_radius);
+    const bool has_soft_variables = !neighborhood.soft_variables.empty();
+    const bool use_local_branching =
+      neighborhood.soft_variables.size() > static_cast<std::size_t>(search.current_radius);
+    const i_t num_restricted = neighborhood.num_hard_fixed + neighborhood.num_rebounded;
 
-  if (use_local_branching) {
-    solve_submip(dins_worker,
-                 current_incumbent,
-                 num_restricted,
-                 num_integers,
-                 submip_level,
-                 log_prefix,
-                 dins_stats_,
-                 neighborhood.soft_variables,
-                 neighborhood.soft_coefficients,
-                 neighborhood.soft_rhs);
-  } else {
-    solve_submip(dins_worker,
-                 current_incumbent,
-                 num_restricted,
-                 num_integers,
-                 submip_level,
-                 log_prefix,
-                 dins_stats_);
+    settings_.log.debug_format("{}hard-fixed={}, rebound={}, soft={}, radius={}\n",
+                               log_prefix,
+                               neighborhood.num_hard_fixed,
+                               neighborhood.num_rebounded,
+                               neighborhood.soft_variables.size(),
+                               search.current_radius);
+
+    submip_result_t result;
+    if (use_local_branching) {
+      result = solve_submip(dins_worker,
+                            current_incumbent,
+                            num_restricted,
+                            num_integers,
+                            submip_level,
+                            log_prefix,
+                            dins_stats_,
+                            neighborhood.soft_variables,
+                            neighborhood.soft_coefficients,
+                            neighborhood.soft_rhs);
+    } else {
+      result = solve_submip(dins_worker,
+                            current_incumbent,
+                            num_restricted,
+                            num_integers,
+                            submip_level,
+                            log_prefix,
+                            dins_stats_);
+    }
+
+    if (result.improved) {
+      auto incumbent_snapshot = snapshot_incumbent();
+      current_incumbent       = std::move(incumbent_snapshot.first);
+      changed_incumbent       = std::move(incumbent_snapshot.second);
+    }
+    keep_searching = search.advance(
+      result.improved, result.status == mip_status_t::NODE_LIMIT, has_soft_variables);
   }
 
   settings_.log.debug_format("{}success={}, infeasible={}, calls={}\n",

@@ -28,6 +28,45 @@ struct dins_neighborhood_t {
   i_t num_rebounded{};
 };
 
+template <typename i_t>
+struct dins_search_state_t {
+  explicit dins_search_state_t(i_t radius) : initial_radius(radius), current_radius(radius) {}
+
+  bool advance(bool improved, bool node_limit_reached, bool has_soft_variables)
+  {
+    if (improved) {
+      current_radius = initial_radius;
+      return true;
+    }
+    if (!node_limit_reached || !has_soft_variables) { return false; }
+
+    current_radius -= i_t{5};
+    return current_radius >= i_t{0};
+  }
+
+  i_t initial_radius;
+  i_t current_radius;
+};
+
+template <typename i_t>
+struct dins_schedule_t {
+  static constexpr i_t node_frequency = i_t{100};
+
+  bool should_launch(bool has_incumbent, i_t nodes_explored) const
+  {
+    return has_incumbent && (!has_launched || nodes_explored - last_launch_node >= node_frequency);
+  }
+
+  void record_launch(i_t nodes_explored)
+  {
+    has_launched     = true;
+    last_launch_node = nodes_explored;
+  }
+
+  bool has_launched{false};
+  i_t last_launch_node{};
+};
+
 /**
  * @brief Construct the DINS neighborhood from an incumbent and node relaxation solution.
  *
@@ -69,6 +108,12 @@ dins_neighborhood_t<i_t, f_t> build_dins_neighborhood(
       continue;
     }
 
+    // Production presolve currently represents every discrete variable as INTEGER. Infer binary
+    // columns from their integral [0, 1] domain so the binary-specific DINS neighborhood is not
+    // lost during conversion.
+    const bool is_binary = type == simplex::variable_type_t::BINARY ||
+                           (lower[j] >= -integer_tol && upper[j] <= f_t{1} + integer_tol);
+
     const f_t incumbent_value = std::round(incumbent[j]);
     const f_t distance        = std::abs(incumbent_value - node_solution[j]);
 
@@ -91,11 +136,11 @@ dins_neighborhood_t<i_t, f_t> build_dins_neighborhood(
       continue;
     }
 
-    const bool stable_binary = type == simplex::variable_type_t::BINARY && !changed_incumbent[j] &&
+    const bool stable_binary = is_binary && !changed_incumbent[j] &&
                                std::abs(incumbent_value - node_solution[j]) <= integer_tol &&
                                std::abs(incumbent_value - root_solution[j]) <= integer_tol;
 
-    if (type == simplex::variable_type_t::INTEGER || stable_binary) {
+    if (!is_binary || stable_binary) {
       lower[j]          = incumbent_value;
       upper[j]          = incumbent_value;
       bounds_changed[j] = true;
