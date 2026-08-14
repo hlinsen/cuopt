@@ -713,7 +713,8 @@ void set_presolve_options(papilo::Presolve<f_t>& presolver,
 {
   presolver.getPresolveOptions().tlim    = time_limit;
   presolver.getPresolveOptions().threads = num_cpu_threads;  //  user setting or  0 (automatic)
-  presolver.getPresolveOptions().feastol = absolute_tolerance;
+  presolver.getPresolveOptions().feastol    = absolute_tolerance;
+  presolver.getPresolveOptions().useabsfeas = false;
   if (dual_postsolve) {
     presolver.getPresolveOptions().componentsmaxint = -1;
     presolver.getPresolveOptions().detectlindep     = 0;
