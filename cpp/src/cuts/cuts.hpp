@@ -434,6 +434,8 @@ class cut_pool_t {
 
   void age_cuts();
 
+  void clear();
+
   void drop_cuts();
 
   i_t pool_size() const { return cut_storage_.m; }
