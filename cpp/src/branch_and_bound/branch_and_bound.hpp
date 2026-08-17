@@ -13,6 +13,7 @@
 #include <branch_and_bound/mip_node.hpp>
 #include <branch_and_bound/node_queue.hpp>
 #include <branch_and_bound/pseudo_costs.hpp>
+#include <branch_and_bound/submip_bandit.hpp>
 #include <branch_and_bound/worker.hpp>
 #include <branch_and_bound/worker_pool.hpp>
 
@@ -135,7 +136,7 @@ class branch_and_bound_t {
   bool set_solution_from_heuristics(const std::vector<f_t>& solution, heuristics_origin_t origin);
 
   // Apply a solution found by a CPU FJ worker.
-  void set_solution_from_cpu_fj(f_t obj, const std::vector<f_t>& assignment, double work_units);
+  bool set_solution_from_cpu_fj(f_t obj, const std::vector<f_t>& assignment, double work_units);
 
   // This queues the solution to be processed at the correct work unit timestamp
   void queue_external_solution_deterministic(const std::vector<f_t>& solution, double work_unit_ts);
@@ -279,9 +280,9 @@ class branch_and_bound_t {
   submip_stats_t dins_stats_;
   std::vector<f_t> dins_previous_incumbent_;
   std::vector<bool> dins_changed_incumbent_;
-  omp_mutex_t mutex_dins_schedule_;
+  omp_mutex_t mutex_submip_bandit_;
+  submip_bandit_t submip_bandit_;
   dins_schedule_t<i_t> dins_schedule_;
-  bool dins_launch_reserved_{false};
 
   // Global status of the solver.
   omp_atomic_t<mip_status_t> solver_status_;
@@ -342,7 +343,7 @@ class branch_and_bound_t {
 
   // Update the incumbent solution with the new feasible solution
   // found during branch and bound.
-  void add_feasible_solution(f_t leaf_objective,
+  bool add_feasible_solution(f_t leaf_objective,
                              const std::vector<f_t>& leaf_solution,
                              i_t leaf_depth,
                              search_strategy_t thread_type);
@@ -371,9 +372,7 @@ class branch_and_bound_t {
 
   // Perform a deep dive in the subtree determined by the `start_node` in order
   // to find integer feasible solutions.
-  void dive_with(diving_worker_t<i_t, f_t>* worker, i_t backtrack_limit);
-
-  enum class submip_heuristic_t { RINS, DINS };
+  bool dive_with(diving_worker_t<i_t, f_t>* worker, i_t backtrack_limit);
 
   struct submip_result_t {
     mip_status_t status{mip_status_t::UNSET};
@@ -381,8 +380,10 @@ class branch_and_bound_t {
   };
 
   // Launch a new neighborhood sub-MIP worker.
-  bool launch_submip_worker(const std::vector<f_t>& sol, submip_heuristic_t heuristic);
-  bool launch_scheduled_dins(const std::vector<f_t>& sol);
+  bool launch_submip_worker(const std::vector<f_t>& sol);
+  void run_submip_worker(diving_worker_t<i_t, f_t>* worker,
+                         const std::vector<f_t>& sol,
+                         submip_heuristic_t heuristic);
   bool set_solution_from_submip(const std::vector<f_t>& solution,
                                 const third_party_presolve_t<i_t, f_t>& presolver,
                                 f_t fixrate,
@@ -402,10 +403,10 @@ class branch_and_bound_t {
                                f_t local_branching_rhs                              = f_t{0});
 
   // Creates and solves the RINS sub-MIP
-  void rins(diving_worker_t<i_t, f_t>* rins_worker, const std::vector<f_t>& node_solution);
+  bool rins(diving_worker_t<i_t, f_t>* rins_worker, const std::vector<f_t>& node_solution);
 
   // Creates and solves the DINS sub-MIP
-  void dins(diving_worker_t<i_t, f_t>* dins_worker, const std::vector<f_t>& node_solution);
+  bool dins(diving_worker_t<i_t, f_t>* dins_worker, const std::vector<f_t>& node_solution);
 
   // Get the simplex settings for solving the LP of a single node
   simplex::simplex_solver_settings_t<i_t, f_t> get_node_lp_settings();
@@ -445,7 +446,8 @@ class branch_and_bound_t {
     search_tree_t<i_t, f_t>& search_tree,
     branch_and_bound_worker_t<i_t, f_t>* worker,
     simplex::dual_status_t lp_status,
-    simplex::logger_t& log);
+    simplex::logger_t& log,
+    bool* improved = nullptr);
 
   // ============================================================================
   // Deterministic BSP (Bulk Synchronous Parallel) methods for deterministic parallel B&B

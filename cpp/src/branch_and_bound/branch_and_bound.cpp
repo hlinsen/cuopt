@@ -628,7 +628,7 @@ void branch_and_bound_t<i_t, f_t>::queue_external_solution_deterministic(
 }
 
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::set_solution_from_cpu_fj(f_t obj,
+bool branch_and_bound_t<i_t, f_t>::set_solution_from_cpu_fj(f_t obj,
                                                             const std::vector<f_t>& assignment,
                                                             double work_units)
 {
@@ -641,11 +641,12 @@ void branch_and_bound_t<i_t, f_t>::set_solution_from_cpu_fj(f_t obj,
   // B&B sees incumbents in a reproducible sequence; otherwise apply it immediately.
   if (settings_.deterministic) {
     queue_external_solution_deterministic(user_assignment, work_units);
+    return false;
   } else {
     if (settings_.solution_callback != nullptr) {
       settings_.solution_callback(user_assignment, obj);
     }
-    set_solution_from_heuristics(user_assignment, heuristics_origin_t::HEURISTICS);
+    return set_solution_from_heuristics(user_assignment, heuristics_origin_t::HEURISTICS);
   }
 }
 
@@ -915,7 +916,7 @@ void branch_and_bound_t<i_t, f_t>::set_final_solution(mip_solution_t<i_t, f_t>& 
 }
 
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::add_feasible_solution(f_t leaf_objective,
+bool branch_and_bound_t<i_t, f_t>::add_feasible_solution(f_t leaf_objective,
                                                          const std::vector<f_t>& leaf_solution,
                                                          i_t leaf_depth,
                                                          search_strategy_t thread_type)
@@ -941,6 +942,7 @@ void branch_and_bound_t<i_t, f_t>::add_feasible_solution(f_t leaf_objective,
     settings_.solution_callback(original_x, leaf_objective);
   }
   mutex_upper_.unlock();
+  return send_solution;
 }
 
 // Martin's criteria for the preferred rounding direction (see [1])
@@ -1064,11 +1066,13 @@ struct nondeterministic_policy_t : tree_update_policy_t<i_t, f_t> {
   branch_and_bound_t<i_t, f_t>& bnb;
   branch_and_bound_worker_t<i_t, f_t>* worker;
   logger_t& log;
+  bool* improved;
 
   nondeterministic_policy_t(branch_and_bound_t<i_t, f_t>& bnb,
                             branch_and_bound_worker_t<i_t, f_t>* worker,
-                            logger_t& log)
-    : bnb(bnb), worker(worker), log(log)
+                            logger_t& log,
+                            bool* improved = nullptr)
+    : bnb(bnb), worker(worker), log(log), improved(improved)
   {
   }
 
@@ -1083,7 +1087,8 @@ struct nondeterministic_policy_t : tree_update_policy_t<i_t, f_t> {
                                f_t obj,
                                const std::vector<f_t>& x) override
   {
-    bnb.add_feasible_solution(obj, x, node->depth, worker->search_strategy);
+    const bool accepted = bnb.add_feasible_solution(obj, x, node->depth, worker->search_strategy);
+    if (accepted && improved != nullptr) { *improved = true; }
   }
 
   branch_variable_t<i_t> select_branch_variable(mip_node_t<i_t, f_t>* node,
@@ -1458,9 +1463,10 @@ std::pair<node_status_t, branch_direction_t> branch_and_bound_t<i_t, f_t>::updat
   search_tree_t<i_t, f_t>& search_tree,
   branch_and_bound_worker_t<i_t, f_t>* worker,
   dual_status_t lp_status,
-  logger_t& log)
+  logger_t& log,
+  bool* improved)
 {
-  nondeterministic_policy_t<i_t, f_t> policy{*this, worker, log};
+  nondeterministic_policy_t<i_t, f_t> policy{*this, worker, log, improved};
   return update_tree_impl(node_ptr, search_tree, worker, lp_status, policy);
 }
 
@@ -1675,7 +1681,7 @@ void branch_and_bound_t<i_t, f_t>::plunge_with(bfs_worker_t<i_t, f_t>* worker,
   f_t rel_gap     = user_relative_gap(user_obj, user_lower);
   f_t abs_gap     = compute_user_abs_gap(original_lp_, upper_bound, lower_bound);
 
-  bool can_launch_rins = true;
+  bool can_launch_submip = true;
 
   while (stack.size() > 0 && (solver_status_ == mip_status_t::UNSET && is_running_) &&
          rel_gap > settings_.relative_mip_gap_tol && abs_gap > settings_.absolute_mip_gap_tol) {
@@ -1785,10 +1791,7 @@ void branch_and_bound_t<i_t, f_t>::plunge_with(bfs_worker_t<i_t, f_t>* worker,
     worker->recompute_bounds = node_status != node_status_t::HAS_CHILDREN;
 
     if (node_status == node_status_t::HAS_CHILDREN) {
-      launch_scheduled_dins(worker->leaf_solution.x);
-      if (can_launch_rins) {
-        can_launch_rins = !launch_submip_worker(worker->leaf_solution.x, submip_heuristic_t::RINS);
-      }
+      if (can_launch_submip) { can_launch_submip = !launch_submip_worker(worker->leaf_solution.x); }
 
       // The stack should only contain the children of the current parent.
       // If the stack size is greater than 0,
@@ -2009,7 +2012,7 @@ void branch_and_bound_t<i_t, f_t>::best_first_search_with(bfs_worker_t<i_t, f_t>
 }
 
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::dive_with(diving_worker_t<i_t, f_t>* worker, i_t backtrack_limit)
+bool branch_and_bound_t<i_t, f_t>::dive_with(diving_worker_t<i_t, f_t>* worker, i_t backtrack_limit)
 {
   raft::common::nvtx::range scope("BB::diving_thread");
   if (worker->orbital_fixing) { worker->orbital_fixing->disable(); }
@@ -2029,6 +2032,7 @@ void branch_and_bound_t<i_t, f_t>::dive_with(diving_worker_t<i_t, f_t>* worker, 
   stack.push_front(&dive_tree.root);
 
   branch_and_bound_stats_t<i_t, f_t> dive_stats;
+  bool improved   = false;
   f_t lower_bound = get_lower_bound();
   f_t upper_bound = upper_bound_;
   f_t user_obj    = compute_user_objective(original_lp_, upper_bound);
@@ -2075,7 +2079,8 @@ void branch_and_bound_t<i_t, f_t>::dive_with(diving_worker_t<i_t, f_t>* worker, 
     if (lp_status == dual_status_t::CONCURRENT_LIMIT) { break; }
     if (lp_status == dual_status_t::ITERATION_LIMIT) { break; }
 
-    auto [node_status, round_dir] = update_tree(node_ptr, dive_tree, worker, lp_status, log);
+    auto [node_status, round_dir] =
+      update_tree(node_ptr, dive_tree, worker, lp_status, log, &improved);
 
     worker->recompute_basis  = node_status != node_status_t::HAS_CHILDREN;
     worker->recompute_bounds = node_status != node_status_t::HAS_CHILDREN;
@@ -2109,6 +2114,7 @@ void branch_and_bound_t<i_t, f_t>::dive_with(diving_worker_t<i_t, f_t>* worker, 
   if (worker->search_strategy != search_strategy_t::SUBMIP) {
     diving_worker_pool_.return_worker_to_pool(worker);
   }
+  return improved;
 }
 
 template <typename i_t, typename f_t>
@@ -2164,19 +2170,44 @@ bool branch_and_bound_t<i_t, f_t>::launch_diving_worker(bfs_worker_t<i_t, f_t>* 
 }
 
 template <typename i_t, typename f_t>
-bool branch_and_bound_t<i_t, f_t>::launch_submip_worker(const std::vector<f_t>& sol,
-                                                        submip_heuristic_t heuristic)
+bool branch_and_bound_t<i_t, f_t>::launch_submip_worker(const std::vector<f_t>& sol)
 {
-  if (heuristic == submip_heuristic_t::RINS && settings_.submip_settings.rins == 0) return false;
-  if (heuristic == submip_heuristic_t::DINS && settings_.submip_settings.dins == 0) return false;
+  const bool rins_enabled = settings_.submip_settings.rins != 0;
+  const bool dins_enabled = settings_.submip_settings.dins != 0;
+  if (!rins_enabled && !dins_enabled) { return false; }
+  if (submip_worker_pool_.num_idle() == 0) { return false; }
+
   mutex_upper_.lock();
   const bool has_incumbent = incumbent_.has_incumbent;
   mutex_upper_.unlock();
-  if (!has_incumbent) return false;
-  if (submip_worker_pool_.num_idle() == 0) return false;
+  if (!has_incumbent) { return false; }
 
+  const i_t nodes_explored = exploration_stats_.nodes_explored;
+  mutex_submip_bandit_.lock();
+  if (submip_worker_pool_.num_idle() == 0) {
+    mutex_submip_bandit_.unlock();
+    return false;
+  }
+
+  const bool dins_due = dins_enabled && dins_schedule_.should_launch(true, nodes_explored);
+  const submip_bandit_t::eligibility_t eligible{rins_enabled, dins_due};
+  const std::optional<submip_heuristic_t> selected = submip_bandit_.select(eligible);
+  if (!selected.has_value()) {
+    mutex_submip_bandit_.unlock();
+    return false;
+  }
+
+  // All sub-MIP pool consumers hold mutex_submip_bandit_, so a worker observed above cannot be
+  // consumed between the availability check and this pop. Keep cancellation as a defensive guard
+  // in case another pool consumer is added later.
   diving_worker_t<i_t, f_t>* worker = submip_worker_pool_.pop_idle_worker();
-  if (!worker) return false;
+  if (worker == nullptr) {
+    submip_bandit_.cancel(*selected);
+    mutex_submip_bandit_.unlock();
+    return false;
+  }
+  if (selected == submip_heuristic_t::DINS) { dins_schedule_.record_launch(nodes_explored); }
+  mutex_submip_bandit_.unlock();
 
   worker->set_active();
   worker->search_strategy = search_strategy_t::SUBMIP;
@@ -2184,47 +2215,46 @@ bool branch_and_bound_t<i_t, f_t>::launch_submip_worker(const std::vector<f_t>& 
   if (settings_.inside_submip) {
     // LLVM libomp's GOMP compatibility path skips GCC's firstprivate copy
     // function for included tasks.
-    if (heuristic == submip_heuristic_t::DINS)
-      dins(worker, sol);
-    else
-      rins(worker, sol);
+    run_submip_worker(worker, sol, *selected);
   } else {
+    const submip_heuristic_t heuristic = *selected;
 #pragma omp task priority(CUOPT_DEFAULT_TASK_PRIORITY) affinity(worker) \
   firstprivate(worker, sol, heuristic)
-    {
-      if (heuristic == submip_heuristic_t::DINS)
-        dins(worker, sol);
-      else
-        rins(worker, sol);
-    }
+    run_submip_worker(worker, sol, heuristic);
   }
 
   return true;
 }
 
 template <typename i_t, typename f_t>
-bool branch_and_bound_t<i_t, f_t>::launch_scheduled_dins(const std::vector<f_t>& sol)
+void branch_and_bound_t<i_t, f_t>::run_submip_worker(diving_worker_t<i_t, f_t>* worker,
+                                                     const std::vector<f_t>& sol,
+                                                     submip_heuristic_t heuristic)
 {
-  if (settings_.submip_settings.dins == 0) { return false; }
+  const double start_time = tic();
+  const bool improved =
+    heuristic == submip_heuristic_t::DINS ? dins(worker, sol) : rins(worker, sol);
+  const double elapsed = toc(start_time);
 
-  const i_t nodes_explored = exploration_stats_.nodes_explored;
-  mutex_upper_.lock();
-  const bool has_incumbent = incumbent_.has_incumbent;
-  mutex_upper_.unlock();
-  mutex_dins_schedule_.lock();
-  const bool should_launch =
-    !dins_launch_reserved_ && dins_schedule_.should_launch(has_incumbent, nodes_explored);
-  if (should_launch) { dins_launch_reserved_ = true; }
-  mutex_dins_schedule_.unlock();
-  if (!should_launch) { return false; }
+  mutex_submip_bandit_.lock();
+  submip_bandit_.complete(heuristic, improved, elapsed);
+  const submip_bandit_arm_stats_t stats = submip_bandit_.stats(heuristic);
+  mutex_submip_bandit_.unlock();
 
-  const bool launched = launch_submip_worker(sol, submip_heuristic_t::DINS);
+  settings_.log.debug_format(
+    "Sub-MIP bandit: arm={} improved={} elapsed={:.3f} pulls={} completed={} pending={} "
+    "successes={} mean_reward={:.6f} mean_cost={:.3f}\n",
+    heuristic == submip_heuristic_t::DINS ? "DINS" : "RINS",
+    improved,
+    elapsed,
+    stats.pulls,
+    stats.completed,
+    stats.pending(),
+    stats.successes,
+    stats.mean_reward(),
+    stats.mean_cost());
 
-  mutex_dins_schedule_.lock();
-  if (launched) { dins_schedule_.record_launch(nodes_explored); }
-  dins_launch_reserved_ = false;
-  mutex_dins_schedule_.unlock();
-  return launched;
+  submip_worker_pool_.return_worker_to_pool(worker);
 }
 
 template <typename i_t, typename f_t>
@@ -2414,8 +2444,8 @@ typename branch_and_bound_t<i_t, f_t>::submip_result_t branch_and_bound_t<i_t, f
     // Launch a CPU FJ worker on the presolved sub-MIP with a fixed budget (in terms of work units)
     // to run in parallel with the cut-and-branch algorithm with the goal of finding a quick
     // feasible solution for the sub-MIP problem. The CPU FJ uses the current incumbent (crushed
-    // into the presolved space) as initial guess. The worker is automatically stop when we go out
-    // of the scope.
+    // into the presolved space) as initial guess. It is joined after the sub-MIP solve so all
+    // improvement callbacks finish before the result is read.
     std::vector<f_t> initial_guess;
     crush_primal_solution(submip_problem,
                           submip_bnb.original_lp_,
@@ -2440,7 +2470,8 @@ typename branch_and_bound_t<i_t, f_t>::submip_result_t branch_and_bound_t<i_t, f
   }
 
   mip_status_t submip_status = submip_bnb.solve(submip_solution);
-  f_t submip_time            = toc(start_time);
+  submip_fj_cpu_worker.stop();
+  f_t submip_time = toc(start_time);
 
   submip_settings.log.debug_format(
     "Sub-MIP: status={}, iterations={} (total={}), presolve_time={:.2f}, total_time={:.2f} \n",
@@ -2598,7 +2629,7 @@ void extend_variable_fixings(const simplex_solver_settings_t<i_t, f_t>& settings
 }
 
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* dins_worker,
+bool branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* dins_worker,
                                         const std::vector<f_t>& node_solution)
 {
   raft::common::nvtx::range scope("BB::dins_thread");
@@ -2635,13 +2666,11 @@ void branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* dins_worker,
   get_unfixed_integer_variables(
     original_lp_.lower, original_lp_.upper, var_types_, settings_.fixed_tol, integer_list);
   const i_t num_integers = integer_list.size();
-  if (num_integers == 0) {
-    submip_worker_pool_.return_worker_to_pool(dins_worker);
-    return;
-  }
+  if (num_integers == 0) { return false; }
 
   dins_search_state_t<i_t> search(settings_.submip_settings.dins_radius);
   bool keep_searching = true;
+  bool improved       = false;
   while (keep_searching && solver_status_ == mip_status_t::UNSET && is_running_) {
     dins_worker->leaf_problem.lower = original_lp_.lower;
     dins_worker->leaf_problem.upper = original_lp_.upper;
@@ -2693,6 +2722,7 @@ void branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* dins_worker,
                             dins_stats_);
     }
 
+    improved = improved || result.improved;
     if (result.improved) {
       auto incumbent_snapshot = snapshot_incumbent();
       current_incumbent       = std::move(incumbent_snapshot.first);
@@ -2707,11 +2737,11 @@ void branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* dins_worker,
                              dins_stats_.total_success.load(),
                              dins_stats_.total_infeasible.load(),
                              dins_stats_.total_calls.load());
-  submip_worker_pool_.return_worker_to_pool(dins_worker);
+  return improved;
 }
 
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::rins(diving_worker_t<i_t, f_t>* rins_worker,
+bool branch_and_bound_t<i_t, f_t>::rins(diving_worker_t<i_t, f_t>* rins_worker,
                                         const std::vector<f_t>& node_solution)
 {
   raft::common::nvtx::range scope("BB::rins_thread");
@@ -2753,10 +2783,9 @@ void branch_and_bound_t<i_t, f_t>::rins(diving_worker_t<i_t, f_t>* rins_worker,
   get_unfixed_integer_variables(lower, upper, var_types_, settings_.fixed_tol, integer_list);
 
   i_t num_integers = integer_list.size();
-  if (num_integers == 0) {
-    submip_worker_pool_.return_worker_to_pool(rins_worker);
-    return;
-  }
+  if (num_integers == 0) { return false; }
+
+  bool improved = false;
 
   f_t max_fixrate =
     submip_get_max_fixrate(rins_stats_, settings_.submip_settings, rins_worker->rng);
@@ -2881,7 +2910,8 @@ void branch_and_bound_t<i_t, f_t>::rins(diving_worker_t<i_t, f_t>* rins_worker,
 
     if (num_frac == 0) {
       // We found a feasible solution when fixing the variables in RINS.
-      add_feasible_solution(leaf_obj, current_sol, -1, search_strategy_t::SUBMIP);
+      improved =
+        add_feasible_solution(leaf_obj, current_sol, -1, search_strategy_t::SUBMIP) || improved;
       break;
     }
 
@@ -2906,11 +2936,15 @@ void branch_and_bound_t<i_t, f_t>::rins(diving_worker_t<i_t, f_t>* rins_worker,
       bool is_feasible = rins_worker->presolve_start_bounds(settings_);
       if (is_feasible) {
         fj_cpu_worker_t<i_t, f_t> submip_fj_cpu_worker;
+        std::atomic<bool> cpufj_improved{false};
 
         if (settings_.submip_settings.enable_cpufj) {
           submip_fj_cpu_worker.improvement_callback =
-            [this](f_t obj, const std::vector<f_t>& assignment, double work_units) {
-              this->set_solution_from_cpu_fj(obj, assignment, work_units);
+            [this, &cpufj_improved](
+              f_t obj, const std::vector<f_t>& assignment, double work_units) {
+              if (this->set_solution_from_cpu_fj(obj, assignment, work_units)) {
+                cpufj_improved.store(true);
+              }
             };
 
           f_t time_limit =
@@ -2925,17 +2959,19 @@ void branch_and_bound_t<i_t, f_t>::rins(diving_worker_t<i_t, f_t>* rins_worker,
           submip_fj_cpu_worker.run_sync(time_limit, work_limit);
         }
 
-        dive_with(rins_worker, 5);
+        improved = cpufj_improved.load() || improved;
+        improved = dive_with(rins_worker, 5) || improved;
       }
 
     } else {
-      solve_submip(rins_worker,
-                   current_incumbent,
-                   num_var_fixed,
-                   num_integers,
-                   submip_level,
-                   log_prefix,
-                   rins_stats_);
+      const submip_result_t result = solve_submip(rins_worker,
+                                                  current_incumbent,
+                                                  num_var_fixed,
+                                                  num_integers,
+                                                  submip_level,
+                                                  log_prefix,
+                                                  rins_stats_);
+      improved                     = result.improved || improved;
     }
   }
 
@@ -2958,7 +2994,7 @@ void branch_and_bound_t<i_t, f_t>::rins(diving_worker_t<i_t, f_t>* rins_worker,
     min_fixrate,
     min_var_fixed);
 
-  submip_worker_pool_.return_worker_to_pool(rins_worker);
+  return improved;
 }
 
 template <typename i_t, typename f_t>
