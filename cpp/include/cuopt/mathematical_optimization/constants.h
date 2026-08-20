@@ -53,6 +53,8 @@
 #define CUOPT_BARRIER_STEP_SCALE                    "barrier_step_scale"
 #define CUOPT_ELIMINATE_DENSE_COLUMNS               "eliminate_dense_columns"
 #define CUOPT_CUDSS_DETERMINISTIC                   "cudss_deterministic"
+#define CUOPT_CUDSS_IR_N_STEPS                      "cudss_ir_n_steps"
+#define CUOPT_CUDSS_IR_TOL                          "cudss_ir_tol"
 #define CUOPT_PRESOLVE                              "presolve"
 #define CUOPT_MIP_PROBING                           "mip_probing"
 #define CUOPT_DUAL_POSTSOLVE                        "dual_postsolve"

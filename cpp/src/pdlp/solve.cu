@@ -515,6 +515,8 @@ std::tuple<simplex::lp_solution_t<i_t, f_t>, simplex::lp_status_t, f_t, f_t, f_t
   barrier_settings.crossover                       = settings.crossover;
   barrier_settings.eliminate_dense_columns         = settings.eliminate_dense_columns;
   barrier_settings.barrier_iterative_refinement    = settings.barrier_iterative_refinement;
+  barrier_settings.cudss_ir_n_steps                 = settings.cudss_ir_n_steps;
+  barrier_settings.cudss_ir_tol                     = settings.cudss_ir_tol;
   barrier_settings.barrier_soc_threshold           = settings.barrier_soc_threshold;
   barrier_settings.barrier_step_scale              = settings.barrier_step_scale;
   barrier_settings.qcqp_ruiz_equilibration         = settings.qcqp_ruiz_equilibration;

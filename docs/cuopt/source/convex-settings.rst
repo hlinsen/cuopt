@@ -378,6 +378,13 @@ Barrier Iterative Refinement
 * ``0`` (``CUOPT_BARRIER_ITERATIVE_REFINEMENT_OFF``): Disable iterative refinement (default).
 * ``1`` (``CUOPT_BARRIER_ITERATIVE_REFINEMENT_ON``): Enable iterative refinement.
 
+``CUOPT_CUDSS_IR_N_STEPS`` sets the maximum number of cuDSS internal iterative-refinement steps.
+The default is ``0``, which disables cuDSS internal iterative refinement.
+
+``CUOPT_CUDSS_IR_TOL`` sets the cuDSS internal iterative-refinement relative residual tolerance.
+It is used when ``CUOPT_CUDSS_IR_N_STEPS`` is greater than zero and requires cuDSS 0.8 or newer.
+The default is ``0.0``, which disables tolerance-based early termination.
+
 .. note:: The default value is ``0`` (off).
 
 Barrier Step Scale

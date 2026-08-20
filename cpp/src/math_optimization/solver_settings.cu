@@ -104,6 +104,7 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_MIP_CUT_CHANGE_THRESHOLD, &mip_settings.cut_change_threshold, f_t(-1.0), std::numeric_limits<f_t>::infinity(), f_t(-1.0)},
     {CUOPT_MIP_CUT_MIN_ORTHOGONALITY, &mip_settings.cut_min_orthogonality, f_t(0.0), f_t(1.0), f_t(0.5)},
     {CUOPT_BARRIER_STEP_SCALE, &pdlp_settings.barrier_step_scale, f_t(0.5), f_t(0.9999), f_t(0.9)},
+    {CUOPT_CUDSS_IR_TOL, &pdlp_settings.cudss_ir_tol, f_t(0.0), std::numeric_limits<f_t>::infinity(), f_t(0.0), "cuDSS internal iterative refinement relative residual tolerance"},
     // MIP heuristic hyper-parameters (hidden from default --help: name contains "hyper_")
     {CUOPT_MIP_HYPER_HEURISTIC_ROOT_LP_TIME_RATIO, &mip_settings.heuristic_params.root_lp_time_ratio, f_t(0.0), f_t(1.0), f_t(0.1), "fraction of total time for root LP"},
     {CUOPT_MIP_HYPER_HEURISTIC_ROOT_LP_MAX_TIME, &mip_settings.heuristic_params.root_lp_max_time, f_t(0.0), std::numeric_limits<f_t>::infinity(), f_t(15.0), "hard cap on root LP seconds"},
@@ -138,6 +139,7 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_ORDERING, &pdlp_settings.ordering, -1, 1, -1},
     {CUOPT_BARRIER_DUAL_INITIAL_POINT, &pdlp_settings.barrier_dual_initial_point, -1, 1, -1},
     {CUOPT_POSTSOLVE_INFO, &pdlp_settings.postsolve_info, -1, 1, -1},
+    {CUOPT_CUDSS_IR_N_STEPS, &pdlp_settings.cudss_ir_n_steps, 0, std::numeric_limits<i_t>::max(), 0, "maximum cuDSS internal iterative refinement steps"},
     {CUOPT_MIP_CUT_PASSES, &mip_settings.max_cut_passes, -1, std::numeric_limits<i_t>::max(), 10},
     {CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS, &mip_settings.mir_cuts, -1, 1, -1},
     {CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS, &mip_settings.mixed_integer_gomory_cuts, -1, 1, -1},

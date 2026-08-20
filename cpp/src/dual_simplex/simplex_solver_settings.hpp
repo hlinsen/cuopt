@@ -70,6 +70,8 @@ struct simplex_solver_settings_t {
       barrier(false),
       eliminate_dense_columns(true),
       barrier_iterative_refinement(true),
+      cudss_ir_n_steps(0),
+      cudss_ir_tol(0.0),
       barrier_step_scale(0.9),
       barrier_soc_threshold(100),
       num_gpus(1),
@@ -165,6 +167,8 @@ struct simplex_solver_settings_t {
   bool deterministic;  // true to use B&B deterministic mode, false to use non-deterministic mode
   bool eliminate_dense_columns;       // true to eliminate dense columns from A*D*A^T
   bool barrier_iterative_refinement;  // true to use iterative refinement for barrier method
+  i_t cudss_ir_n_steps;               // maximum cuDSS internal iterative refinement steps
+  f_t cudss_ir_tol;                   // cuDSS internal iterative refinement tolerance
   f_t barrier_step_scale;             // step scale for barrier method
   i_t barrier_soc_threshold;          // SOC dimension above which rank-2 sparse scaling is used
   int num_gpus;   // Number of GPUs to use (maximum of 2 gpus are supported at the moment)

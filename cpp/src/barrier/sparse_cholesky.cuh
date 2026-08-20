@@ -298,13 +298,29 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     }
 #endif
 
-#if USE_ITERATIVE_REFINEMENT
-    int32_t ir_n_steps = 2;
-    CUDSS_CALL_AND_CHECK_EXIT(
-      cudssConfigSet(solverConfig, CUDSS_CONFIG_IR_N_STEPS, &ir_n_steps, sizeof(int32_t)),
-      status,
-      "cudssConfigSet for ir n steps");
+    if (settings_.cudss_ir_n_steps > 0) {
+      int32_t ir_n_steps = static_cast<int32_t>(settings_.cudss_ir_n_steps);
+      CUDSS_CALL_AND_CHECK_EXIT(
+        cudssConfigSet(solverConfig, CUDSS_CONFIG_IR_N_STEPS, &ir_n_steps, sizeof(ir_n_steps)),
+        status,
+        "cudssConfigSet for ir n steps");
+#if CUDSS_VERSION_MAJOR > 0 || (CUDSS_VERSION_MAJOR == 0 && CUDSS_VERSION_MINOR >= 8)
+      double ir_tol = static_cast<double>(settings_.cudss_ir_tol);
+      CUDSS_CALL_AND_CHECK_EXIT(
+        cudssConfigSet(solverConfig, CUDSS_CONFIG_IR_TOL, &ir_tol, sizeof(ir_tol)),
+        status,
+        "cudssConfigSet for ir tolerance");
+#else
+      if (settings_.cudss_ir_tol > 0.0) {
+        settings_.log.printf(
+          "cuDSS iterative refinement tolerance requires cuDSS version 0.8 or newer\n");
+        std::exit(1);
+      }
 #endif
+      settings_.log.printf("cuDSS iterative refinement : steps=%d tolerance=%.2e\n",
+                           ir_n_steps,
+                           static_cast<double>(settings_.cudss_ir_tol));
+    }
 
 #if USE_MATCHING
     settings_.log.printf("Using matching\n");
