@@ -59,7 +59,7 @@ enum class mip_status_t {
   NUMERICAL       = 6,  // The solver encountered a numerical error
   UNSET           = 7,  // The status is not set
   WORK_LIMIT      = 8,  // The solver reached a deterministic work limit
-  SUBMIP_HALT     = 9   // Halt the solver
+  HALT            = 9   // Halt the solver
 };
 
 inline std::string mip_status_to_string(mip_status_t status)
@@ -74,7 +74,7 @@ inline std::string mip_status_to_string(mip_status_t status)
     case mip_status_t::NUMERICAL: return "NUMERICAL";
     case mip_status_t::UNSET: return "UNSET";
     case mip_status_t::WORK_LIMIT: return "WORK_LIMIT";
-    case mip_status_t::SUBMIP_HALT: return "SUBMIP_HALT";
+    case mip_status_t::HALT: return "HALT";
   }
   return "UNKNOWN";
 }
@@ -311,13 +311,15 @@ class branch_and_bound_t {
               i_t node_int_infeas,
               double work_time = -1);
 
-  enum class cut_pass_action_t { CONTINUE, BREAK, RETURN };
-  struct cut_pass_result_t {
-    cut_pass_action_t action{cut_pass_action_t::CONTINUE};
-    mip_status_t status{mip_status_t::UNSET};
-  };
+  bool received_halt_signal()
+  {
+    return settings_.concurrent_halt ? settings_.concurrent_halt->load(std::memory_order_acquire)
+                                     : false;
+  }
 
-  cut_pass_result_t do_cut_pass(i_t cut_pass,
+  enum class cut_pass_action_t { CONTINUE, BREAK, RETURN };
+
+  cut_pass_action_t do_cut_pass(i_t cut_pass,
                                 simplex::mip_solution_t<i_t, f_t>& solution,
                                 i_t& num_fractional,
                                 std::vector<i_t>& fractional,
@@ -403,7 +405,7 @@ class branch_and_bound_t {
     submip_stats_t& submip_stats,
     f_t fixrate,
     i_t simplex_iter_used,
-    bool is_root_heuristic                               = false,
+    simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
     const std::vector<i_t>& local_branching_variables    = {},
     const std::vector<f_t>& local_branching_coefficients = {},
     f_t local_branching_rhs                              = f_t{0});
@@ -412,7 +414,7 @@ class branch_and_bound_t {
   bool recursive_submip(diving_worker_t<i_t, f_t>* worker,
                         const std::vector<f_t>& current_incumbent,
                         const std::vector<simplex::variable_type_t>& var_types,
-                        bool is_root_heuristic     = false,
+                        simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
                         bool return_worker_to_pool = true);
 
   // Creates and solves the DINS sub-MIP.
