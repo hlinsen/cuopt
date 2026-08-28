@@ -36,12 +36,14 @@
 #include <cuopt/mathematical_optimization/pdlp/solver_settings.hpp>
 
 #include <mip_heuristics/presolve/third_party_presolve.hpp>
+#include <mip_heuristics/root_heuristics.hpp>
 
 #include <omp.h>
 
 #include <atomic>
 #include <functional>
 #include <future>
+#include <list>
 #include <memory>
 #include <vector>
 
@@ -277,6 +279,7 @@ class branch_and_bound_t {
   // Worker pool and adaptive statistics dedicated to recursive neighborhood sub-MIPs.
   diving_worker_pool_t<i_t, f_t> submip_worker_pool_;
   submip_stats_t rins_stats_;
+  submip_stats_t rens_stats_;
   submip_stats_t dins_stats_;
   std::vector<f_t> dins_previous_incumbent_;
   std::vector<bool> dins_changed_incumbent_;
@@ -382,34 +385,43 @@ class branch_and_bound_t {
   // Launch a new neighborhood sub-MIP worker.
   bool launch_submip_worker(const std::vector<f_t>& sol);
   void run_submip_worker(diving_worker_t<i_t, f_t>* worker,
-                         const std::vector<f_t>& sol,
+                         const std::vector<f_t>& node_solution,
+                         const std::vector<f_t>& current_incumbent,
                          submip_heuristic_t heuristic);
-  bool set_solution_from_submip(const std::vector<f_t>& solution,
+  bool set_solution_from_submip(const simplex::lp_problem_t<i_t, f_t>& lp,
+                                const std::vector<f_t>& solution,
                                 const third_party_presolve_t<i_t, f_t>& presolver,
+                                submip_stats_t& submip_stats,
                                 f_t fixrate,
-                                f_t obj,
-                                submip_stats_t& stats);
+                                std::string_view log_prefix);
 
   // Solve a neighborhood sub-MIP, optionally with a local-branching inequality.
-  submip_result_t solve_submip(diving_worker_t<i_t, f_t>* worker,
-                               const std::vector<f_t>& current_incumbent,
-                               i_t num_var_fixed,
-                               i_t num_integers,
-                               i_t submip_level,
-                               std::string_view log_prefix,
-                               submip_stats_t& stats,
-                               const std::vector<i_t>& local_branching_variables    = {},
-                               const std::vector<f_t>& local_branching_coefficients = {},
-                               f_t local_branching_rhs                              = f_t{0});
+  submip_result_t solve_submip(
+    diving_worker_t<i_t, f_t>* worker,
+    const std::vector<f_t>& current_incumbent,
+    const std::vector<simplex::variable_type_t>& var_types,
+    submip_stats_t& submip_stats,
+    f_t fixrate,
+    i_t simplex_iter_used,
+    bool is_root_heuristic                               = false,
+    const std::vector<i_t>& local_branching_variables    = {},
+    const std::vector<f_t>& local_branching_coefficients = {},
+    f_t local_branching_rhs                              = f_t{0});
 
-  // Creates and solves the RINS sub-MIP
-  bool rins(diving_worker_t<i_t, f_t>* rins_worker, const std::vector<f_t>& node_solution);
+  // Creates and solves a RINS or RENS sub-MIP.
+  bool recursive_submip(diving_worker_t<i_t, f_t>* worker,
+                        const std::vector<f_t>& current_incumbent,
+                        const std::vector<simplex::variable_type_t>& var_types,
+                        bool is_root_heuristic     = false,
+                        bool return_worker_to_pool = true);
 
-  // Creates and solves the DINS sub-MIP
-  bool dins(diving_worker_t<i_t, f_t>* dins_worker, const std::vector<f_t>& node_solution);
+  // Creates and solves the DINS sub-MIP.
+  bool dins(diving_worker_t<i_t, f_t>* worker, const std::vector<f_t>& node_solution);
 
-  // Get the simplex settings for solving the LP of a single node
-  simplex::simplex_solver_settings_t<i_t, f_t> get_node_lp_settings();
+  void launch_root_heuristics(const simplex::lp_problem_t<i_t, f_t>& lp,
+                              const std::vector<f_t>& sol,
+                              i_t cut_pass,
+                              root_heuristics_t<i_t, f_t>& root_heuristics);
 
   // Solve the LP relaxation of a leaf node
   simplex::dual_status_t solve_node_lp(mip_node_t<i_t, f_t>* node_ptr,
