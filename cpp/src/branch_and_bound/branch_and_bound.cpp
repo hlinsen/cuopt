@@ -2460,7 +2460,7 @@ typename branch_and_bound_t<i_t, f_t>::submip_result_t branch_and_bound_t<i_t, f
 
   if (submip_settings.concurrent_halt &&
       submip_settings.concurrent_halt->load(std::memory_order_acquire)) {
-    return {mip_status_t::SUBMIP_HALT, false};
+    return {mip_status_t::HALT, false};
   }
 
   std::atomic<bool> found_improvement{false};
@@ -2816,7 +2816,6 @@ bool branch_and_bound_t<i_t, f_t>::dins(diving_worker_t<i_t, f_t>* worker,
   bool keep_searching = true;
   bool improved       = false;
   while (keep_searching && solver_status_ == mip_status_t::UNSET && is_running_ &&
-         !worker->halt &&
          !(settings_.concurrent_halt &&
            settings_.concurrent_halt->load(std::memory_order_acquire))) {
     worker->leaf_problem.lower = original_lp_.lower;
