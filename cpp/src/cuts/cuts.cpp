@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1226,12 +1227,107 @@ f_t cut_pool_t<i_t, f_t>::cut_orthogonality(i_t i, i_t j)
   return 1.0 - std::abs(dot) / (norm_i * norm_j);
 }
 
+// Benchmark-only verifier: reproduce the legacy implementation without mutating the cut pool.
+template <typename i_t, typename f_t>
+std::vector<i_t> build_legacy_duplicate_cut_removal_mask(const csr_matrix_t<i_t, f_t>& cut_storage,
+                                                         const std::vector<f_t>& rhs_storage,
+                                                         f_t duplicate_tolerance)
+{
+  const i_t m = cut_storage.m;
+  std::vector<f_t> divisors(m, 0.0);
+  std::vector<i_t> sets(m, 0);
+  csc_matrix_t<i_t, f_t> cut_storage_csc(0, 0, 1);
+  cut_storage.to_compressed_col(cut_storage_csc);
+  const i_t n        = cut_storage_csc.n;
+  const i_t sentinel = std::numeric_limits<i_t>::max();
+
+  i_t new_set                        = 1;
+  i_t remaining_potential_duplicates = m;
+  for (i_t j = 0; j < n; j++) {
+    i_t r0        = -1;
+    i_t new_rows  = 0;
+    i_t new_set_0 = new_set;
+    new_set++;
+    const i_t col_start = cut_storage_csc.col_start[j];
+    const i_t col_end   = cut_storage_csc.col_start[j + 1];
+    for (i_t p = col_start; p < col_end; p++) {
+      const i_t r    = cut_storage_csc.i[p];
+      const f_t a_rj = cut_storage_csc.x[p];
+      const f_t f_r  = divisors[r];
+      if (sets[r] == 0) {
+        r0          = r;
+        sets[r]     = new_set_0;
+        divisors[r] = a_rj;
+        new_rows++;
+      } else if (sets[r] < new_set_0) {
+        for (i_t q = p + 1; q < col_end; q++) {
+          const i_t i    = cut_storage_csc.i[q];
+          const f_t a_ij = cut_storage_csc.x[q];
+          if (sets[i] == sets[r]) {
+            const f_t f_i = divisors[i];
+            const f_t val = (a_rj / f_r) * (f_i / a_ij);
+            if (val >= 1.0 - duplicate_tolerance && val <= 1.0 + duplicate_tolerance) {
+              sets[r] = new_set;
+              sets[i] = new_set;
+            }
+          }
+        }
+        if (sets[r] >= new_set_0) {
+          new_set++;
+        } else {
+          sets[r] = sentinel;
+          remaining_potential_duplicates--;
+          if (remaining_potential_duplicates == 0) { break; }
+        }
+      }
+    }
+    if (remaining_potential_duplicates == 0) { break; }
+    if (new_rows == 1) {
+      sets[r0] = sentinel;
+      remaining_potential_duplicates--;
+      if (remaining_potential_duplicates == 0) { break; }
+    }
+  }
+
+  std::vector<i_t> cuts_to_remove(m, 0);
+  for (i_t r = 0; r < m; r++) {
+    const i_t set_r = sets[r];
+    if (set_r > 0 && set_r < sentinel && cuts_to_remove[r] == 0) {
+      for (i_t i = r + 1; i < m; i++) {
+        if (sets[i] != set_r) { continue; }
+        const f_t f_r     = divisors[r];
+        const f_t f_i     = divisors[i];
+        const f_t theta_r = rhs_storage[r] / f_r;
+        const f_t theta_i = rhs_storage[i] / f_i;
+        if (f_r > 0.0 && f_i > 0.0) {
+          if (theta_r <= theta_i) {
+            cuts_to_remove[r] = 1;
+          } else {
+            cuts_to_remove[i] = 1;
+          }
+        } else if (f_r < 0.0 && f_i < 0.0) {
+          if (theta_r >= theta_i) {
+            cuts_to_remove[r] = 1;
+          } else {
+            cuts_to_remove[i] = 1;
+          }
+        }
+      }
+    }
+  }
+  return cuts_to_remove;
+}
+
 template <typename i_t, typename f_t>
 void cut_pool_t<i_t, f_t>::check_for_duplicate_cuts()
 {
   const i_t m = cut_storage_.m;
 
   constexpr f_t duplicate_tolerance = 1e-10;
+  static std::atomic<uint64_t> next_audit_call{0};
+  const uint64_t audit_call = next_audit_call.fetch_add(1, std::memory_order_relaxed);
+  const auto legacy_cuts_to_remove =
+    build_legacy_duplicate_cut_removal_mask(cut_storage_, rhs_storage_, duplicate_tolerance);
   std::vector<f_t> divisors(m, 0.0);
   std::vector<i_t> sets(m, 0);
   csc_matrix_t<i_t, f_t> cut_storage_csc(0, 0, 1);
@@ -1360,6 +1456,52 @@ void cut_pool_t<i_t, f_t>::check_for_duplicate_cuts()
 
   const i_t num_cuts_to_remove =
     std::accumulate(cuts_to_remove.begin(), cuts_to_remove.end(), i_t{0});
+  const i_t legacy_cuts_removed =
+    std::accumulate(legacy_cuts_to_remove.begin(), legacy_cuts_to_remove.end(), i_t{0});
+  i_t mask_differences      = 0;
+  i_t legacy_only_retained  = 0;
+  i_t indexed_only_retained = 0;
+  for (i_t r = 0; r < m; r++) {
+    const bool legacy_retained  = legacy_cuts_to_remove[r] == 0;
+    const bool indexed_retained = cuts_to_remove[r] == 0;
+    if (legacy_retained == indexed_retained) { continue; }
+    mask_differences++;
+    legacy_only_retained += legacy_retained;
+    indexed_only_retained += indexed_retained;
+  }
+  settings_.log.printf(
+    "DUPLICATE_CUT_RETENTION_AUDIT call=%llu raw_rows=%lld raw_nnz=%lld "
+    "legacy_removed=%lld indexed_removed=%lld legacy_retained=%lld indexed_retained=%lld "
+    "mask_differences=%lld legacy_only_retained=%lld indexed_only_retained=%lld status=%s\n",
+    static_cast<unsigned long long>(audit_call),
+    static_cast<long long>(m),
+    static_cast<long long>(cut_storage_.row_start[m]),
+    static_cast<long long>(legacy_cuts_removed),
+    static_cast<long long>(num_cuts_to_remove),
+    static_cast<long long>(m - legacy_cuts_removed),
+    static_cast<long long>(m - num_cuts_to_remove),
+    static_cast<long long>(mask_differences),
+    static_cast<long long>(legacy_only_retained),
+    static_cast<long long>(indexed_only_retained),
+    mask_differences == 0 ? "match" : "diff");
+  if (mask_differences != 0) {
+    for (i_t r = 0; r < m; r++) {
+      const bool legacy_retained  = legacy_cuts_to_remove[r] == 0;
+      const bool indexed_retained = cuts_to_remove[r] == 0;
+      if (legacy_retained == indexed_retained) { continue; }
+      const i_t row_nnz = cut_storage_.row_start[r + 1] - cut_storage_.row_start[r];
+      settings_.log.printf(
+        "DUPLICATE_CUT_RETENTION_DIFF call=%llu row=%lld legacy_retained=%d "
+        "indexed_retained=%d row_nnz=%lld rhs=%+.17e cut_type=%d\n",
+        static_cast<unsigned long long>(audit_call),
+        static_cast<long long>(r),
+        static_cast<int>(legacy_retained),
+        static_cast<int>(indexed_retained),
+        static_cast<long long>(row_nnz),
+        static_cast<double>(rhs_storage_[r]),
+        static_cast<int>(cut_type_[r]));
+    }
+  }
   if (num_cuts_to_remove > 0) {
     settings_.log.debug("Removing %d duplicate cuts\n", num_cuts_to_remove);
     csr_matrix_t<i_t, f_t> new_cut_storage(0, 0, 0);
