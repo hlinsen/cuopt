@@ -4285,11 +4285,23 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     settings_.concurrent_halt ? settings_.concurrent_halt : &node_concurrent_halt_;
   lp_settings.inside_mip = 1;
   i_t first_normal_cut_pass     = 0;
+  bool pass_zero_heuristics_launched = false;
 
   // Pass 0 consumes cuts completed from the PDLP/Barrier relaxation while the winning basis was
-  // being built. Score them against that basis solution and reoptimize before generating any
-  // basis-aware cuts. If cuts are applied, this replaces normal cut pass 0.
+  // being built. Preserve the normal pass-0 heuristics on the original root solution, then score
+  // the speculative cuts against that solution and reoptimize before generating any basis-aware
+  // cuts. If cuts are applied, they replace only the cut-generation portion of normal pass 0.
   if (cut_pool.pool_size() > 0) {
+    launch_root_heuristics(original_lp_,
+                           root_relax_soln_,
+                           fractional,
+                           basic_list,
+                           nonbasic_list,
+                           basis_update,
+                           0,
+                           root_heuristics);
+    pass_zero_heuristics_launched = true;
+
     cut_pass_result_t speculative_cut_result = do_cut_pass(-1,
                                                            solution,
                                                            num_fractional,
@@ -4366,14 +4378,16 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       return mip_status_t::OPTIMAL;
     }
 
-    launch_root_heuristics(original_lp_,
-                           root_relax_soln_,
-                           fractional,
-                           basic_list,
-                           nonbasic_list,
-                           basis_update,
-                           cut_pass,
-                           root_heuristics);
+    if (cut_pass != 0 || !pass_zero_heuristics_launched) {
+      launch_root_heuristics(original_lp_,
+                             root_relax_soln_,
+                             fractional,
+                             basic_list,
+                             nonbasic_list,
+                             basis_update,
+                             cut_pass,
+                             root_heuristics);
+    }
 
     cut_pass_result_t cut_pass_result = do_cut_pass(cut_pass,
                                                     solution,
