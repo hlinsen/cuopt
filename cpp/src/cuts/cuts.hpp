@@ -441,6 +441,12 @@ class cut_pool_t {
 
   i_t pool_size() const { return cut_storage_.m; }
 
+  i_t original_vars() const { return original_vars_; }
+
+  // Transfer cuts from a producer-local pool into this pool. This is intentionally a serialized
+  // operation: add_cut() and the cut scoring caches are not thread-safe.
+  i_t merge_from(cut_pool_t<i_t, f_t>& source);
+
   void print_cutpool_types() { print_cut_types("In cut pool", cut_type_, settings_); }
 
   void check_for_duplicate_cuts();

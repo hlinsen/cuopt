@@ -334,6 +334,12 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
     branch_and_bound_problem.objective_step = context.problem_ptr->get_objective_step();
   }
   simplex_solver_settings_t<i_t, f_t> branch_and_bound_settings;
+  // Keep the speculative root-cut PDLP resources outside the MIP taskgroup. Destroying a RAFT
+  // handle can synchronize the device through cuBLAS, which is unsafe while a concurrent MIP
+  // heuristic is capturing a CUDA graph. Declaration order also ensures B&B releases its borrowed
+  // handle before the handle releases its stream.
+  std::unique_ptr<rmm::cuda_stream> root_cut_pdlp_stream;
+  std::unique_ptr<raft::handle_t> root_cut_pdlp_handle;
   std::unique_ptr<mip::branch_and_bound_t<i_t, f_t>> branch_and_bound;
   branch_and_bound_solution_helper_t solution_helper(&dm, branch_and_bound_settings);
   simplex::mip_solution_t<i_t, f_t> branch_and_bound_solution(1);
@@ -426,6 +432,12 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                   std::placeholders::_3);
     }
 
+    // Give the top-level B&B a dedicated GPU stream for the per-cut-pass PDLP producer. Direct
+    // dual-simplex and recursive sub-MIP entry points leave this handle null and retain their
+    // existing behavior.
+    root_cut_pdlp_stream = std::make_unique<rmm::cuda_stream>();
+    root_cut_pdlp_handle = std::make_unique<raft::handle_t>(*root_cut_pdlp_stream);
+
     // Create the branch and bound object
     branch_and_bound =
       std::make_unique<mip::branch_and_bound_t<i_t, f_t>>(branch_and_bound_problem,
@@ -433,7 +445,8 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                                                           timer_.get_tic_start(),
                                                           probing_implied_bound,
                                                           context.problem_ptr->clique_table,
-                                                          context.symmetry.get());
+                                                          context.symmetry.get(),
+                                                          root_cut_pdlp_handle.get());
     context.branch_and_bound_ptr = branch_and_bound.get();
 
     // Convert the best external upper bound from user-space to B&B's internal objective space.

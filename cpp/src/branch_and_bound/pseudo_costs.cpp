@@ -5,6 +5,7 @@
  */
 /* clang-format on */
 
+#include <branch_and_bound/pdlp_lp_utils.hpp>
 #include <branch_and_bound/pseudo_costs.hpp>
 #include <branch_and_bound/shared_strong_branching_context.hpp>
 #include <branch_and_bound/symmetry.hpp>
@@ -540,123 +541,6 @@ std::pair<f_t, dual_status_t> trial_branching(const lp_problem_t<i_t, f_t>& orig
 }
 
 }  // namespace
-
-template <typename i_t, typename f_t>
-static cuopt::mathematical_optimization::io::mps_data_model_t<i_t, f_t>
-simplex_problem_to_mps_data_model(const lp_problem_t<i_t, f_t>& lp,
-                                  const std::vector<i_t>& new_slacks,
-                                  const std::vector<f_t>& root_soln,
-                                  std::vector<f_t>& original_root_soln_x)
-{
-  // Branch and bound has a problem of the form:
-  // minimize c^T x
-  // subject to A*x + Es = b
-  //            l <= x <= u
-  //            E_{jj} = sigma_j, where sigma_j is +1 or -1
-
-  // We need to convert this into a problem that is better for PDLP
-  // to solve. PDLP perfers inequality constraints. Thus, we want
-  // to convert the above into the problem:
-  // minimize c^T x
-  // subject to  lb <= A*x <= ub
-  //             l <= x <= u
-
-  cuopt::mathematical_optimization::io::mps_data_model_t<i_t, f_t> mps_model;
-  int m = lp.num_rows;
-  int n = lp.num_cols - new_slacks.size();
-  original_root_soln_x.resize(n);
-
-  // Remove slacks from A
-  csc_matrix_t<i_t, f_t> A_no_slacks = lp.A;
-  std::vector<i_t> cols_to_remove(lp.A.n, 0);
-  for (i_t j : new_slacks) {
-    cols_to_remove[j] = 1;
-  }
-  A_no_slacks.remove_columns(cols_to_remove);
-
-  for (i_t j = 0; j < n; j++) {
-    original_root_soln_x[j] = root_soln[j];
-  }
-
-  // Convert CSC to CSR using built-in method
-  csr_matrix_t<i_t, f_t> csr_A(m, n, 0);
-  A_no_slacks.to_compressed_row(csr_A);
-
-  int nz = csr_A.row_start[m];
-
-  // Set CSR constraint matrix
-  mps_model.set_csr_constraint_matrix(
-    std::span<const f_t>{csr_A.x.data(), static_cast<size_t>(nz)},
-    std::span<const i_t>{csr_A.j.data(), static_cast<size_t>(nz)},
-    std::span<const i_t>{csr_A.row_start.data(), static_cast<size_t>(m + 1)});
-
-  // Set objective coefficients
-  mps_model.set_objective_coefficients(
-    std::span<const f_t>{lp.objective.data(), static_cast<size_t>(n)});
-
-  // The LP is already in minimization form (objective negated for max problems).
-  // Pass identity scaling so PDLP returns the raw DS-space objective directly.
-  mps_model.set_objective_scaling_factor(f_t(1.0));
-  mps_model.set_objective_offset(f_t(0.0));
-
-  // Set variable bounds
-  mps_model.set_variable_lower_bounds(
-    std::span<const f_t>{lp.lower.data(), static_cast<size_t>(n)});
-  mps_model.set_variable_upper_bounds(
-    std::span<const f_t>{lp.upper.data(), static_cast<size_t>(n)});
-
-  // Convert row sense and RHS to constraint bounds
-  std::vector<f_t> constraint_lower(m);
-  std::vector<f_t> constraint_upper(m);
-
-  std::vector<i_t> slack_map(m, -1);
-  for (i_t j : new_slacks) {
-    const i_t col_start = lp.A.col_start[j];
-    const i_t i         = lp.A.i[col_start];
-    slack_map[i]        = j;
-  }
-
-  for (i_t i = 0; i < m; ++i) {
-    // Each row is of the form a_i^T x + sigma * s_i = b_i
-    // with sigma = +1 or -1
-    // and l_i <= s_i <= u_i
-    // We have that a_i^T x - b_i = -sigma * s_i
-    // If sigma = -1, then we have
-    //    a_i^T x - b_i = s_i
-    //  l_i <= a_i^T x - b_i <= u_i
-    //  l_i + b_i <= a_i^T x <= u_i + b_i
-    //
-    // If sigma = +1, then we have
-    //    a_i^T x - b_i = -s_i
-    //   -a_i^T x + b_i = s_i
-    //  l_i <= -a_i^T x + b_i <= u_i
-    //  l_i - b_i <= -a_i^T x <= u_i - b_i
-    //  -u_i + b_i <= a_i^T x <= -l_i + b_i
-
-    const i_t slack = slack_map[i];
-    assert(slack != -1);
-    const i_t col_start   = lp.A.col_start[slack];
-    const f_t sigma       = lp.A.x[col_start];
-    const f_t slack_lower = lp.lower[slack];
-    const f_t slack_upper = lp.upper[slack];
-
-    if (sigma == -1) {
-      constraint_lower[i] = slack_lower + lp.rhs[i];
-      constraint_upper[i] = slack_upper + lp.rhs[i];
-    } else if (sigma == 1) {
-      constraint_lower[i] = -slack_upper + lp.rhs[i];
-      constraint_upper[i] = -slack_lower + lp.rhs[i];
-    } else {
-      assert(sigma == 1.0 || sigma == -1.0);
-    }
-  }
-
-  mps_model.set_constraint_lower_bounds(constraint_lower);
-  mps_model.set_constraint_upper_bounds(constraint_upper);
-  mps_model.set_maximize(false);
-
-  return mps_model;
-}
 
 enum class sb_source_t { DUAL_SIMPLEX, PDLP, NONE };
 

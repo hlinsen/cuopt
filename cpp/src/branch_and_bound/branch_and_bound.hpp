@@ -100,7 +100,8 @@ class branch_and_bound_t {
                      f_t start_time,
                      const probing_implied_bound_t<i_t, f_t>& probing_implied_bound,
                      std::shared_ptr<mip::clique_table_t<i_t, f_t>> clique_table = nullptr,
-                     mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr);
+                     mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr,
+                     const raft::handle_t* root_cut_pdlp_handle                  = nullptr);
 
   // Set an initial guess based on the user_problem. This should be called before solve.
   void set_initial_guess(const std::vector<f_t>& user_guess) { guess_ = user_guess; }
@@ -196,6 +197,7 @@ class branch_and_bound_t {
   const simplex::simplex_solver_settings_t<i_t, f_t> settings_;
   const probing_implied_bound_t<i_t, f_t>& probing_implied_bound_;
   std::shared_ptr<mip::clique_table_t<i_t, f_t>> clique_table_;
+  const raft::handle_t* root_cut_pdlp_handle_;
   omp_atomic_t<bool> signal_extend_cliques_{false};
   omp_atomic_t<bool> clique_table_complete_{false};
   mip_symmetry_t<i_t, f_t>* symmetry_;
