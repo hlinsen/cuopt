@@ -1195,6 +1195,34 @@ void cut_pool_t<i_t, f_t>::add_cut(cut_type_t cut_type, const inequality_t<i_t, 
 }
 
 template <typename i_t, typename f_t>
+i_t cut_pool_t<i_t, f_t>::merge_from(cut_pool_t<i_t, f_t>& source)
+{
+  if (source.pool_size() == 0) { return 0; }
+  if (source.original_vars_ != original_vars_) {
+    settings_.log.printf("Cannot merge cut pools with %d and %d original variables\n",
+                         original_vars_,
+                         source.original_vars_);
+    return 0;
+  }
+
+  const i_t source_size = source.pool_size();
+  if (cut_storage_.append_rows(source.cut_storage_) != 0) { return 0; }
+  rhs_storage_.insert(rhs_storage_.end(), source.rhs_storage_.begin(), source.rhs_storage_.end());
+  cut_age_.insert(cut_age_.end(), source.cut_age_.begin(), source.cut_age_.end());
+  cut_type_.insert(cut_type_.end(), source.cut_type_.begin(), source.cut_type_.end());
+
+  // Any scores refer to the old row set and must be rebuilt at the authoritative DS point.
+  cut_distances_.clear();
+  cut_norms_.clear();
+  cut_orthogonality_.clear();
+  cut_scores_.clear();
+  best_cuts_.clear();
+  scored_cuts_ = 0;
+  source.clear();
+  return source_size;
+}
+
+template <typename i_t, typename f_t>
 f_t cut_pool_t<i_t, f_t>::cut_distance(i_t row,
                                        const std::vector<f_t>& x,
                                        f_t& cut_violation,
