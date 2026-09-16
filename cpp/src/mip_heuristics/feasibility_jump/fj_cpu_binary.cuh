@@ -154,7 +154,7 @@ static inline void fj_bin_score_delta_parts(
   bonus = weight * (nst - ost);
 }
 
-static inline int64_t fj_bin_packed_score_delta(int32_t os, int32_t ns, int32_t weight)
+inline int64_t fj_bin_packed_score_delta(int32_t os, int32_t ns, int32_t weight)
 {
   int32_t base = 0, bonus = 0;
   fj_bin_score_delta_parts(os, ns, weight, base, bonus);

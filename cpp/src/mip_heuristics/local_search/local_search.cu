@@ -280,7 +280,7 @@ bool local_search_t<i_t, f_t>::do_fj_solve(solution_t<i_t, f_t>& solution,
       size_t n = std::min<size_t>(omp_get_num_threads() - 1, ls_cpu_fj.size());
       CUOPT_LOG_DEBUG("Launching %d CPUFJ tasks", n);
 
-#pragma omp taskloop shared(ls_cpu_fj) default(none) num_tasks(n) \
+#pragma omp taskloop shared(ls_cpu_fj, n) default(none) num_tasks(n) \
   nogroup priority(CUOPT_DEFAULT_TASK_PRIORITY)
       for (size_t i = 0; i < n; ++i) {
         cpufj_solve(ls_cpu_fj[i].get());

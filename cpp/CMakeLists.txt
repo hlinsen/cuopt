@@ -571,6 +571,20 @@ set(CUOPT_CLIENT_SRC_FILES)
 set(MPS_FAST_SRC_FILES)
 add_subdirectory(src)
 
+# NVCC emits some barrier kernel-template host stubs after their first use. Clang eagerly
+# instantiates the declarations and rejects the generated specializations, so delay template
+# parsing for this translation unit only.
+if (CMAKE_CUDA_HOST_COMPILER MATCHES "clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(BARRIER_CLANG_COMPILE_OPTIONS "-Xcompiler=-fdelayed-template-parsing")
+    if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 20)
+        list(APPEND BARRIER_CLANG_COMPILE_OPTIONS
+                "-Xcompiler=-Wno-delayed-template-parsing-in-cxx20")
+    endif ()
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/barrier/barrier.cu"
+            DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" APPEND PROPERTY
+            COMPILE_OPTIONS ${BARRIER_CLANG_COMPILE_OPTIONS})
+endif ()
+
 if (HOST_LINEINFO)
     set_source_files_properties(${CUOPT_SRC_FILES} ${CUOPT_CLIENT_SRC_FILES} DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTIES COMPILE_OPTIONS "-g1")
 endif ()

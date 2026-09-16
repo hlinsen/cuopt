@@ -165,8 +165,7 @@ void cpu_optimization_problem_t<i_t, f_t>::set_quadratic_objective_matrix(
 
 template <typename i_t, typename f_t>
 void cpu_optimization_problem_t<i_t, f_t>::set_quadratic_constraints(
-  std::vector<typename optimization_problem_interface_t<i_t, f_t>::quadratic_constraint_t>
-    constraints)
+  std::vector<typename cpu_optimization_problem_t<i_t, f_t>::quadratic_constraint_t> constraints)
 {
   quadratic_constraints_ = std::move(constraints);
 }
@@ -191,7 +190,7 @@ void cpu_optimization_problem_t<i_t, f_t>::add_quadratic_constraint(
                 error_type_t::ValidationError,
                 "linear_values and linear_indices must have the same size");
 
-  typename optimization_problem_interface_t<i_t, f_t>::quadratic_constraint_t qc;
+  typename cpu_optimization_problem_t<i_t, f_t>::quadratic_constraint_t qc;
   qc.constraint_row_index = get_n_constraints() + static_cast<i_t>(quadratic_constraints_.size());
   qc.constraint_row_type  = constraint_row_type;
   qc.rhs_value            = rhs_value;
@@ -566,7 +565,7 @@ bool cpu_optimization_problem_t<i_t, f_t>::has_quadratic_objective() const
 }
 
 template <typename i_t, typename f_t>
-const std::vector<typename optimization_problem_interface_t<i_t, f_t>::quadratic_constraint_t>&
+const std::vector<typename cpu_optimization_problem_t<i_t, f_t>::quadratic_constraint_t>&
 cpu_optimization_problem_t<i_t, f_t>::get_quadratic_constraints() const
 {
   return quadratic_constraints_;

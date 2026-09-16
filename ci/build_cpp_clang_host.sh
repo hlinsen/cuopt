@@ -45,7 +45,7 @@ sccache --zero-stats
 
 grep -Eq '^CMAKE_CXX_COMPILER:FILEPATH=.*/clang\+\+$' "${LIBCUOPT_BUILD_DIR}/CMakeCache.txt"
 grep -Eq '^CMAKE_CUDA_COMPILER:FILEPATH=.*/nvcc$' "${LIBCUOPT_BUILD_DIR}/CMakeCache.txt"
-grep -Eq '^CMAKE_CUDA_HOST_COMPILER:FILEPATH=.*/clang\+\+$' \
+grep -Eq '^CMAKE_CUDA_HOST_COMPILER:(FILEPATH|UNINITIALIZED)=.*/clang\+\+$' \
   "${LIBCUOPT_BUILD_DIR}/CMakeCache.txt"
 
 sccache --show-adv-stats

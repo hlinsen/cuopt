@@ -28,6 +28,16 @@
 
 namespace cuopt::mathematical_optimization::mip {
 
+namespace {
+
+#if defined(__clang__)
+using extended_float_t = __float128;
+#else
+using extended_float_t = _Float128;
+#endif
+
+}  // namespace
+
 // N1 complements negative coefficients; N3 sorts them descending. N1 makes activity monotone and
 // the weights of equivalent inequalities non-negative.
 struct norm_row_t {
@@ -69,7 +79,7 @@ static bool integerization_preserves_binary_feasible_set(
 {
   cuopt_assert(len >= 2 && len <= BHW_MAX_LEN, "row length outside the enumerable range");
   const uint32_t n_pat = 1u << len;
-  std::vector<_Float128> original_activity(n_pat, 0.0L);
+  std::vector<extended_float_t> original_activity(n_pat, 0.0L);
   std::vector<int64_t> integral_activity(n_pat, 0);
   for (uint32_t m = 1; m < n_pat; ++m) {
     const uint32_t previous = m & (m - 1u);

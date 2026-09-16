@@ -27,6 +27,12 @@ namespace cuopt::mathematical_optimization::mip {
 
 namespace {
 
+#if defined(__clang__)
+using extended_float_t = __float128;
+#else
+using extended_float_t = _Float128;
+#endif
+
 constexpr int arcflow_paths_supported        = 2;
 constexpr int arcflow_max_tokens             = 20000;
 constexpr int arcflow_max_col_entries        = 3;
@@ -609,20 +615,24 @@ std::vector<i_t> token_order(
 
   // Approximate equality is not transitive. Tolerance forms ratio classes before the final sort.
   std::sort(ordered.begin(), ordered.end(), [&](i_t a, i_t b) {
-    const _Float128 lhs = (_Float128)model.slope[a] * (_Float128)model.displacement[b];
-    const _Float128 rhs = (_Float128)model.slope[b] * (_Float128)model.displacement[a];
+    const extended_float_t lhs =
+      (extended_float_t)model.slope[a] * (extended_float_t)model.displacement[b];
+    const extended_float_t rhs =
+      (extended_float_t)model.slope[b] * (extended_float_t)model.displacement[a];
     if (lhs != rhs) { return lhs > rhs; }
     return a < b;
   });
   std::vector<i_t> ratio_class(model.n_labels, 0);
   for (size_t position = 1; position < ordered.size(); ++position) {
-    const i_t previous  = ordered[position - 1];
-    const i_t current   = ordered[position];
-    const _Float128 lhs = (_Float128)model.slope[previous] * (_Float128)model.displacement[current];
-    const _Float128 rhs = (_Float128)model.slope[current] * (_Float128)model.displacement[previous];
-    const _Float128 difference = lhs > rhs ? lhs - rhs : rhs - lhs;
-    const bool tied            = difference <= (_Float128)tolerances.absolute_tolerance;
-    ratio_class[current]       = ratio_class[previous] + (tied ? 0 : 1);
+    const i_t previous = ordered[position - 1];
+    const i_t current  = ordered[position];
+    const extended_float_t lhs =
+      (extended_float_t)model.slope[previous] * (extended_float_t)model.displacement[current];
+    const extended_float_t rhs =
+      (extended_float_t)model.slope[current] * (extended_float_t)model.displacement[previous];
+    const extended_float_t difference = lhs > rhs ? lhs - rhs : rhs - lhs;
+    const bool tied      = difference <= (extended_float_t)tolerances.absolute_tolerance;
+    ratio_class[current] = ratio_class[previous] + (tied ? 0 : 1);
   }
   std::sort(ordered.begin(), ordered.end(), [&](i_t a, i_t b) {
     if (ratio_class[a] != ratio_class[b]) { return ratio_class[a] < ratio_class[b]; }

@@ -3013,7 +3013,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
             data.d_diag_.data(), data.d_is_direct_free_linear_.data(), data.d_Q_diag_.data()),
           data.d_diag_.data(),
           linear_size,
-          [free_var_reg] HD(f_t diag_j, i_t is_direct_free_linear, f_t q_jj) {
+          [] HD(f_t diag_j, i_t is_direct_free_linear, f_t q_jj) {
             if (!is_direct_free_linear || q_jj > f_t(0)) return diag_j;
             return diag_j + free_var_reg;
           },
@@ -3023,7 +3023,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
           cuda::std::make_tuple(data.d_diag_.data(), data.d_is_direct_free_linear_.data()),
           data.d_diag_.data(),
           linear_size,
-          [free_var_reg] HD(f_t diag_j, i_t is_direct_free_linear) {
+          [] HD(f_t diag_j, i_t is_direct_free_linear) {
             return is_direct_free_linear ? (diag_j + free_var_reg) : diag_j;
           },
           stream_view_.get());
