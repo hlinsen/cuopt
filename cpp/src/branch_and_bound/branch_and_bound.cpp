@@ -16,6 +16,7 @@
 #include <cuopt/mathematical_optimization/solve.hpp>
 
 #include <cuts/cuts.hpp>
+#include <mip_heuristics/classic_rens.hpp>
 #include <mip_heuristics/feasibility_jump/fj_cpu_worker.cuh>
 #include <mip_heuristics/mip_constants.hpp>
 #include <mip_heuristics/presolve/conflict_graph/clique_table.cuh>
@@ -2317,10 +2318,15 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
 
   bool is_root_heuristic = submip_settings.inside_root_node;
   i_t submip_level       = settings_.submip_settings.level + 1;
-  f_t user_lower         = compute_user_objective(worker->leaf_problem, get_lower_bound());
-  f_t user_obj           = compute_user_objective(worker->leaf_problem, upper_bound_.load());
-  f_t rel_gap            = user_relative_gap(user_obj, user_lower);
-  i_t explored           = exploration_stats_.nodes_explored;
+  // An early PDLP primal objective is not a certified lower bound. Use the configured SubMIP
+  // target until the authoritative root solve has completed.
+  f_t rel_gap = settings_.submip_settings.target_mip_gap;
+  if (!solving_root_relaxation_) {
+    f_t user_lower = compute_user_objective(worker->leaf_problem, get_lower_bound());
+    f_t user_obj   = compute_user_objective(worker->leaf_problem, upper_bound_.load());
+    rel_gap        = user_relative_gap(user_obj, user_lower);
+  }
+  i_t explored = exploration_stats_.nodes_explored;
 
   submip_settings.print_presolve_stats                     = false;
   submip_settings.num_threads                              = 1;
@@ -2462,7 +2468,8 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
       f_t user_upper = compute_user_objective(this->original_lp_, this->upper_bound_.load());
       bool is_cutoff = original_lp_.obj_scale > 0 ? submip_lower_bound > user_upper
                                                   : user_upper > submip_lower_bound;
-      bool is_solver_running = this->solver_status_ == mip_status_t::UNSET && this->is_running_;
+      bool is_solver_running = this->solver_status_ == mip_status_t::UNSET &&
+                               (this->is_running_ || this->solving_root_relaxation_);
       return is_cutoff || !is_solver_running || this->received_halt_signal();
     });
   }
@@ -2707,6 +2714,61 @@ f_t calculate_fixrate(const std::vector<i_t>& integer_list,
   }
 
   return (f_t)num_fixed / integer_list.size();
+}
+
+template <typename i_t, typename f_t>
+void branch_and_bound_t<i_t, f_t>::solve_pdlp_rens(
+  diving_worker_t<i_t, f_t>* worker, simplex_solver_settings_t<i_t, f_t> submip_settings)
+{
+  raft::common::nvtx::range scope("BB::pdlp_rens_thread");
+  scope_guard worker_scope([worker]() { worker->set_inactive(); });
+
+  ++rens_stats_.total_calls;
+  submip_settings.log.log_prefix = "[PDLP RENS] ";
+
+  std::vector<f_t>& lower           = worker->leaf_problem.lower;
+  std::vector<f_t>& upper           = worker->leaf_problem.upper;
+  std::vector<bool>& bounds_changed = worker->bounds_changed;
+  std::fill(bounds_changed.begin(), bounds_changed.end(), false);
+
+  const auto fixing_result = apply_classic_rens_fixings<i_t, f_t>(worker->leaf_solution.x,
+                                                                  worker->var_types,
+                                                                  settings_.integer_tol,
+                                                                  settings_.fixed_tol,
+                                                                  lower,
+                                                                  upper,
+                                                                  bounds_changed);
+
+  if (fixing_result.num_integer_variables == 0) {
+    settings_.log.printf("PDLP RENS skipped: no unfixed integer variables\n");
+    return;
+  }
+
+  const bool feasible = worker->node_presolver.bounds_strengthening(
+    settings_, bounds_changed, worker->leaf_problem.lower, worker->leaf_problem.upper);
+  if (!feasible) {
+    const f_t fixrate =
+      static_cast<f_t>(fixing_result.num_fixed_variables) / fixing_result.num_integer_variables;
+    rens_stats_.save_infeasible(fixrate);
+    settings_.log.printf("PDLP RENS neighborhood is infeasible after bound strengthening\n");
+    return;
+  }
+
+  const i_t num_fixed = fixing_result.num_fixed_variables;
+  const f_t fixrate   = static_cast<f_t>(num_fixed) / fixing_result.num_integer_variables;
+
+  settings_.log.print_format("PDLP RENS neighborhood fixed {} of {} integer variables ({:.1f}%)\n",
+                             num_fixed,
+                             fixing_result.num_integer_variables,
+                             100.0 * fixrate);
+
+  if (fixrate < settings_.submip_settings.min_fixrate) {
+    settings_.log.print_format("PDLP RENS skipped: fix rate is below the {:.1f}% minimum\n",
+                               100.0 * settings_.submip_settings.min_fixrate);
+    return;
+  }
+
+  solve_submip(worker, rens_stats_, fixrate, 0, submip_settings);
 }
 
 template <typename i_t, typename f_t>
@@ -3164,7 +3226,8 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
   std::vector<i_t>& nonbasic_list,
   std::vector<f_t>& edge_norms,
   variable_bounds_t<i_t, f_t>& variable_bounds,
-  cut_pool_t<i_t, f_t>& cut_pool)
+  cut_pool_t<i_t, f_t>& cut_pool,
+  root_heuristics_t<i_t, f_t>& root_heuristics)
 {
   lp_status_t root_status;
   i_t relaxation_cut_task_status = 0;
@@ -3176,6 +3239,7 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
   std::vector<f_t> relaxation_root_x;
   std::vector<f_t> relaxation_root_y;
   std::vector<f_t> relaxation_root_z;
+  std::shared_ptr<cut_pass_heuristics_t<i_t, f_t>> pdlp_rens_heuristic;
 
 // Launch a task for solving the root LP relaxation via dual simplex.
 #pragma omp task default(shared) depend(out : root_status) priority(CUOPT_CRITICAL_TASK_PRIORITY)
@@ -3224,6 +3288,43 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
     root_crossover_soln_.x = crushed_root_x;
     root_crossover_soln_.y = crushed_root_y;
     root_crossover_soln_.z = crushed_root_z;
+
+    // PDLP can provide a useful primal point long before dual simplex constructs a basis. Build a
+    // classic RENS neighborhood from that point and search it asynchronously for an incumbent.
+    // This task is opportunistic: the authoritative root solve remains unchanged and stops the
+    // heuristic as soon as its basis becomes available.
+    if (root_relax_solved_by == PDLP && settings_.submip_settings.rens != 0 &&
+        !settings_.deterministic && !settings_.inside_submip && omp_get_num_threads() >= 4) {
+      root_heuristics.stop_old_workers(0, 1);
+      pdlp_rens_heuristic = root_heuristics.create_new_cut_pass_heuristic(
+        Arow_, var_types_, root_crossover_soln_.x, edge_norms_, settings_);
+      auto worker_count        = root_heuristics.worker_count_;
+      const f_t pdlp_objective = compute_objective(original_lp_, root_crossover_soln_.x);
+      const std::vector<variable_status_t> no_basis;
+      diving_worker_t<i_t, f_t>* worker =
+        pdlp_rens_heuristic->create_submip_worker(0,
+                                                  original_lp_,
+                                                  settings_,
+                                                  pdlp_objective,
+                                                  no_basis,
+                                                  root_crossover_soln_.x,
+                                                  search_strategy_t::RENS);
+
+      simplex_solver_settings_t<i_t, f_t> submip_settings = settings_;
+      submip_settings.concurrent_halt                     = &pdlp_rens_heuristic->halt_;
+      submip_settings.inside_root_node                    = true;
+
+      settings_.log.printf("Launching classic RENS from the PDLP root solution\n");
+      ++pdlp_rens_heuristic->active_workers_;
+      ++(*worker_count);
+#pragma omp task priority(CUOPT_DEFAULT_TASK_PRIORITY) affinity(worker) \
+  firstprivate(pdlp_rens_heuristic, worker_count, submip_settings) depend(out : *worker)
+      {
+        solve_pdlp_rens(worker, submip_settings);
+        --(*worker_count);
+        --pdlp_rens_heuristic->active_workers_;
+      }
+    }
 
     if ((root_relax_solved_by == PDLP || root_relax_solved_by == Barrier) &&
         settings_.max_cut_passes > 0 && omp_get_num_threads() >= 3) {
@@ -3361,6 +3462,8 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
     root_relax_solved_by                   = DualSimplex;
     exploration_stats_.total_simplex_iters = root_relax_soln_.iterations;
   }
+
+  if (pdlp_rens_heuristic) { pdlp_rens_heuristic->send_stop_signal(); }
 
   if (relaxation_cut_task_started) {
     const bool relaxation_cut_task_interrupted =
@@ -3940,6 +4043,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   basis_update_mpf_t<i_t, f_t> basis_update(original_lp_.num_rows, settings_.refactor_frequency);
   lp_status_t root_status  = lp_status_t::UNSET;
   solving_root_relaxation_ = true;
+  root_heuristics_t<i_t, f_t> root_heuristics(settings_.num_threads - 1);
 
   f_t root_relax_start_time = tic();
 
@@ -3972,7 +4076,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                         nonbasic_list,
                                         edge_norms_,
                                         variable_bounds,
-                                        cut_pool);
+                                        cut_pool,
+                                        root_heuristics);
   }
   settings_.log.printf("\n");
 
@@ -4101,8 +4206,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     settings_.benchmark_info_ptr->root_lp_no_cuts =
       compute_user_objective(original_lp_, root_relax_objective);
   }
-
-  root_heuristics_t<i_t, f_t> root_heuristics(settings_.num_threads - 1);
 
   f_t cut_generation_start_time      = tic();
   i_t cut_pool_size                  = 0;

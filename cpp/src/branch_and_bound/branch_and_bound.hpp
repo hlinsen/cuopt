@@ -178,7 +178,8 @@ class branch_and_bound_t {
     std::vector<i_t>& nonbasic_list,
     std::vector<f_t>& edge_norms,
     variable_bounds_t<i_t, f_t>& variable_bounds,
-    cut_pool_t<i_t, f_t>& cut_pool);
+    cut_pool_t<i_t, f_t>& cut_pool,
+    root_heuristics_t<i_t, f_t>& root_heuristics);
 
   i_t find_reduced_cost_fixings(f_t upper_bound,
                                 std::vector<f_t>& lower_bounds,
@@ -396,6 +397,10 @@ class branch_and_bound_t {
   // Creates and solves the RINS/RENS sub-MIP.
   void recursive_submip(diving_worker_t<i_t, f_t>* worker,
                         simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
+
+  // Solve a classic RENS neighborhood built directly from an early PDLP root solution.
+  void solve_pdlp_rens(diving_worker_t<i_t, f_t>* worker,
+                       simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
 
   void launch_root_heuristics(const simplex::lp_problem_t<i_t, f_t>& lp,
                               const simplex::lp_solution_t<i_t, f_t>& lp_solution,

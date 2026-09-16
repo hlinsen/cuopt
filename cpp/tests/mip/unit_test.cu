@@ -10,6 +10,7 @@
 
 #include <cuopt/mathematical_optimization/io/parser.hpp>
 #include <cuopt/mathematical_optimization/solve.hpp>
+#include <mip_heuristics/classic_rens.hpp>
 #include <mip_heuristics/mip_scaling_strategy.cuh>
 #include <pdlp/utilities/problem_checking.cuh>
 #include <utilities/common_utils.hpp>
@@ -21,6 +22,41 @@
 #include <gtest/gtest.h>
 
 namespace cuopt::mathematical_optimization::test {
+
+TEST(MIPHeuristicsTest, ClassicRensFixings)
+{
+  using simplex::variable_type_t;
+
+  const std::vector<double> solution{0.999999, 3.25, -1.4, 7.0, 5.0};
+  const std::vector<variable_type_t> var_types{variable_type_t::BINARY,
+                                               variable_type_t::INTEGER,
+                                               variable_type_t::INTEGER,
+                                               variable_type_t::CONTINUOUS,
+                                               variable_type_t::INTEGER};
+  std::vector<double> lower{0.0, 0.0, -4.0, -10.0, 5.0};
+  std::vector<double> upper{1.0, 10.0, 2.0, 10.0, 5.0};
+  std::vector<bool> bounds_changed(solution.size(), false);
+
+  const auto result = mip::apply_classic_rens_fixings<int, double>(
+    solution, var_types, 1e-5, 1e-10, lower, upper, bounds_changed);
+
+  EXPECT_EQ(result.num_integer_variables, 3);
+  EXPECT_EQ(result.num_fixed_variables, 1);
+  EXPECT_EQ(result.num_changed_bounds, 3);
+
+  EXPECT_DOUBLE_EQ(lower[0], 1.0);
+  EXPECT_DOUBLE_EQ(upper[0], 1.0);
+  EXPECT_DOUBLE_EQ(lower[1], 3.0);
+  EXPECT_DOUBLE_EQ(upper[1], 4.0);
+  EXPECT_DOUBLE_EQ(lower[2], -2.0);
+  EXPECT_DOUBLE_EQ(upper[2], -1.0);
+  EXPECT_DOUBLE_EQ(lower[3], -10.0);
+  EXPECT_DOUBLE_EQ(upper[3], 10.0);
+  EXPECT_DOUBLE_EQ(lower[4], 5.0);
+  EXPECT_DOUBLE_EQ(upper[4], 5.0);
+  EXPECT_FALSE(bounds_changed[3]);
+  EXPECT_FALSE(bounds_changed[4]);
+}
 
 io::mps_data_model_t<int, double> create_std_lp_problem()
 {
