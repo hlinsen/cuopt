@@ -83,6 +83,18 @@ files:
     includes:
       - develop
       - py_version
+  build_cpp_clang_host:
+    output: none
+    includes:
+      - build_common
+      - build_cpp
+      - build_clang
+      - cuda
+      - cuda_version
+      - test_cpp
+      - depends_on_libraft_headers
+      - depends_on_librmm
+      - depends_on_rapids_logger
   docs:
     output: none
     includes:
@@ -290,6 +302,13 @@ dependencies:
           - libprotobuf
           - libabseil
           - re2
+  build_clang:
+    common:
+      - output_types: conda
+        packages:
+          - clang==20.1.8
+          - clangxx==20.1.8
+          - llvm-openmp==20.1.8
   java:
     common:
       - output_types: conda
