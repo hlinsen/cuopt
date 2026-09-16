@@ -41,7 +41,7 @@ sccache --zero-stats
 
 # One representative GPU architecture keeps this portability gate smaller than the package build.
 ./build.sh -v libcuopt --ci-only-arch --cache-tool=sccache \
-  --cmake-args=\"-DCMAKE_CUDA_ARCHITECTURES=80 -DCMAKE_CUDA_HOST_COMPILER=${CUDAHOSTCXX}\"
+  --cmake-args=\"-DCMAKE_CUDA_ARCHITECTURES=80 -DCMAKE_CXX_COMPILER=${CXX} -DCMAKE_CUDA_HOST_COMPILER=${CUDAHOSTCXX}\"
 
 grep -Eq '^CMAKE_CXX_COMPILER:FILEPATH=.*/clang\+\+$' "${LIBCUOPT_BUILD_DIR}/CMakeCache.txt"
 grep -Eq '^CMAKE_CUDA_COMPILER:FILEPATH=.*/nvcc$' "${LIBCUOPT_BUILD_DIR}/CMakeCache.txt"
