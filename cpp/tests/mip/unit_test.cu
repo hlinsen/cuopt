@@ -8,6 +8,7 @@
 #include "../linear_programming/utilities/pdlp_test_utilities.cuh"
 #include "mip_utils.cuh"
 
+#include <branch_and_bound/pdlp_lp_utils.hpp>
 #include <cuopt/mathematical_optimization/io/parser.hpp>
 #include <cuopt/mathematical_optimization/solve.hpp>
 #include <mip_heuristics/classic_rens.hpp>
@@ -20,6 +21,8 @@
 #include <raft/core/handle.hpp>
 
 #include <gtest/gtest.h>
+
+#include <limits>
 
 namespace cuopt::mathematical_optimization::test {
 
@@ -56,6 +59,58 @@ TEST(MIPHeuristicsTest, ClassicRensFixings)
   EXPECT_DOUBLE_EQ(upper[4], 5.0);
   EXPECT_FALSE(bounds_changed[3]);
   EXPECT_FALSE(bounds_changed[4]);
+}
+
+TEST(MIPHeuristicsTest, AppendCutsToPrivatePdlpProblem)
+{
+  raft::handle_t handle;
+  simplex::lp_problem_t<int, double> lp(&handle, 1, 2, 2);
+  lp.A.col_start = {0, 1, 2};
+  lp.A.i         = {0, 0};
+  lp.A.x         = {1.0, 1.0};
+  lp.objective   = {1.0, 0.0};
+  lp.rhs         = {5.0};
+  lp.lower       = {0.0, 0.0};
+  lp.upper       = {10.0, std::numeric_limits<double>::infinity()};
+  lp.obj_scale   = 1.0;
+
+  csr_matrix_t<int, double> cuts(1, 2, 1);
+  cuts.row_start = {0, 1};
+  cuts.j         = {0};
+  cuts.x         = {2.0};
+  const std::vector<double> cut_rhs{4.0};
+  std::vector<int> new_slacks{1};
+
+  ASSERT_TRUE(mip::append_cuts_to_pdlp_problem(cuts, cut_rhs, lp, new_slacks));
+  EXPECT_EQ(lp.num_rows, 2);
+  EXPECT_EQ(lp.num_cols, 3);
+  ASSERT_EQ(new_slacks.size(), 2);
+  EXPECT_EQ(new_slacks.back(), 2);
+  EXPECT_DOUBLE_EQ(lp.rhs.back(), 4.0);
+  EXPECT_EQ(lp.A.nz_max, 4);
+
+  std::vector<double> structural_solution{0.0, 0.0, 0.0};
+  std::vector<double> unused;
+  auto pdlp_model =
+    mip::simplex_problem_to_mps_data_model(lp, new_slacks, structural_solution, unused);
+  EXPECT_EQ(pdlp_model.get_n_variables(), 1);
+  EXPECT_EQ(pdlp_model.get_n_constraints(), 2);
+  ASSERT_EQ(pdlp_model.get_constraint_upper_bounds().size(), 2);
+  EXPECT_DOUBLE_EQ(pdlp_model.get_constraint_upper_bounds()[0], 5.0);
+  EXPECT_DOUBLE_EQ(pdlp_model.get_constraint_upper_bounds()[1], 4.0);
+
+  std::vector<double> short_solution;
+  auto invalid_model =
+    mip::simplex_problem_to_mps_data_model(lp, new_slacks, short_solution, unused);
+  EXPECT_EQ(invalid_model.get_n_variables(), 0);
+  EXPECT_EQ(invalid_model.get_n_constraints(), 0);
+
+  const std::vector<int> invalid_slacks{-1, 2};
+  const std::vector<double> full_solution{0.0, 0.0, 0.0};
+  invalid_model =
+    mip::simplex_problem_to_mps_data_model(lp, invalid_slacks, full_solution, unused);
+  EXPECT_EQ(invalid_model.get_n_variables(), 0);
+  EXPECT_EQ(invalid_model.get_n_constraints(), 0);
 }
 
 io::mps_data_model_t<int, double> create_std_lp_problem()

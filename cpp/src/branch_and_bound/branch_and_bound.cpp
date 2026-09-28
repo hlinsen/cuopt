@@ -82,6 +82,13 @@ using simplex::variable_type_t;
 
 namespace {
 
+constexpr int pdlp_rens_thread_budget                       = 3;
+constexpr int pdlp_root_reserved_threads                    = 3;
+constexpr double pdlp_cut_pass_time_budget                  = 30.0;
+// Each pass launches CPU FJ alongside a SubMIP that can start its own CPU FJ worker.
+constexpr int pdlp_heuristic_group_thread_budget   = pdlp_rens_thread_budget + 2;
+constexpr int pdlp_heuristic_max_concurrent_groups = 8;
+
 template <typename f_t>
 bool is_fractional(f_t x, variable_type_t var_type, f_t integer_tol)
 {
@@ -697,6 +704,26 @@ void branch_and_bound_t<i_t, f_t>::set_solution_from_cpu_fj(f_t obj,
     }
     set_solution_from_heuristics(user_assignment, heuristics_origin_t::HEURISTICS);
   }
+}
+
+template <typename i_t, typename f_t>
+void branch_and_bound_t<i_t, f_t>::set_solution_from_pdlp_cpu_fj(f_t obj,
+                                                                 const std::vector<f_t>& assignment,
+                                                                 double work_units)
+{
+  const i_t authoritative_num_cols = original_lp_.num_cols;
+  if (assignment.size() < static_cast<std::size_t>(authoritative_num_cols)) {
+    settings_.log.printf("PDLP pre-basis CPU FJ solution size mismatch %ld < %d\n",
+                         assignment.size(),
+                         authoritative_num_cols);
+    return;
+  }
+
+  // The private PDLP model appends one continuous slack per retained cut. Those columns do not
+  // exist in the authoritative root LP used by the incumbent path.
+  std::vector<f_t> authoritative_assignment(assignment.begin(),
+                                            assignment.begin() + authoritative_num_cols);
+  set_solution_from_cpu_fj(obj, authoritative_assignment, work_units);
 }
 
 // We need to do this dance of uncrush methods since we are working on the presolved space of
@@ -2369,7 +2396,8 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
                                                 submip_stats_t& submip_stats,
                                                 f_t fixrate,
                                                 i_t simplex_iter_used,
-                                                simplex_solver_settings_t<i_t, f_t> submip_settings)
+                                                simplex_solver_settings_t<i_t, f_t> submip_settings,
+                                                i_t thread_budget)
 {
   double start_time = tic();
 
@@ -2386,7 +2414,7 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
   i_t explored = exploration_stats_.nodes_explored;
 
   submip_settings.print_presolve_stats                     = false;
-  submip_settings.num_threads                              = 1;
+  submip_settings.num_threads                              = thread_budget;
   submip_settings.reliability_branching                    = 0;
   submip_settings.clique_cuts                              = 0;
   submip_settings.zero_half_cuts                           = 0;
@@ -2484,11 +2512,13 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
         worker->leaf_problem, solution, presolver, submip_stats, fixrate, log_prefix);
     };
 
-  DEBUG_SUBMIP("{}Sub-MIP: {} constraints, {} variables, {} nonzeros\n",
+  DEBUG_SUBMIP("{}Sub-MIP dimensions after presolve: {} constraints, {} variables, {} nonzeros "
+               "(presolve {:.2f} s)\n",
                log_prefix,
                submip_problem.num_rows,
                submip_problem.num_cols,
-               submip_problem.A.nnz());
+               submip_problem.A.nnz(),
+               presolve_time);
 
   probing_implied_bound_t<i_t, f_t> empty_probing(submip_problem.num_cols);
   branch_and_bound_t submip_bnb(submip_problem, submip_settings, tic(), empty_probing);
@@ -2940,13 +2970,15 @@ void branch_and_bound_t<i_t, f_t>::mutation(diving_worker_t<i_t, f_t>* worker,
 
 template <typename i_t, typename f_t>
 void branch_and_bound_t<i_t, f_t>::solve_pdlp_rens(
-  diving_worker_t<i_t, f_t>* worker, simplex_solver_settings_t<i_t, f_t> submip_settings)
+  diving_worker_t<i_t, f_t>* worker,
+  simplex_solver_settings_t<i_t, f_t> submip_settings,
+  i_t cut_pass)
 {
   raft::common::nvtx::range scope("BB::pdlp_rens_thread");
   scope_guard worker_scope([worker]() { worker->set_inactive(); });
 
   ++rens_stats_.total_calls;
-  submip_settings.log.log_prefix = "[PDLP RENS] ";
+  submip_settings.log.log_prefix = std::format("[PDLP RENS pass {}] ", cut_pass);
 
   std::vector<f_t>& lower           = worker->leaf_problem.lower;
   std::vector<f_t>& upper           = worker->leaf_problem.upper;
@@ -2990,7 +3022,12 @@ void branch_and_bound_t<i_t, f_t>::solve_pdlp_rens(
     return;
   }
 
-  solve_submip(worker, rens_stats_, fixrate, 0, submip_settings);
+  solve_submip(worker,
+               rens_stats_,
+               fixrate,
+               0,
+               submip_settings,
+               pdlp_rens_thread_budget);
 }
 
 template <typename i_t, typename f_t>
@@ -3509,11 +3546,18 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
   std::atomic<bool> relaxation_cut_task_complete{false};
   bool relaxation_cut_task_started{false};
   f_t relaxation_cut_task_elapsed{0.0};
+  i_t relaxation_cut_passes{0};
+  i_t relaxation_cut_candidates{0};
+  i_t relaxation_cuts_applied{0};
   method_t relaxation_cut_method{Unset};
+  pdlp_termination_status_t relaxation_root_termination{pdlp_termination_status_t::NoTermination};
+  i_t relaxation_root_iterations{0};
   std::vector<f_t> relaxation_root_x;
   std::vector<f_t> relaxation_root_y;
   std::vector<f_t> relaxation_root_z;
-  std::shared_ptr<cut_pass_heuristics_t<i_t, f_t>> pdlp_rens_heuristic;
+  cut_pool_t<i_t, f_t> relaxation_cut_pool(cut_pool.original_vars(), settings_);
+  using pdlp_pass_heuristic_t = std::pair<i_t, std::shared_ptr<cut_pass_heuristics_t<i_t, f_t>>>;
+  std::vector<pdlp_pass_heuristic_t> pdlp_pass_heuristics;
 
 // Launch a task for solving the root LP relaxation via dual simplex.
 #pragma omp task default(shared) depend(out : root_status) priority(CUOPT_CRITICAL_TASK_PRIORITY)
@@ -3528,6 +3572,7 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
                                                            root_vstatus_,
                                                            edge_norms_,
                                                            nullptr);
+    relaxation_cut_halt.store(1, std::memory_order_release);
   }
 
   // Wait for the root relaxation solution to be sent by the diversity manager or dual simplex
@@ -3563,90 +3608,395 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
     root_crossover_soln_.y = crushed_root_y;
     root_crossover_soln_.z = crushed_root_z;
 
-    // PDLP can provide a useful primal point long before dual simplex constructs a basis. Build a
-    // classic RENS neighborhood from that point and search it asynchronously for an incumbent.
-    // This task is opportunistic: the authoritative root solve remains unchanged and stops the
-    // heuristic as soon as its basis becomes available.
-    if (root_relax_solved_by == PDLP && settings_.submip_settings.rens != 0 &&
-        !settings_.deterministic && !settings_.inside_submip && omp_get_num_threads() >= 4) {
-      root_heuristics.stop_old_workers(0, 1);
-      pdlp_rens_heuristic = root_heuristics.create_new_cut_pass_heuristic(
-        Arow_, var_types_, root_crossover_soln_.x, edge_norms_, settings_);
-      auto worker_count        = root_heuristics.worker_count_;
-      const f_t pdlp_objective = compute_objective(original_lp_, root_crossover_soln_.x);
-      const std::vector<variable_status_t> no_basis;
-      diving_worker_t<i_t, f_t>* worker =
-        pdlp_rens_heuristic->create_submip_worker(0,
-                                                  original_lp_,
-                                                  settings_,
-                                                  pdlp_objective,
-                                                  no_basis,
-                                                  root_crossover_soln_.x,
-                                                  search_strategy_t::RENS);
-
-      simplex_solver_settings_t<i_t, f_t> submip_settings = settings_;
-      submip_settings.concurrent_halt                     = &pdlp_rens_heuristic->halt_;
-      submip_settings.inside_root_node                    = true;
-
-      settings_.log.printf("Launching classic RENS from the PDLP root solution\n");
-      ++pdlp_rens_heuristic->active_workers_;
-      ++(*worker_count);
-#pragma omp task priority(CUOPT_DEFAULT_TASK_PRIORITY) affinity(worker) \
-  firstprivate(pdlp_rens_heuristic, worker_count, submip_settings) depend(out : *worker)
-      {
-        solve_pdlp_rens(worker, submip_settings);
-        --(*worker_count);
-        --pdlp_rens_heuristic->active_workers_;
-      }
-    }
-
+    // Before a basis exists, let PDLP run an independent cut loop on a private LP. Each pass may
+    // also start one CPU FJ worker and one three-thread RENS search, but no diving workers. The
+    // authoritative LP and cut pool are not mutated until dual simplex or crossover has produced
+    // a basis.
     if ((root_relax_solved_by == PDLP || root_relax_solved_by == Barrier) &&
         settings_.max_cut_passes > 0 && omp_get_num_threads() >= 3) {
       relaxation_root_x           = root_crossover_soln_.x;
       relaxation_root_y           = root_crossover_soln_.y;
       relaxation_root_z           = root_crossover_soln_.z;
       relaxation_cut_method       = root_relax_solved_by;
+      relaxation_root_termination = root_gpu_lp_termination_;
+      relaxation_root_iterations  = root_crossover_soln_.iterations;
       relaxation_cut_task_started = true;
 
 #pragma omp task default(shared) depend(out : relaxation_cut_task_status) \
   priority(CUOPT_DEFAULT_TASK_PRIORITY)
       {
-        const f_t cut_start_time     = tic();
-        auto cut_settings            = settings_;
-        cut_settings.concurrent_halt = &relaxation_cut_halt;
-        // Consume a completed clique table without stopping or waiting for its producer. If it is
-        // still being built, leave it running and defer clique/zero-half cuts to the normal pass.
-        const bool clique_table_ready = clique_table_complete_.load(std::memory_order_acquire);
-        if (!clique_table_ready) {
-          cut_settings.clique_cuts    = 0;
-          cut_settings.zero_half_cuts = 0;
+        const f_t cut_loop_start = tic();
+        lp_problem_t<i_t, f_t> pdlp_lp{original_lp_};
+        std::vector<i_t> pdlp_new_slacks{new_slacks_};
+        std::vector<variable_type_t> pdlp_var_types{var_types_};
+        csr_matrix_t<i_t, f_t> pdlp_Arow{Arow_};
+        variable_bounds_t<i_t, f_t> pdlp_variable_bounds{variable_bounds};
+        std::vector<f_t> pdlp_x{relaxation_root_x};
+        std::vector<f_t> pdlp_y{relaxation_root_y};
+        std::vector<f_t> pdlp_z{relaxation_root_z};
+
+        const i_t available_heuristic_threads =
+          std::max<i_t>(settings_.num_threads - pdlp_root_reserved_threads, 0);
+        const i_t max_concurrent_pdlp_heuristic_groups =
+          std::min<i_t>(available_heuristic_threads / pdlp_heuristic_group_thread_budget,
+                        pdlp_heuristic_max_concurrent_groups);
+        bool cut_producer_exhausted = false;
+
+        // The normal post-basis cut-pass count is not a useful stopping rule here: this loop is
+        // specifically the fallback for roots where a basis is slow to arrive. Continue until the
+        // basis/halt signal, the solver time limit, or a pass makes no cut progress.
+        for (i_t pass = 0;; ++pass) {
+          if (relaxation_cut_halt.load(std::memory_order_acquire) != 0 ||
+              *get_root_concurrent_halt() != 0 || received_halt_signal()) {
+            break;
+          }
+
+          f_t pdlp_primal_objective =
+            compute_user_objective(pdlp_lp, compute_objective(pdlp_lp, pdlp_x));
+          f_t pdlp_dual_objective = std::numeric_limits<f_t>::quiet_NaN();
+          f_t pdlp_dual_residual  = std::numeric_limits<f_t>::quiet_NaN();
+          auto pdlp_termination   = pdlp_termination_status_t::NoTermination;
+          i_t pdlp_iterations     = 0;
+          f_t pdlp_solve_elapsed  = 0.0;
+
+          if (pass == 0) {
+            pdlp_termination = relaxation_root_termination;
+            pdlp_iterations  = relaxation_root_iterations;
+            settings_.log.print_format(
+              "PDLP pre-basis pass 0 initial point: method={}; root_lp_status={} ({}); "
+              "iterations={}; dual lower bound unavailable from handoff\n",
+              method_to_string(relaxation_cut_method),
+              static_cast<int>(pdlp_termination),
+              optimization_problem_solution_t<i_t, f_t>::get_termination_status_string(
+                pdlp_termination),
+              pdlp_iterations);
+          }
+
+          if (pass > 0) {
+            if (root_cut_pdlp_handle_ == nullptr) break;
+            std::vector<f_t> pdlp_warm_start_primal;
+            auto pdlp_model = simplex_problem_to_mps_data_model(
+              pdlp_lp, pdlp_new_slacks, pdlp_x, pdlp_warm_start_primal);
+            if (pdlp_model.get_n_constraints() == 0 || pdlp_model.get_n_variables() == 0) break;
+
+            // Reuse the previous pass's bounded-row PDLP point. Structural columns do not change
+            // between passes; adding cuts only appends rows (and equality-form slack columns that
+            // are removed by simplex_problem_to_mps_data_model). Preserve the existing row duals
+            // and initialize the newly appended cut-row duals to zero.
+            std::vector<f_t> pdlp_warm_start_dual(pdlp_model.get_n_constraints(), f_t(0.0));
+            if (pdlp_warm_start_primal.size() !=
+                  static_cast<std::size_t>(pdlp_model.get_n_variables()) ||
+                pdlp_y.size() > pdlp_warm_start_dual.size()) {
+              relaxation_cut_task_status = -1;
+              settings_.log.printf(
+                "PDLP pre-basis pass %d warm-start dimension mismatch: primal %ld/%d, dual "
+                "%ld/%d\n",
+                pass,
+                pdlp_warm_start_primal.size(),
+                pdlp_model.get_n_variables(),
+                pdlp_y.size(),
+                pdlp_model.get_n_constraints());
+              break;
+            }
+            std::copy(pdlp_y.begin(), pdlp_y.end(), pdlp_warm_start_dual.begin());
+
+            pdlp_solver_settings_t<i_t, f_t> pdlp_settings;
+            pdlp_settings.method               = method_t::PDLP;
+            pdlp_settings.presolver            = presolver_t::None;
+            pdlp_settings.pdlp_solver_mode     = pdlp_solver_mode_t::Stable3;
+            pdlp_settings.detect_infeasibility = false;
+            pdlp_settings.inside_mip           = true;
+            pdlp_settings.concurrent_halt      = &relaxation_cut_halt;
+            const f_t pdlp_remaining_time =
+              settings_.time_limit - toc(exploration_stats_.start_time);
+            if (pdlp_remaining_time <= f_t(0.0)) break;
+            pdlp_settings.time_limit =
+              std::min(f_t(pdlp_cut_pass_time_budget), pdlp_remaining_time);
+            constexpr f_t pdlp_tolerance                       = 1e-4;
+            pdlp_settings.tolerances.relative_dual_tolerance   = pdlp_tolerance;
+            pdlp_settings.tolerances.absolute_dual_tolerance   = pdlp_tolerance;
+            pdlp_settings.tolerances.relative_primal_tolerance = pdlp_tolerance;
+            pdlp_settings.tolerances.absolute_primal_tolerance = pdlp_tolerance;
+            pdlp_settings.tolerances.relative_gap_tolerance    = pdlp_tolerance;
+            pdlp_settings.tolerances.absolute_gap_tolerance    = pdlp_tolerance;
+
+            const raft::handle_t& pdlp_handle = *root_cut_pdlp_handle_;
+            pdlp_settings.set_initial_primal_solution(pdlp_warm_start_primal.data(),
+                                                      static_cast<i_t>(
+                                                        pdlp_warm_start_primal.size()),
+                                                      pdlp_handle.get_stream());
+            pdlp_settings.set_initial_dual_solution(pdlp_warm_start_dual.data(),
+                                                    static_cast<i_t>(pdlp_warm_start_dual.size()),
+                                                    pdlp_handle.get_stream());
+            const f_t pdlp_solve_start = tic();
+            auto pdlp_solution          = solve_lp(&pdlp_handle, pdlp_model, pdlp_settings);
+            pdlp_handle.get_stream().sync();
+            pdlp_solve_elapsed          = toc(pdlp_solve_start);
+            pdlp_termination = pdlp_solution.get_termination_status();
+            pdlp_iterations =
+              pdlp_solution.get_additional_termination_information().number_of_steps_taken;
+            const bool usable_termination =
+              pdlp_termination == pdlp_termination_status_t::Optimal ||
+              pdlp_termination == pdlp_termination_status_t::PrimalFeasible ||
+              pdlp_termination == pdlp_termination_status_t::IterationLimit ||
+              pdlp_termination == pdlp_termination_status_t::TimeLimit ||
+              pdlp_termination == pdlp_termination_status_t::ConcurrentLimit;
+            settings_.log.print_format(
+              "PDLP pre-basis pass {} solve: status={} ({}); budget={:.2f} s; "
+              "elapsed={:.2f} s; iterations={}; hit_time_limit={}; usable_status={}\n",
+              pass,
+              static_cast<int>(pdlp_termination),
+              pdlp_solution.get_termination_status_string(),
+              pdlp_settings.time_limit,
+              pdlp_solve_elapsed,
+              pdlp_iterations,
+              pdlp_termination == pdlp_termination_status_t::TimeLimit ? 1 : 0,
+              usable_termination ? 1 : 0);
+            if (!usable_termination ||
+                relaxation_cut_halt.load(std::memory_order_acquire) != 0 ||
+                *get_root_concurrent_halt() != 0 || received_halt_signal()) {
+              break;
+            }
+
+            pdlp_dual_objective   = pdlp_solution.get_dual_objective_value();
+            pdlp_dual_residual =
+              pdlp_solution.get_additional_termination_information().l2_dual_residual;
+
+            const auto structural_x =
+              cuopt::host_copy(pdlp_solution.get_primal_solution(), pdlp_handle.get_stream());
+            const auto row_dual =
+              cuopt::host_copy(pdlp_solution.get_dual_solution(), pdlp_handle.get_stream());
+            const auto structural_z =
+              cuopt::host_copy(pdlp_solution.get_reduced_cost(), pdlp_handle.get_stream());
+            pdlp_handle.get_stream().sync();
+            if (!expand_pdlp_solution(pdlp_lp,
+                                      pdlp_new_slacks,
+                                      structural_x,
+                                      row_dual,
+                                      structural_z,
+                                      pdlp_x,
+                                      pdlp_y,
+                                      pdlp_z)) {
+              relaxation_cut_task_status = -1;
+              settings_.log.printf(
+                "PDLP pre-basis pass %d returned an unusable point (dimensions or finite values)\n",
+                pass);
+              break;
+            }
+            // A time-limited solve may return a usable point without a populated objective.
+            pdlp_primal_objective =
+              compute_user_objective(pdlp_lp, compute_objective(pdlp_lp, pdlp_x));
+            settings_.log.print_format(
+              "PDLP pre-basis pass {} point: primal={:.16e}; dual={:.16e}; "
+              "dual_residual={:.6e}; status={} (dual is a certified lower bound only when dual "
+              "feasibility is satisfied)\n",
+              pass,
+              pdlp_primal_objective,
+              pdlp_dual_objective,
+              pdlp_dual_residual,
+              pdlp_solution.get_termination_status_string());
+          }
+
+          for (auto it = pdlp_pass_heuristics.begin(); it != pdlp_pass_heuristics.end();) {
+            auto& heuristic = it->second;
+            if (heuristic->active_workers_.load(std::memory_order_acquire) == 0) {
+              // The cut-loop task is the parent of every pre-basis heuristic task. Synchronize
+              // here, where OpenMP task dependences are visible, before releasing worker storage.
+              heuristic->stop_and_sync();
+              it = pdlp_pass_heuristics.erase(it);
+            } else {
+              ++it;
+            }
+          }
+
+          const bool has_pdlp_point = pass > 0 || relaxation_cut_method == PDLP;
+          const bool can_launch_pass_heuristics =
+            has_pdlp_point && settings_.submip_settings.rens != 0 && !settings_.deterministic &&
+            !settings_.inside_submip &&
+            max_concurrent_pdlp_heuristic_groups > 0;
+          if (can_launch_pass_heuristics) {
+            i_t running_groups = 0;
+            for (const auto& pass_heuristic : pdlp_pass_heuristics) {
+              const auto& heuristic = pass_heuristic.second;
+              if (heuristic->active_workers_.load(std::memory_order_acquire) > 0 &&
+                  !heuristic->halt_.load(std::memory_order_acquire)) {
+                ++running_groups;
+              }
+            }
+            if (running_groups < max_concurrent_pdlp_heuristic_groups) {
+              // Once admitted, a pass group owns its slot until CPU FJ and RENS finish their
+              // budgets. A newer PDLP point must not evict a potentially promising SubMIP.
+              std::vector<f_t> pdlp_edge_norms(pdlp_lp.num_cols, f_t(1.0));
+              auto pdlp_pass_heuristic = std::make_shared<cut_pass_heuristics_t<i_t, f_t>>(
+                pdlp_Arow, pdlp_var_types, pdlp_x, pdlp_edge_norms, settings_);
+              pdlp_pass_heuristics.emplace_back(pass, pdlp_pass_heuristic);
+
+              pdlp_pass_heuristic->fj_cpu_worker_.improvement_callback =
+                [this](f_t obj, const std::vector<f_t>& assignment, double work_units) {
+                  set_solution_from_pdlp_cpu_fj(obj, assignment, work_units);
+                };
+              pdlp_pass_heuristic->fj_cpu_worker_.create_worker(
+                pdlp_lp, pdlp_var_types, pdlp_x, settings_, "[PDLP pre-basis CPUFJ] ");
+              const f_t cpu_fj_time_limit =
+                std::max(f_t(0.0), settings_.time_limit - toc(exploration_stats_.start_time));
+              ++pdlp_pass_heuristic->active_workers_;
+#pragma omp task priority(CUOPT_DEFAULT_TASK_PRIORITY)       \
+  affinity(pdlp_pass_heuristic -> fj_cpu_worker_)            \
+  firstprivate(pdlp_pass_heuristic, cpu_fj_time_limit, pass) \
+  depend(out : pdlp_pass_heuristic->fj_cpu_worker_.fj_cpu)
+              {
+                pdlp_pass_heuristic->fj_cpu_worker_.run_sync(
+                  cpu_fj_time_limit, std::numeric_limits<double>::infinity());
+                --pdlp_pass_heuristic->active_workers_;
+                settings_.log.printf("PDLP pre-basis CPU FJ pass %d completed\n", pass);
+              }
+
+              const f_t pdlp_objective = compute_objective(pdlp_lp, pdlp_x);
+              const std::vector<variable_status_t> no_basis;
+              diving_worker_t<i_t, f_t>* worker =
+                pdlp_pass_heuristic->create_submip_worker(pass,
+                                                          pdlp_lp,
+                                                          settings_,
+                                                          pdlp_objective,
+                                                          no_basis,
+                                                          pdlp_x,
+                                                          search_strategy_t::RENS);
+
+              simplex_solver_settings_t<i_t, f_t> submip_settings = settings_;
+              submip_settings.concurrent_halt                     = &pdlp_pass_heuristic->halt_;
+              submip_settings.inside_root_node                    = true;
+              ++pdlp_pass_heuristic->active_workers_;
+              settings_.log.printf(
+                "Launching PDLP pre-basis CPU FJ/RENS group for pass %d (%d/%d active groups)\n",
+                pass,
+                running_groups + 1,
+                max_concurrent_pdlp_heuristic_groups);
+#pragma omp task priority(CUOPT_DEFAULT_TASK_PRIORITY) affinity(worker) \
+  firstprivate(pdlp_pass_heuristic, submip_settings, pass) depend(out : *worker)
+              {
+                solve_pdlp_rens(worker, submip_settings, pass);
+                --pdlp_pass_heuristic->active_workers_;
+                settings_.log.printf("PDLP pre-basis RENS pass %d completed\n", pass);
+              }
+            } else {
+              settings_.log.debug(
+                "Skipping PDLP pre-basis CPU FJ/RENS launch for pass %d: all %d slots are active\n",
+                pass,
+                max_concurrent_pdlp_heuristic_groups);
+            }
+          }
+
+          cut_pool_t<i_t, f_t> pass_cut_pool(cut_pool.original_vars(), settings_);
+          auto cut_settings             = settings_;
+          cut_settings.concurrent_halt  = &relaxation_cut_halt;
+          const bool clique_table_ready = clique_table_complete_.load(std::memory_order_acquire);
+          if (!clique_table_ready) {
+            cut_settings.clique_cuts    = 0;
+            cut_settings.zero_half_cuts = 0;
+          }
+          std::shared_ptr<mip::clique_table_t<i_t, f_t>> pass_clique_table =
+            clique_table_ready ? clique_table_ : nullptr;
+          cut_generation_t<i_t, f_t> pass_cut_generation(pass_cut_pool,
+                                                         pdlp_lp,
+                                                         cut_settings,
+                                                         pdlp_Arow,
+                                                         pdlp_new_slacks,
+                                                         pdlp_var_types,
+                                                         original_problem_,
+                                                         probing_implied_bound_,
+                                                         pass_clique_table);
+          const bool feasible = pass_cut_generation.generate_cuts(pdlp_lp,
+                                                                  cut_settings,
+                                                                  pdlp_Arow,
+                                                                  pdlp_new_slacks,
+                                                                  pdlp_var_types,
+                                                                  std::nullopt,
+                                                                  pdlp_x,
+                                                                  pdlp_y,
+                                                                  pdlp_z,
+                                                                  std::nullopt,
+                                                                  std::nullopt,
+                                                                  pdlp_variable_bounds,
+                                                                  exploration_stats_.start_time);
+          if (!feasible) {
+            relaxation_cut_task_status = -1;
+            break;
+          }
+          if (relaxation_cut_halt.load(std::memory_order_acquire) != 0) break;
+
+          const i_t generated_cuts = pass_cut_pool.pool_size();
+          relaxation_cut_candidates += generated_cuts;
+          ++relaxation_cut_passes;
+          if (generated_cuts == 0) {
+            settings_.log.printf("PDLP pre-basis cut pass %d generated no candidates\n", pass);
+            cut_producer_exhausted = true;
+            break;
+          }
+
+          pass_cut_pool.score_cuts(pdlp_x);
+          csr_matrix_t<i_t, f_t> cuts_to_add(0, pdlp_lp.num_cols, 0);
+          std::vector<f_t> cut_rhs;
+          std::vector<cut_type_t> cut_types;
+          const i_t retained_cuts = pass_cut_pool.get_best_cuts(cuts_to_add, cut_rhs, cut_types);
+          // Only preserve cuts that were selected for the private LP. An unbounded pre-basis loop
+          // can generate millions of rejected candidates before dual simplex produces a basis;
+          // retaining all of them makes memory grow with every pass without affecting this loop.
+          for (i_t cut = 0; cut < retained_cuts; ++cut) {
+            inequality_t<i_t, f_t> selected_cut(cuts_to_add, cut, cut_rhs[cut]);
+            selected_cut.negate();  // add_cut() stores inequalities in >= form.
+            relaxation_cut_pool.add_cut(cut_types[cut], selected_cut);
+          }
+          relaxation_cuts_applied += retained_cuts;
+          settings_.log.printf(
+            "PDLP pre-basis cut pass %d generated %d candidates and retained %d\n",
+            pass,
+            generated_cuts,
+            retained_cuts);
+          if (retained_cuts == 0) {
+            cut_producer_exhausted = true;
+            break;
+          }
+          if (!append_cuts_to_pdlp_problem(cuts_to_add, cut_rhs, pdlp_lp, pdlp_new_slacks)) {
+            relaxation_cut_task_status = -1;
+            break;
+          }
+          pdlp_var_types.resize(pdlp_lp.num_cols, variable_type_t::CONTINUOUS);
+          pdlp_variable_bounds.resize(pdlp_lp.num_cols);
+          pdlp_lp.A.to_compressed_row(pdlp_Arow);
+          relaxation_cut_task_status = 1;
         }
-        cut_generation_t<i_t, f_t> relaxation_cut_generation(
-          cut_pool,
-          original_lp_,
-          cut_settings,
-          Arow_,
-          new_slacks_,
-          var_types_,
-          original_problem_,
-          probing_implied_bound_,
-          clique_table_ready ? clique_table_ : nullptr);
-        const bool feasible =
-          relaxation_cut_generation.generate_cuts(original_lp_,
-                                                  cut_settings,
-                                                  Arow_,
-                                                  new_slacks_,
-                                                  var_types_,
-                                                  std::nullopt,
-                                                  relaxation_root_x,
-                                                  relaxation_root_y,
-                                                  relaxation_root_z,
-                                                  std::nullopt,
-                                                  std::nullopt,
-                                                  variable_bounds,
-                                                  exploration_stats_.start_time);
-        relaxation_cut_task_elapsed = toc(cut_start_time);
-        relaxation_cut_task_status  = feasible ? 1 : -1;
+        // Exhausting cut production does not make an admitted SubMIP obsolete. Let active pass
+        // groups continue until the authoritative root or global halt interrupts them. These are
+        // children of this task, so completion must be observed here.
+        while (cut_producer_exhausted && !pdlp_pass_heuristics.empty() &&
+               relaxation_cut_halt.load(std::memory_order_acquire) == 0 &&
+               *get_root_concurrent_halt() == 0 && !received_halt_signal()) {
+          for (auto it = pdlp_pass_heuristics.begin(); it != pdlp_pass_heuristics.end();) {
+            auto& heuristic = it->second;
+            if (heuristic->active_workers_.load(std::memory_order_acquire) == 0) {
+              heuristic->stop_and_sync();
+              it = pdlp_pass_heuristics.erase(it);
+            } else {
+              ++it;
+            }
+          }
+          if (!pdlp_pass_heuristics.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#pragma omp taskyield
+          }
+        }
+
+        // CPU FJ and RENS tasks are children of this cut-loop task. They must be joined here rather
+        // than by solve_root_relaxation(), whose taskwait cannot see grandchildren.
+        for (auto& pass_heuristic : pdlp_pass_heuristics) {
+          pass_heuristic.second->send_stop_signal();
+        }
+        for (auto& pass_heuristic : pdlp_pass_heuristics) {
+          pass_heuristic.second->stop_and_sync();
+        }
+        pdlp_pass_heuristics.clear();
+
+        relaxation_cut_task_elapsed = toc(cut_loop_start);
         relaxation_cut_task_complete.store(true, std::memory_order_release);
       }
     }
@@ -3741,20 +4091,22 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
     exploration_stats_.total_simplex_iters = root_relax_soln_.iterations;
   }
 
-  if (pdlp_rens_heuristic) { pdlp_rens_heuristic->send_stop_signal(); }
-
   if (relaxation_cut_task_started) {
     const bool relaxation_cut_task_interrupted =
       !relaxation_cut_task_complete.load(std::memory_order_acquire);
 #pragma omp taskwait depend(in : relaxation_cut_task_status)
-    const i_t generated_cuts = cut_pool.pool_size();
+    const i_t merged_cuts = cut_pool.merge_from(relaxation_cut_pool);
     settings_.log.printf(
-      "%s speculative root cut pass generated %d candidates in %.2f seconds%s%s\n",
+      "%s pre-basis loop completed %d passes, generated %d candidates, retained %d privately, "
+      "and merged %d selected cuts in %.2f seconds%s%s\n",
       method_to_string(relaxation_cut_method).c_str(),
-      generated_cuts,
+      relaxation_cut_passes,
+      relaxation_cut_candidates,
+      relaxation_cuts_applied,
+      merged_cuts,
       relaxation_cut_task_elapsed,
-      relaxation_cut_task_interrupted ? " (stopped when the basis became available)" : "",
-      relaxation_cut_task_status < 0 ? " (separator reported infeasibility)" : "");
+      relaxation_cut_task_interrupted ? " (stopped by the authoritative root task)" : "",
+      relaxation_cut_task_status < 0 ? " (private cut loop failed; see earlier status)" : "");
   }
 
   is_root_solution_set = true;
@@ -4001,12 +4353,14 @@ auto branch_and_bound_t<i_t, f_t>::do_cut_pass(
       pass_pdlp_settings.tolerances.relative_gap_tolerance    = pdlp_tolerance;
       pass_pdlp_settings.tolerances.absolute_gap_tolerance    = pdlp_tolerance;
 
+      const f_t pass_pdlp_solve_start = tic();
       auto pass_pdlp_solution = solve_lp(&pass_pdlp_handle, pass_pdlp_model, pass_pdlp_settings);
       // Concurrent termination can return before all work enqueued on the PDLP stream has been
       // observed by this host task. Synchronize before the solution is destroyed, even when the
       // solve is halted before producing a separation point. The handle itself is owned by the
       // caller until the enclosing MIP taskgroup has joined all GPU work.
       pass_pdlp_handle.get_stream().sync();
+      const f_t pass_pdlp_solve_elapsed = toc(pass_pdlp_solve_start);
       const auto pass_pdlp_termination = pass_pdlp_solution.get_termination_status();
       const bool usable_termination =
         pass_pdlp_termination == pdlp_termination_status_t::Optimal ||
@@ -4014,6 +4368,17 @@ auto branch_and_bound_t<i_t, f_t>::do_cut_pass(
         pass_pdlp_termination == pdlp_termination_status_t::IterationLimit ||
         pass_pdlp_termination == pdlp_termination_status_t::TimeLimit ||
         pass_pdlp_termination == pdlp_termination_status_t::ConcurrentLimit;
+      settings_.log.print_format(
+        "PDLP post-basis pass {} solve: status={} ({}); budget={:.2f} s; "
+        "elapsed={:.2f} s; iterations={}; hit_time_limit={}; usable_status={}\n",
+        cut_pass + 1,
+        static_cast<int>(pass_pdlp_termination),
+        pass_pdlp_solution.get_termination_status_string(),
+        pass_pdlp_settings.time_limit,
+        pass_pdlp_solve_elapsed,
+        pass_pdlp_solution.get_additional_termination_information().number_of_steps_taken,
+        pass_pdlp_termination == pdlp_termination_status_t::TimeLimit ? 1 : 0,
+        usable_termination ? 1 : 0);
 
       if (usable_termination && pass_pdlp_halt.load(std::memory_order_acquire) == 0) {
         const auto structural_x =
@@ -4067,6 +4432,13 @@ auto branch_and_bound_t<i_t, f_t>::do_cut_pass(
                                                                   variable_bounds,
                                                                   exploration_stats_.start_time);
           pass_pdlp_task_status = feasible ? 1 : -1;
+        } else {
+          settings_.log.print_format(
+            "PDLP post-basis pass {} point rejected: status={} ({}); "
+            "reason=invalid_dimensions_or_nonfinite_values\n",
+            cut_pass + 1,
+            static_cast<int>(pass_pdlp_termination),
+            pass_pdlp_solution.get_termination_status_string());
         }
       }
       pass_pdlp_elapsed = toc(pass_pdlp_start);
@@ -4094,10 +4466,12 @@ auto branch_and_bound_t<i_t, f_t>::do_cut_pass(
     pass_pdlp_halt.store(1, std::memory_order_release);
 #pragma omp taskwait depend(in : pass_pdlp_task_status)
     merged_pass_pdlp_cuts = cut_pool.merge_from(pass_pdlp_cut_pool);
-    settings_.log.printf("PDLP speculative cut pass %d generated %d candidates in %.2f seconds%s\n",
+    settings_.log.printf("PDLP speculative cut pass %d generated %d candidates in %.2f seconds "
+                         "(separation_status=%d)%s\n",
                          mode == cut_pass_mode_t::APPLY_EXISTING_POOL ? 1 : cut_pass + 1,
                          merged_pass_pdlp_cuts,
                          pass_pdlp_elapsed,
+                         pass_pdlp_task_status,
                          pass_pdlp_task_status == 0 ? " (stopped before separation)" : "");
   }
   exploration_stats_.total_simplex_iters += iter;

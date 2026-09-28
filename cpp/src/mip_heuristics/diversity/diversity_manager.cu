@@ -599,6 +599,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     set_pdlp_solver_mode(pdlp_settings);
     timer_t lp_timer(lp_time_limit);
     auto lp_result = solve_lp_with_method<i_t, f_t>(*problem_ptr, pdlp_settings, lp_timer);
+    const auto root_lp_status = lp_result.get_termination_status();
 
     // The concurrent root LP can fail to produce a usable solution -- e.g. the barrier
     // hits a numerical error on an infeasible problem and PDLP returns NumericalError
@@ -606,10 +607,25 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     // result (copying n elements from an empty buffer throws), and we must still
     // release B&B's root-relaxation wait so it proceeds with its own dual-simplex root
     // instead of spinning forever.
+    const bool usable_root_lp_status =
+      root_lp_status == pdlp_termination_status_t::Optimal ||
+      root_lp_status == pdlp_termination_status_t::PrimalFeasible ||
+      root_lp_status == pdlp_termination_status_t::IterationLimit ||
+      root_lp_status == pdlp_termination_status_t::TimeLimit ||
+      root_lp_status == pdlp_termination_status_t::ConcurrentLimit;
     const bool root_lp_usable =
-      lp_result.get_termination_status() != pdlp_termination_status_t::NumericalError &&
+      usable_root_lp_status &&
       lp_result.get_primal_solution().size() == lp_optimal_solution.size() &&
-      lp_result.get_dual_solution().size() == lp_dual_optimal_solution.size();
+      lp_result.get_dual_solution().size() == lp_dual_optimal_solution.size() &&
+      lp_result.get_reduced_cost().size() == lp_optimal_solution.size();
+    CUOPT_LOG_INFO("GPU root LP status %s, budget %.2f s, elapsed %.2f s, iterations %d, "
+                   "hit_time_limit %d, usable_point %d",
+                   lp_result.get_termination_status_string().c_str(),
+                   lp_time_limit,
+                   lp_timer.elapsed_time(),
+                   lp_result.get_additional_termination_information().number_of_steps_taken,
+                   root_lp_status == pdlp_termination_status_t::TimeLimit ? 1 : 0,
+                   root_lp_usable ? 1 : 0);
 
     bool use_staged_simplex_solution = false;
     {
@@ -701,7 +717,14 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       auto method     = lp_result.get_additional_termination_information().solved_by;
       // Set for the B&B (param4 expects solver space, param5 expects user space)
       problem_ptr->set_root_relaxation_solution_callback(
-        host_primal, host_dual, host_reduced_costs, solver_obj, user_obj, iterations, method);
+        host_primal,
+        host_dual,
+        host_reduced_costs,
+        solver_obj,
+        user_obj,
+        iterations,
+        method,
+        root_lp_status);
     }
 
     if (!use_staged_simplex_solution && root_lp_usable) {

@@ -65,6 +65,7 @@ void problem_checking_t<i_t, f_t>::check_initial_primal_representation(
       "has size %zu, while objective vector has size %zu.",
       primal_initial_solution.size(),
       op_problem.get_objective_coefficients().size());
+    const bool has_variable_types = !op_problem.get_variable_types().is_empty();
     cuopt_expects(!thrust::any_of(op_problem.get_handle_ptr()->get_thrust_policy(),
                                   thrust::make_counting_iterator(0),
                                   thrust::make_counting_iterator(0) + op_problem.get_n_variables(),
@@ -72,8 +73,10 @@ void problem_checking_t<i_t, f_t>::check_initial_primal_representation(
                                    upper_bounds = make_span(op_problem.get_variable_upper_bounds()),
                                    variable_types  = make_span(op_problem.get_variable_types()),
                                    assignment_span = make_span(primal_initial_solution),
+                                   has_variable_types,
                                    int_tol         = 1e-8] __device__(i_t idx) -> bool {
-                                    if (variable_types[idx] == var_t::SEMI_CONTINUOUS) {
+                                    if (has_variable_types &&
+                                        variable_types[idx] == var_t::SEMI_CONTINUOUS) {
                                       const bool is_off = assignment_span[idx] >= -int_tol &&
                                                           assignment_span[idx] <= int_tol;
                                       const bool is_on =

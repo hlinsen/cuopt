@@ -277,7 +277,8 @@ class problem_t {
                      f_t,
                      f_t,
                      i_t,
-                     method_t)>
+                     method_t,
+                     pdlp_termination_status_t)>
     set_root_relaxation_solution_callback;
 
   typename mip_solver_settings_t<i_t, f_t>::tolerances_t tolerances{};

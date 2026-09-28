@@ -479,6 +479,36 @@ TEST(optimization_problem_t, test_semi_continuous_equal_bounds_validity)
   EXPECT_NO_THROW((problem_checking_t<int, double>::check_problem_representation(op_problem)));
 }
 
+TEST(optimization_problem_t, initial_primal_without_variable_types)
+{
+  raft::handle_t handle;
+
+  auto op_problem    = optimization_problem_t<int, double>(&handle);
+  double A_host[]    = {1.0};
+  int indices[]      = {0};
+  int offsets[]      = {0, 1};
+  double row_lb[]    = {0.0};
+  double row_ub[]    = {1.0};
+  double objective[] = {1.0};
+  double var_lb[]    = {0.0};
+  double var_ub[]    = {1.0};
+  double initial[]   = {0.5};
+
+  op_problem.set_csr_constraint_matrix(A_host, 1, indices, 1, offsets, 2);
+  op_problem.set_constraint_lower_bounds(row_lb, 1);
+  op_problem.set_constraint_upper_bounds(row_ub, 1);
+  op_problem.set_objective_coefficients(objective, 1);
+  op_problem.set_variable_lower_bounds(var_lb, 1);
+  op_problem.set_variable_upper_bounds(var_ub, 1);
+
+  pdlp_solver_settings_t<int, double> settings;
+  settings.set_initial_primal_solution(initial, 1, handle.get_stream());
+
+  EXPECT_TRUE(op_problem.get_variable_types().is_empty());
+  EXPECT_NO_THROW(
+    (problem_checking_t<int, double>::check_initial_solution_representation(op_problem, settings)));
+}
+
 TEST(optimization_problem_t, test_constraints_invalidity_size)
 {
   raft::handle_t handle;

@@ -32,6 +32,7 @@
 #include <utilities/work_unit_scheduler.hpp>
 
 #include <cuopt/mathematical_optimization/pdlp/solver_settings.hpp>
+#include <cuopt/mathematical_optimization/pdlp/solver_solution.hpp>
 
 #include <mip_heuristics/presolve/third_party_presolve.hpp>
 #include <mip_heuristics/root_heuristics.hpp>
@@ -41,6 +42,7 @@
 #include <atomic>
 #include <functional>
 #include <future>
+#include <limits>
 #include <list>
 #include <memory>
 #include <vector>
@@ -118,7 +120,8 @@ class branch_and_bound_t {
                                     f_t objective,
                                     f_t user_objective,
                                     i_t iterations,
-                                    method_t method)
+                                    method_t method,
+                                    pdlp_termination_status_t termination)
   {
     if (!is_root_solution_set) {
       root_crossover_soln_.x              = primal;
@@ -129,6 +132,7 @@ class branch_and_bound_t {
       root_crossover_soln_.user_objective = user_objective;
       root_crossover_soln_.iterations     = iterations;
       root_relax_solved_by                = method;
+      root_gpu_lp_termination_            = termination;
       root_crossover_solution_set_.store(true, std::memory_order_release);
     }
   }
@@ -138,6 +142,11 @@ class branch_and_bound_t {
 
   // Apply a solution found by a CPU FJ worker.
   void set_solution_from_cpu_fj(f_t obj, const std::vector<f_t>& assignment, double work_units);
+
+  // Apply a CPU FJ solution from a private PDLP cut model after removing its cut slacks.
+  void set_solution_from_pdlp_cpu_fj(f_t obj,
+                                     const std::vector<f_t>& assignment,
+                                     double work_units);
 
   // This queues the solution to be processed at the correct work unit timestamp
   void queue_external_solution_deterministic(const std::vector<f_t>& solution, double work_unit_ts);
@@ -252,6 +261,7 @@ class branch_and_bound_t {
   simplex::lp_solution_t<i_t, f_t> root_relax_soln_;
   simplex::lp_solution_t<i_t, f_t> root_crossover_soln_;
   method_t root_relax_solved_by{Unset};
+  pdlp_termination_status_t root_gpu_lp_termination_{pdlp_termination_status_t::NoTermination};
   std::vector<f_t> edge_norms_;
   std::atomic<bool> root_crossover_solution_set_{false};
   omp_atomic_t<f_t> root_lp_current_lower_bound_;
@@ -401,7 +411,8 @@ class branch_and_bound_t {
                     submip_stats_t& submip_stats,
                     f_t fixrate,
                     i_t simplex_iter_used,
-                    simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
+                    simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
+                    i_t thread_budget = 1);
 
   void mutation(diving_worker_t<i_t, f_t>* worker,
                 simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
@@ -411,7 +422,8 @@ class branch_and_bound_t {
 
   // Solve a classic RENS neighborhood built directly from an early PDLP root solution.
   void solve_pdlp_rens(diving_worker_t<i_t, f_t>* worker,
-                       simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
+                       simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
+                       i_t cut_pass);
 
   void launch_root_heuristics(const simplex::lp_problem_t<i_t, f_t>& lp,
                               const simplex::lp_solution_t<i_t, f_t>& lp_solution,
