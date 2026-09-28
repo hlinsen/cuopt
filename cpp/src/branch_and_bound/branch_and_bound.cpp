@@ -3836,7 +3836,12 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
                   set_solution_from_pdlp_cpu_fj(obj, assignment, work_units);
                 };
               pdlp_pass_heuristic->fj_cpu_worker_.create_worker(
-                pdlp_lp, pdlp_var_types, pdlp_x, settings_, "[PDLP pre-basis CPUFJ] ");
+                pdlp_lp,
+                pdlp_var_types,
+                original_problem_.num_cols,
+                pdlp_x,
+                settings_,
+                "[PDLP pre-basis CPUFJ] ");
               const f_t cpu_fj_time_limit =
                 std::max(f_t(0.0), settings_.time_limit - toc(exploration_stats_.start_time));
               ++pdlp_pass_heuristic->active_workers_;
