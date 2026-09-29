@@ -1291,6 +1291,48 @@ TEST_F(GrpcClientTest, SubmitMIP_Success)
   EXPECT_EQ(result.job_id, "mip-job-001");
 }
 
+TEST_F(GrpcClientTest, SubmitMIP_UnaryPreservesIncumbentSetFlag)
+{
+  EXPECT_CALL(*mock_stub_, SubmitJob(_, _, _))
+    .WillOnce([](grpc::ClientContext*,
+                 const cuopt::remote::SubmitJobRequest& req,
+                 cuopt::remote::SubmitJobResponse* resp) {
+      EXPECT_TRUE(req.has_mip_request());
+      EXPECT_TRUE(req.mip_request().enable_incumbents());
+      EXPECT_TRUE(req.mip_request().enable_set_incumbent());
+      resp->set_job_id("mip-incumbent-set-unary");
+      return grpc::Status::OK;
+    });
+
+  auto problem = create_test_mip_problem();
+  mip_solver_settings_t<int32_t, double> settings;
+
+  auto result = client_->submit_mip(problem, settings, true, true);
+
+  EXPECT_TRUE(result.success);
+}
+
+TEST_F(GrpcClientTest, SubmitMIP_UnaryPreservesSetIncumbentWithoutIncumbents)
+{
+  EXPECT_CALL(*mock_stub_, SubmitJob(_, _, _))
+    .WillOnce([](grpc::ClientContext*,
+                 const cuopt::remote::SubmitJobRequest& req,
+                 cuopt::remote::SubmitJobResponse* resp) {
+      EXPECT_TRUE(req.has_mip_request());
+      EXPECT_FALSE(req.mip_request().enable_incumbents());
+      EXPECT_TRUE(req.mip_request().enable_set_incumbent());
+      resp->set_job_id("mip-set-incumbent-only-unary");
+      return grpc::Status::OK;
+    });
+
+  auto problem = create_test_mip_problem();
+  mip_solver_settings_t<int32_t, double> settings;
+
+  auto result = client_->submit_mip(problem, settings, false, true);
+
+  EXPECT_TRUE(result.success);
+}
+
 TEST_F(GrpcClientTest, SubmitMIP_RpcFailure)
 {
   EXPECT_CALL(*mock_stub_, SubmitJob(_, _, _))
@@ -1843,6 +1885,116 @@ TEST_F(GrpcClientTest, SubmitLP_ChunkedUploadForLargePayload)
   EXPECT_GT(chunk_count, 0) << "Should have sent at least one array chunk";
 }
 
+TEST_F(GrpcClientTest, SubmitMIP_ChunkedPreservesIncumbentSetFlag)
+{
+  grpc_client_config_t cfg;
+  cfg.server_address                = "mock://test";
+  cfg.chunked_array_threshold_bytes = 0;
+  cfg.chunk_size_bytes              = 4 * 1024;
+
+  auto client = std::make_unique<grpc_client_t>(cfg);
+  auto mock   = std::make_shared<NiceMock<MockCuOptStub>>();
+  grpc_test_inject_mock_stub_typed(*client, mock);
+
+  EXPECT_CALL(*mock, StartChunkedUpload(_, _, _))
+    .WillOnce([](grpc::ClientContext*,
+                 const cuopt::remote::StartChunkedUploadRequest& req,
+                 cuopt::remote::StartChunkedUploadResponse* resp) {
+      EXPECT_TRUE(req.has_problem_header());
+      EXPECT_TRUE(req.problem_header().enable_incumbents());
+      EXPECT_TRUE(req.problem_header().enable_set_incumbent());
+      resp->set_upload_id("mip-incumbent-set-chunked");
+      resp->set_max_message_bytes(4 * 1024 * 1024);
+      return grpc::Status::OK;
+    });
+
+  int chunk_count = 0;
+  EXPECT_CALL(*mock, SendArrayChunk(_, _, _))
+    .WillRepeatedly([&chunk_count](grpc::ClientContext*,
+                                   const cuopt::remote::SendArrayChunkRequest& req,
+                                   cuopt::remote::SendArrayChunkResponse* resp) {
+      EXPECT_EQ(req.upload_id(), "mip-incumbent-set-chunked");
+      EXPECT_TRUE(req.has_chunk());
+      chunk_count++;
+      resp->set_upload_id("mip-incumbent-set-chunked");
+      resp->set_chunks_received(chunk_count);
+      return grpc::Status::OK;
+    });
+
+  EXPECT_CALL(*mock, FinishChunkedUpload(_, _, _))
+    .WillOnce([](grpc::ClientContext*,
+                 const cuopt::remote::FinishChunkedUploadRequest& req,
+                 cuopt::remote::SubmitJobResponse* resp) {
+      EXPECT_EQ(req.upload_id(), "mip-incumbent-set-chunked");
+      resp->set_job_id("mip-incumbent-set-chunked-job");
+      return grpc::Status::OK;
+    });
+
+  auto problem = create_test_mip_problem();
+  mip_solver_settings_t<int32_t, double> settings;
+
+  auto result = client->submit_mip(problem, settings, true, true);
+
+  EXPECT_TRUE(result.success) << result.error_message;
+  EXPECT_EQ(result.job_id, "mip-incumbent-set-chunked-job");
+  EXPECT_GT(chunk_count, 0) << "Should have sent at least one array chunk";
+}
+
+TEST_F(GrpcClientTest, SubmitMIP_ChunkedPreservesSetIncumbentWithoutIncumbents)
+{
+  grpc_client_config_t cfg;
+  cfg.server_address                = "mock://test";
+  cfg.chunked_array_threshold_bytes = 0;
+  cfg.chunk_size_bytes              = 4 * 1024;
+
+  auto client = std::make_unique<grpc_client_t>(cfg);
+  auto mock   = std::make_shared<NiceMock<MockCuOptStub>>();
+  grpc_test_inject_mock_stub_typed(*client, mock);
+
+  EXPECT_CALL(*mock, StartChunkedUpload(_, _, _))
+    .WillOnce([](grpc::ClientContext*,
+                 const cuopt::remote::StartChunkedUploadRequest& req,
+                 cuopt::remote::StartChunkedUploadResponse* resp) {
+      EXPECT_TRUE(req.has_problem_header());
+      EXPECT_FALSE(req.problem_header().enable_incumbents());
+      EXPECT_TRUE(req.problem_header().enable_set_incumbent());
+      resp->set_upload_id("mip-set-incumbent-only-chunked");
+      resp->set_max_message_bytes(4 * 1024 * 1024);
+      return grpc::Status::OK;
+    });
+
+  int chunk_count = 0;
+  EXPECT_CALL(*mock, SendArrayChunk(_, _, _))
+    .WillRepeatedly([&chunk_count](grpc::ClientContext*,
+                                   const cuopt::remote::SendArrayChunkRequest& req,
+                                   cuopt::remote::SendArrayChunkResponse* resp) {
+      EXPECT_EQ(req.upload_id(), "mip-set-incumbent-only-chunked");
+      EXPECT_TRUE(req.has_chunk());
+      chunk_count++;
+      resp->set_upload_id("mip-set-incumbent-only-chunked");
+      resp->set_chunks_received(chunk_count);
+      return grpc::Status::OK;
+    });
+
+  EXPECT_CALL(*mock, FinishChunkedUpload(_, _, _))
+    .WillOnce([](grpc::ClientContext*,
+                 const cuopt::remote::FinishChunkedUploadRequest& req,
+                 cuopt::remote::SubmitJobResponse* resp) {
+      EXPECT_EQ(req.upload_id(), "mip-set-incumbent-only-chunked");
+      resp->set_job_id("mip-set-incumbent-only-chunked-job");
+      return grpc::Status::OK;
+    });
+
+  auto problem = create_test_mip_problem();
+  mip_solver_settings_t<int32_t, double> settings;
+
+  auto result = client->submit_mip(problem, settings, false, true);
+
+  EXPECT_TRUE(result.success) << result.error_message;
+  EXPECT_EQ(result.job_id, "mip-set-incumbent-only-chunked-job");
+  EXPECT_GT(chunk_count, 0) << "Should have sent at least one array chunk";
+}
+
 TEST_F(GrpcClientTest, SubmitLP_UnaryForSmallPayload)
 {
   EXPECT_CALL(*mock_stub_, SubmitJob(_, _, _))
@@ -2280,6 +2432,8 @@ TEST(MapperRoundtrip, PDLPSettingsAllFields)
   orig.pdlp_precision               = pdlp_precision_t::MixedPrecision;
   orig.save_best_primal_so_far      = true;
   orig.first_primal_feasible        = true;
+  orig.hyper_params.do_curtis_reid_scaling =
+    false;  // not the default true, to detect overwrite-on-decode
 
   cuopt::remote::PDLPSolverSettings pb;
   map_pdlp_settings_to_proto(orig, &pb);
@@ -2323,6 +2477,7 @@ TEST(MapperRoundtrip, PDLPSettingsAllFields)
   EXPECT_EQ(restored.pdlp_precision, pdlp_precision_t::MixedPrecision);
   EXPECT_EQ(restored.save_best_primal_so_far, true);
   EXPECT_EQ(restored.first_primal_feasible, true);
+  EXPECT_EQ(restored.hyper_params.do_curtis_reid_scaling, false);
 }
 
 TEST(MapperRoundtrip, PDLPSettingsIterationLimitSentinel)
@@ -2400,6 +2555,28 @@ TEST(MapperRoundtrip, PDLPSettingsDualPostsolveExplicitFalseRoundtrips)
   EXPECT_FALSE(restored.dual_postsolve);
 }
 
+TEST(MapperRoundtrip, PDLPSettingsCurtisReidScalingOmittedPreservesDefault)
+{
+  cuopt::remote::PDLPSolverSettings pb;
+
+  pdlp_solver_settings_t<int32_t, double> fresh;
+  ASSERT_TRUE(fresh.hyper_params.do_curtis_reid_scaling);
+  map_proto_to_pdlp_settings(pb, fresh);
+  EXPECT_TRUE(fresh.hyper_params.do_curtis_reid_scaling)
+    << "Omitted optional bool must preserve the C++ default `true`";
+}
+
+TEST(MapperRoundtrip, PDLPSettingsCurtisReidScalingExplicitFalseRoundtrips)
+{
+  cuopt::remote::PDLPSolverSettings pb;
+  pb.set_do_curtis_reid_scaling(false);
+  ASSERT_TRUE(pb.has_do_curtis_reid_scaling());
+
+  pdlp_solver_settings_t<int32_t, double> restored;
+  map_proto_to_pdlp_settings(pb, restored);
+  EXPECT_FALSE(restored.hyper_params.do_curtis_reid_scaling);
+}
+
 // Wide-coverage sanity: a default-constructed proto (no fields touched on the
 // wire) must, after the mapper, leave every C++ scalar settings field at its
 // in-class default. Spot-checks a representative cross-section of the fields
@@ -2438,6 +2615,7 @@ TEST(MapperRoundtrip, PDLPSettingsDefaultProtoPreservesAllCppDefaults)
   EXPECT_EQ(after.log_to_console, fresh.log_to_console);
   EXPECT_EQ(after.dual_postsolve, fresh.dual_postsolve);
   EXPECT_EQ(after.eliminate_dense_columns, fresh.eliminate_dense_columns);
+  EXPECT_EQ(after.hyper_params.do_curtis_reid_scaling, fresh.hyper_params.do_curtis_reid_scaling);
   // Numeric defaults != 0.
   EXPECT_EQ(after.num_gpus, fresh.num_gpus);
   EXPECT_EQ(after.folding, fresh.folding);
