@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved. # noqa
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 
@@ -8,6 +8,7 @@
 # cython: language_level = 3
 
 from libcpp cimport bool
+from libcpp.memory cimport unique_ptr
 from libcpp.pair cimport pair
 from libcpp.string cimport string
 from libcpp.vector cimport vector
@@ -64,7 +65,7 @@ cdef extern from "cuopt/mathematical_optimization/pdlp/solver_solution.hpp" name
 
 cdef extern from "cuopt/mathematical_optimization/utilities/cython_types.hpp" namespace "cuopt::cython": # noqa
     # Inner struct types for LP solution vectors (GPU backend)
-    cdef cppclass lp_gpu_solutions_t "cuopt::cython::linear_programming_ret_t::gpu_solutions_t": # noqa
+    cdef cppclass lp_gpu_solutions_t "cuopt::cython::lp_gpu_solutions_t": # noqa
         unique_ptr[device_buffer] primal_solution_
         unique_ptr[device_buffer] dual_solution_
         unique_ptr[device_buffer] reduced_cost_
@@ -93,8 +94,8 @@ cdef extern from "cuopt/mathematical_optimization/utilities/cython_types.hpp" na
         vector[double] last_restart_duality_gap_primal_solution_
         vector[double] last_restart_duality_gap_dual_solution_
 
-cdef extern from "cuopt/mathematical_optimization/utilities/lp_solve_session.hpp" namespace "cuopt::cython": # noqa
-    cdef cppclass lp_solve_session_t:
+cdef extern from "cuopt/mathematical_optimization/utilities/barrier_cache.hpp" namespace "cuopt::mathematical_optimization": # noqa
+    cdef cppclass barrier_cache_t:
         pass
 
 cdef extern from "cuopt/mathematical_optimization/utilities/cython_solve.hpp" namespace "cuopt::cython": # noqa
@@ -121,7 +122,7 @@ cdef extern from "cuopt/mathematical_optimization/utilities/cython_solve.hpp" na
         int nb_iterations_
         double solve_time_
         method_t solved_by_
-        unique_ptr[lp_solve_session_t] lp_solve_session
+        barrier_cache_t* barrier_cache
         bool is_gpu()
 
     # Unified MIP solution struct — solution_ variant accessed via helpers
@@ -151,7 +152,7 @@ cdef extern from "cuopt/mathematical_optimization/utilities/cython_solve.hpp" na
         solver_settings_t[int, double]* solver_settings,
         unsigned int flags,
         bool is_batch_mode,
-        lp_solve_session_t* session_in,
+        barrier_cache_t* cache_in,
     ) except + nogil
 
     cdef pair[vector[unique_ptr[solver_ret_t]], double] call_batch_solve( # noqa
@@ -165,19 +166,21 @@ cdef extern from *:
     """
     #include <variant>
     #include <cuopt/mathematical_optimization/utilities/cython_solve.hpp>
+    // GPU alternatives are opaque in cython_types.hpp (#1890); this TU can see them.
+    #include <cuopt/mathematical_optimization/utilities/cython_types_gpu.hpp>
 
     // MIP: extract GPU (unique_ptr<device_buffer>) or CPU (vector<double>) solution
     inline std::unique_ptr<rmm::device_buffer>& get_gpu_mip_solution(cuopt::cython::mip_ret_t& m) {
-        return std::get<cuopt::cython::gpu_buffer>(m.solution_);
+        return std::get<cuopt::cython::mip_gpu_ptr>(m.solution_)->solution_;
     }
     inline std::vector<double>& get_cpu_mip_solution(cuopt::cython::mip_ret_t& m) {
         return std::get<cuopt::cython::cpu_buffer>(m.solution_);
     }
 
     // LP: extract GPU (gpu_solutions_t) or CPU (cpu_solutions_t) solution struct
-    inline cuopt::cython::linear_programming_ret_t::gpu_solutions_t&
+    inline cuopt::cython::lp_gpu_solutions_t&
     get_gpu_lp_solutions(cuopt::cython::linear_programming_ret_t& lp) {
-        return std::get<cuopt::cython::linear_programming_ret_t::gpu_solutions_t>(lp.solutions_);
+        return *std::get<cuopt::cython::lp_gpu_ptr>(lp.solutions_);
     }
     inline cuopt::cython::linear_programming_ret_t::cpu_solutions_t&
     get_cpu_lp_solutions(cuopt::cython::linear_programming_ret_t& lp) {

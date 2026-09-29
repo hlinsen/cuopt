@@ -24,12 +24,15 @@
 #include <cuopt/mathematical_optimization/optimization_problem_interface.hpp>
 #include <cuopt/mathematical_optimization/optimization_problem_utils.hpp>
 #include <cuopt/mathematical_optimization/pdlp/solver_settings.hpp>
+#include <raft/util/cudart_utils.hpp>
+#include <rmm/device_uvector.hpp>
 #include "grpc_client.hpp"
 #include "grpc_problem_mapper.hpp"
 #include "grpc_service_mapper.hpp"
 #include "grpc_settings_mapper.hpp"
 #include "grpc_solution_mapper.hpp"
 #include "server/grpc_field_element_size.hpp"
+#include "solve_remote_impl.hpp"
 
 #include <cuopt_remote.pb.h>
 #include <cuopt_remote_service.grpc.pb.h>
@@ -367,6 +370,32 @@ class GrpcClientTest : public ::testing::Test {
 // =============================================================================
 // CheckStatus Tests
 // =============================================================================
+
+TEST_F(GrpcClientTest, Ping_Success_NotFound)
+{
+  EXPECT_CALL(*mock_stub_, CheckStatus(_, _, _))
+    .WillOnce([](grpc::ClientContext*,
+                 const cuopt::remote::StatusRequest& req,
+                 cuopt::remote::StatusResponse* resp) {
+      EXPECT_EQ(req.job_id(), "__connection_probe__");
+      resp->set_job_status(cuopt::remote::NOT_FOUND);
+      return grpc::Status::OK;
+    });
+
+  EXPECT_TRUE(client_->ping(5));
+}
+
+TEST_F(GrpcClientTest, Ping_Failure_Unavailable)
+{
+  EXPECT_CALL(*mock_stub_, CheckStatus(_, _, _))
+    .WillOnce([](grpc::ClientContext*,
+                 const cuopt::remote::StatusRequest&,
+                 cuopt::remote::StatusResponse*) {
+      return grpc::Status(grpc::StatusCode::UNAVAILABLE, "down");
+    });
+
+  EXPECT_FALSE(client_->ping(5));
+}
 
 TEST_F(GrpcClientTest, CheckStatus_Success_Completed)
 {
@@ -2603,6 +2632,23 @@ void seed_minimal_problem(cpu_optimization_problem_t<int32_t, double>& problem)
   problem.set_constraint_upper_bounds(b_ub.data(), 1);
 }
 
+std::vector<double> host_copy_device_uvector(const rmm::device_uvector<double>& device)
+{
+  std::vector<double> host(device.size());
+  if (!device.is_empty()) {
+    raft::copy(host.data(), device.data(), device.size(), device.stream());
+    device.stream().sync();
+  }
+  return host;
+}
+
+void expect_device_matches_host(const rmm::device_uvector<double>& device,
+                                const std::vector<double>& expected)
+{
+  ASSERT_EQ(device.size(), expected.size());
+  EXPECT_EQ(host_copy_device_uvector(device), expected);
+}
+
 }  // namespace
 
 TEST(MapperRoundtrip, QuadraticConstraintsUnaryPath)
@@ -2779,6 +2825,130 @@ TEST(MapperRoundtrip, QuadraticConstraintsEmpty)
   EXPECT_FALSE(restored_chunked.has_quadratic_constraints());
 }
 
+TEST(MapperRoundtrip, ProblemInitialSolutionsUnaryAndChunked)
+{
+  cpu_optimization_problem_t<int32_t, double> orig;
+  seed_minimal_problem(orig);
+  std::vector<double> primal = {1.25, 2.5, 3.75};
+  std::vector<double> dual   = {9.0};
+  orig.set_initial_primal_solution(primal);
+  orig.set_initial_dual_solution(dual);
+
+  cuopt::remote::OptimizationProblem pb;
+  map_problem_to_proto(orig, &pb);
+  ASSERT_EQ(pb.initial_primal_solution_size(), 3);
+  EXPECT_DOUBLE_EQ(pb.initial_primal_solution(0), 1.25);
+  EXPECT_DOUBLE_EQ(pb.initial_primal_solution(1), 2.5);
+  EXPECT_DOUBLE_EQ(pb.initial_primal_solution(2), 3.75);
+  ASSERT_EQ(pb.initial_dual_solution_size(), 1);
+  EXPECT_DOUBLE_EQ(pb.initial_dual_solution(0), 9.0);
+
+  cpu_optimization_problem_t<int32_t, double> restored_unary;
+  map_proto_to_problem(pb, restored_unary);
+  EXPECT_EQ(restored_unary.get_initial_primal_solution_host(), primal);
+  EXPECT_EQ(restored_unary.get_initial_dual_solution_host(), dual);
+
+  pdlp_solver_settings_t<int32_t, double> settings;
+  cuopt::remote::ChunkedProblemHeader header;
+  populate_chunked_header_lp(orig, settings, &header);
+  auto requests = build_array_chunk_requests(orig, "upload-init-sol", /*chunk_size_bytes=*/1024);
+
+  std::map<int32_t, std::vector<uint8_t>> arrays;
+  std::map<container_array_key_t, std::vector<uint8_t>> container_arrays;
+  assemble_chunk_requests(requests, arrays, container_arrays);
+
+  cpu_optimization_problem_t<int32_t, double> restored_chunked;
+  map_chunked_arrays_to_problem(header, arrays, container_arrays, restored_chunked);
+  EXPECT_EQ(restored_chunked.get_initial_primal_solution_host(), primal);
+  EXPECT_EQ(restored_chunked.get_initial_dual_solution_host(), dual);
+}
+
+TEST(PopulateFromDataModelView, CopiesInitialSolutions)
+{
+  std::vector<double> primal = {1.5, 2.5};
+  std::vector<double> dual   = {0.25, 0.5, 0.75};
+  io::data_model_view_t<int32_t, double> data_model;
+  data_model.set_initial_primal_solution(primal.data(), static_cast<int32_t>(primal.size()));
+  data_model.set_initial_dual_solution(dual.data(), static_cast<int32_t>(dual.size()));
+
+  cpu_optimization_problem_t<int32_t, double> problem;
+  populate_from_data_model_view(&problem, &data_model);
+  EXPECT_EQ(problem.get_initial_primal_solution_host(), primal);
+  EXPECT_EQ(problem.get_initial_dual_solution_host(), dual);
+}
+
+TEST(ApplyInitialSolutions, CopiesPrimalToMipSettings)
+{
+  cpu_optimization_problem_t<int32_t, double> problem;
+  seed_minimal_problem(problem);
+  std::vector<double> primal = {1.25, 2.5, 3.75};
+  problem.set_initial_primal_solution(primal);
+
+  mip_solver_settings_t<int32_t, double> settings;
+  apply_initial_solutions_to_mip_settings(problem, settings);
+  ASSERT_EQ(settings.initial_solutions.size(), 1);
+  ASSERT_NE(settings.initial_solutions[0], nullptr);
+  expect_device_matches_host(*settings.initial_solutions[0], primal);
+}
+
+TEST(ApplyInitialSolutions, CopiesPrimalAndDualToPdlpSettings)
+{
+  cpu_optimization_problem_t<int32_t, double> problem;
+  seed_minimal_problem(problem);
+  std::vector<double> primal = {1.25, 2.5, 3.75};
+  std::vector<double> dual   = {9.0};
+  problem.set_initial_primal_solution(primal);
+  problem.set_initial_dual_solution(dual);
+
+  pdlp_solver_settings_t<int32_t, double> settings;
+  apply_initial_solutions_to_pdlp_settings(problem, settings);
+  ASSERT_TRUE(settings.has_initial_primal_solution());
+  ASSERT_TRUE(settings.has_initial_dual_solution());
+  expect_device_matches_host(settings.get_initial_primal_solution(), primal);
+  expect_device_matches_host(settings.get_initial_dual_solution(), dual);
+}
+
+TEST(ApplyInitialSolutions, SkipsEmptyArrays)
+{
+  cpu_optimization_problem_t<int32_t, double> problem;
+  seed_minimal_problem(problem);
+
+  mip_solver_settings_t<int32_t, double> mip;
+  apply_initial_solutions_to_mip_settings(problem, mip);
+  EXPECT_TRUE(mip.initial_solutions.empty());
+
+  pdlp_solver_settings_t<int32_t, double> pdlp;
+  apply_initial_solutions_to_pdlp_settings(problem, pdlp);
+  EXPECT_FALSE(pdlp.has_initial_primal_solution());
+  EXPECT_FALSE(pdlp.has_initial_dual_solution());
+}
+
+TEST(ApplyInitialSolutions, CopiesMismatchedSizesWithoutChecking)
+{
+  // apply_* matches local solve: size is not checked here. seed_minimal_problem
+  // has 3 variables and 1 constraint; these arrays are deliberately the wrong
+  // length (including a singleton primal) and include a value outside bounds.
+  cpu_optimization_problem_t<int32_t, double> problem;
+  seed_minimal_problem(problem);
+  std::vector<double> primal = {99.0};
+  std::vector<double> dual   = {1.0, 2.0};
+  problem.set_initial_primal_solution(primal);
+  problem.set_initial_dual_solution(dual);
+
+  mip_solver_settings_t<int32_t, double> mip;
+  apply_initial_solutions_to_mip_settings(problem, mip);
+  ASSERT_EQ(mip.initial_solutions.size(), 1);
+  ASSERT_NE(mip.initial_solutions[0], nullptr);
+  expect_device_matches_host(*mip.initial_solutions[0], primal);
+
+  pdlp_solver_settings_t<int32_t, double> pdlp;
+  apply_initial_solutions_to_pdlp_settings(problem, pdlp);
+  ASSERT_TRUE(pdlp.has_initial_primal_solution());
+  ASSERT_TRUE(pdlp.has_initial_dual_solution());
+  expect_device_matches_host(pdlp.get_initial_primal_solution(), primal);
+  expect_device_matches_host(pdlp.get_initial_dual_solution(), dual);
+}
+
 TEST(MapperRoundtrip, QuadraticConstraintsRowTypeLenient)
 {
   // Verify that constraint_row_type survives any byte value through the
@@ -2821,4 +2991,73 @@ TEST(MapperRoundtrip, QuadraticConstraintsRowTypeLenient)
               static_cast<int>(static_cast<unsigned char>(row_types[i])))
       << "Mismatch at index " << i;
   }
+}
+
+// =============================================================================
+// solve_mip_remote() unsupported-feature disabling
+// =============================================================================
+//
+// solve_mip_remote() drops user-provided incumbent get/set callbacks when the model has
+// semi-continuous variables, since the remote server does not support that combination.
+// should_disable_unsupported() is the predicate behind that decision, declared in
+// solve_remote_impl.hpp so it can be tested without a live gRPC connection.
+
+namespace {
+
+// Minimal concrete callback: the predicate only asks whether any callback is registered.
+class test_get_callback_t : public cuopt::internals::get_solution_callback_t {
+ public:
+  void get_solution(void*, void*, void*, void*) override {}
+};
+
+cpu_optimization_problem_t<int, double> make_problem(const std::vector<var_t>& var_types)
+{
+  cpu_optimization_problem_t<int, double> problem;
+  if (!var_types.empty()) {
+    problem.set_variable_types(var_types.data(), static_cast<int>(var_types.size()));
+  }
+  return problem;
+}
+
+}  // namespace
+
+TEST(SolveMipRemoteCallbacks, NoSemiContinuousNoCallbacksKeepsDisabled)
+{
+  auto problem = make_problem({var_t::CONTINUOUS, var_t::INTEGER});
+  mip_solver_settings_t<int, double> settings;
+  EXPECT_FALSE(should_disable_unsupported(problem, settings));
+}
+
+TEST(SolveMipRemoteCallbacks, NoSemiContinuousWithCallbacksKeepsEnabled)
+{
+  auto problem = make_problem({var_t::CONTINUOUS, var_t::INTEGER});
+  mip_solver_settings_t<int, double> settings;
+  test_get_callback_t callback;
+  settings.set_mip_callback(&callback, nullptr);
+  EXPECT_FALSE(should_disable_unsupported(problem, settings));
+}
+
+TEST(SolveMipRemoteCallbacks, SemiContinuousWithoutCallbacksStaysDisabled)
+{
+  auto problem = make_problem({var_t::CONTINUOUS, var_t::SEMI_CONTINUOUS});
+  mip_solver_settings_t<int, double> settings;
+  EXPECT_FALSE(should_disable_unsupported(problem, settings));
+}
+
+TEST(SolveMipRemoteCallbacks, SemiContinuousWithCallbacksGetsDisabled)
+{
+  auto problem = make_problem({var_t::CONTINUOUS, var_t::SEMI_CONTINUOUS, var_t::INTEGER});
+  mip_solver_settings_t<int, double> settings;
+  test_get_callback_t callback;
+  settings.set_mip_callback(&callback, nullptr);
+  EXPECT_TRUE(should_disable_unsupported(problem, settings));
+}
+
+TEST(SolveMipRemoteCallbacks, EmptyVariableListKeepsCallbacksEnabled)
+{
+  auto problem = make_problem({});
+  mip_solver_settings_t<int, double> settings;
+  test_get_callback_t callback;
+  settings.set_mip_callback(&callback, nullptr);
+  EXPECT_FALSE(should_disable_unsupported(problem, settings));
 }

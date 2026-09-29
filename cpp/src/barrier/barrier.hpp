@@ -17,13 +17,14 @@
 #include <linear_algebra/sparse_matrix.hpp>
 #include <math_optimization/tic_toc.hpp>
 
+#include <cuda/stream>
 #include <rmm/device_uvector.hpp>
 
 #include <utility>
 
-namespace cuopt::cython {
-class lp_solve_session_t;
-}  // namespace cuopt::cython
+namespace cuopt::mathematical_optimization {
+class barrier_cache_t;
+}
 
 namespace cuopt::mathematical_optimization::barrier {
 
@@ -41,9 +42,20 @@ class barrier_solver_t {
   barrier_solver_t(const simplex::lp_problem_t<i_t, f_t>& lp,
                    const simplex::presolve_info_t<i_t, f_t>& presolve,
                    const simplex::simplex_solver_settings_t<i_t, f_t>& settings);
-  simplex::lp_status_t solve(f_t start_time, simplex::lp_solution_t<i_t, f_t>& solution, cuopt::cython::lp_solve_session_t* session = nullptr);
+  simplex::lp_status_t solve(f_t start_time,
+                             simplex::lp_solution_t<i_t, f_t>& solution,
+                             cuopt::mathematical_optimization::barrier_cache_t* cache = nullptr);
+  // Cache reuse: cached iteration_data_t already has the updated linear objective.
+  // Reset iterate state, compute a new initial point, run barrier. Same status/solution contract as
+  // solve().
+  simplex::lp_status_t solve_with_cache(f_t start_time,
+                                        simplex::lp_solution_t<i_t, f_t>& solution,
+                                        cuopt::mathematical_optimization::barrier_cache_t* cache);
 
  private:
+  simplex::lp_status_t barrier_advanced_solve(f_t start_time,
+                                              simplex::lp_solution_t<i_t, f_t>& solution,
+                                              iteration_data_t<i_t, f_t>& data);
   void my_pop_range(bool debug) const;
   void create_Q(const simplex::lp_problem_t<i_t, f_t>& lp, csc_matrix_t<i_t, f_t>& Q);
   int initial_point(iteration_data_t<i_t, f_t>& data);
@@ -106,7 +118,7 @@ class barrier_solver_t {
   const simplex::lp_problem_t<i_t, f_t>& lp;
   const simplex::simplex_solver_settings_t<i_t, f_t>& settings;
   const simplex::presolve_info_t<i_t, f_t>& presolve_info;
-  rmm::cuda_stream_view stream_view_;
+  cuda::stream_ref stream_view_;
 };
 
 }  // namespace cuopt::mathematical_optimization::barrier
