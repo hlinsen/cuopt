@@ -591,6 +591,13 @@ lp_status_t solve_linear_program_with_barrier(
   // Presolve the linear program
   presolve_info_t<i_t, f_t> presolve_info;
   lp_problem_t<i_t, f_t> presolved_lp(handle_ptr, 1, 1, 1);
+  // Free-variable elimination only removes variables with zero cost and folds rows together,
+  // and the cache's objective/RHS maps do not replay it. A later update could also give an
+  // eliminated variable a cost, so automatic keeps it off when the solve feeds a barrier cache.
+  // An explicit 1 is honored and forgoes cache reuse.
+  if (cache != nullptr && barrier_settings.barrier_presolve_eliminate_free_variables < 0) {
+    barrier_settings.barrier_presolve_eliminate_free_variables = 0;
+  }
   i_t ok;
   {
     raft::common::nvtx::range scope("Barrier: presolve");

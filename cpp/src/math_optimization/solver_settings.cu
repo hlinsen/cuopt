@@ -239,11 +239,15 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_MIP_HYPER_SUBMIP_ITERATION_LIMIT_OFFSET, &mip_settings.submip_params.iteration_limit_offset, 0, std::numeric_limits<i_t>::max(), 10000, "base sub-MIP simplex-iteration limit for root heuristics"},
     {CUOPT_MIP_HYPER_SUBMIP_MAX_LEVEL, &mip_settings.submip_params.max_level, 0, std::numeric_limits<i_t>::max(), 10, "maximum sub-MIP recursion level"},
     {CUOPT_BARRIER_PRESOLVE_BOUND_FREE_VARIABLES, &pdlp_settings.barrier_presolve_bound_free_variables, -1, 1, -1, "Bound free variables during barrier presolve: -1 automatic (default behavior), 0 disabled, 1 enabled"},
+    {CUOPT_BARRIER_PRESOLVE_ELIMINATE_FREE_VARIABLES, &pdlp_settings.barrier_presolve_eliminate_free_variables, -1, 1, -1, "Eliminate zero-cost free variables by equality substitution in barrier presolve (QP/SOCP only): -1 automatic (on, off when reusing a barrier cache), 0 disabled, 1 enabled (forgoes barrier cache reuse)"},
     {CUOPT_BARRIER_ADAPTIVE_REGULARIZATION, &pdlp_settings.barrier_adaptive_regularization, -1, 1, -1, "Adaptive regularization for barrier method: -1 automatic (default behavior), 0 disabled, 1 enabled"},
     // QCQP (barrier) scaling hyper-parameter
     {CUOPT_QCQP_HYPER_RUIZ_EQUILIBRATION, &pdlp_settings.qcqp_ruiz_equilibration, -1, 1, -1, "Ruiz equilibration for QCQP barrier scaling: -1 automatic (row/column imbalance heuristic), 0 disabled, 1 enabled"},
     // cuDSS (barrier) reordering hyper-parameter
     {CUOPT_CUDSS_HYPER_ND_NLEVELS, &pdlp_settings.cudss_nd_nlevels, -1, std::numeric_limits<i_t>::max(), -1, "METIS nested-dissection depth for cuDSS: -1 unset (cuDSS default), else explicit depth"},
+    {CUOPT_CUDSS_HYPER_HYBRID_EXECUTE_MODE, &pdlp_settings.cudss_hybrid_execute_mode, -1, 1, -1, "cuDSS hybrid execute mode (run parts of factorization/solve on the host): -1 unset (cuDSS default, off), 0 off, 1 on"},
+    {CUOPT_CUDSS_HYPER_HOST_NTHREADS, &pdlp_settings.cudss_host_nthreads, -1, std::numeric_limits<i_t>::max(), -1, "host threads for multi-threaded cuDSS: -1 unset (threading layer maximum, i.e. OMP_NUM_THREADS), else explicit count"},
+    {CUOPT_CUDSS_HYPER_MATRIX_VIEW, &pdlp_settings.cudss_matrix_view, 0, 2, 0, "part of the symmetric KKT matrix cuDSS reads: 0 full, 1 upper triangle, 2 lower triangle"},
   };
 
     // Bool parameters

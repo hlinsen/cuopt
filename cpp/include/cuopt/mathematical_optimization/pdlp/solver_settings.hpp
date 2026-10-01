@@ -300,6 +300,9 @@ class pdlp_solver_settings_t {
   bool crossover{false};
   bool cudss_deterministic{false};
   i_t cudss_nd_nlevels{-1};
+  i_t cudss_hybrid_execute_mode{-1};
+  i_t cudss_host_nthreads{-1};
+  i_t cudss_matrix_view{0};
   i_t folding{-1};
   i_t augmented{-1};
   i_t dualize{-1};
@@ -310,6 +313,8 @@ class pdlp_solver_settings_t {
   barrier_initial_point_t barrier_initial_point{barrier_initial_point_t::Automatic};
   i_t postsolve_info{-1};
   i_t barrier_presolve_bound_free_variables{-1};  // -1 automatic, 0 disabled, 1 enabled
+  // -1 automatic (on, off when the solve feeds a barrier cache), 0 disabled, 1 enabled
+  i_t barrier_presolve_eliminate_free_variables{-1};
   // Ruiz equilibration for QCQP (barrier) scaling: -1 automatic (row/column
   // imbalance heuristic), 0 disabled, 1 enabled. Distinct from PDLP's own Ruiz
   // scaling in pdlp_hyper_params_t.

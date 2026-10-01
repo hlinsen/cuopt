@@ -241,6 +241,18 @@ Dualize
 
 .. note:: The default value is ``-1`` (automatic).
 
+Eliminate Free Variables
+""""""""""""""""""""""""
+
+``CUOPT_BARRIER_PRESOLVE_ELIMINATE_FREE_VARIABLES`` controls whether barrier presolve substitutes out
+zero-cost free variables using an equality row. It applies to QP and SOCP problems only.
+
+* ``-1``: Automatic (default) - on, except when the solve builds a barrier cache for ``CUOPT_SEQUENCE_SOLVE``
+* ``0``: Off
+* ``1``: On. With ``CUOPT_SEQUENCE_SOLVE``, later objective or RHS updates cannot reuse the cache and fall back to a full solve.
+
+.. note:: The default value is ``-1`` (automatic).
+
 Ordering
 """"""""
 
@@ -295,6 +307,34 @@ cuDSS Nested-Dissection Levels
 * Non-negative value: Explicit nested-dissection depth
 
 .. note:: The default value is ``-1`` (unset).
+
+cuDSS Hybrid Execute Mode
+"""""""""""""""""""""""""
+
+``CUOPT_CUDSS_HYPER_HYBRID_EXECUTE_MODE`` lets cuDSS run parts of the factorization and solve on the host.
+
+* ``-1``: Leave unset, cuDSS default (off) (default)
+* ``0``: Off
+* ``1``: On
+
+cuDSS Host Threads
+""""""""""""""""""
+
+``CUOPT_CUDSS_HYPER_HOST_NTHREADS`` sets the number of host threads multi-threaded cuDSS uses. It has
+no effect when the cuDSS threading layer is not loaded.
+
+* ``-1``: Leave unset, the threading layer maximum (``OMP_NUM_THREADS``) (default)
+* Positive value: Explicit thread count
+
+cuDSS Matrix View
+"""""""""""""""""
+
+``CUOPT_CUDSS_HYPER_MATRIX_VIEW`` selects which part of the symmetric KKT matrix cuDSS reads. The
+matrix is stored with both triangles, so every view describes the same matrix.
+
+* ``0``: Full matrix (default)
+* ``1``: Upper triangle
+* ``2``: Lower triangle
 
 Initial Point
 """""""""""""

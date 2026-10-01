@@ -68,8 +68,12 @@ struct simplex_solver_settings_t {
       eliminate_singletons(true),
       print_presolve_stats(true),
       barrier_presolve(false),
+      barrier_presolve_eliminate_free_variables(-1),
       cudss_deterministic(false),
       cudss_nd_nlevels(-1),
+      cudss_hybrid_execute_mode(-1),
+      cudss_host_nthreads(-1),
+      cudss_matrix_view(0),
       deterministic(false),
       barrier(false),
       eliminate_dense_columns(true),
@@ -177,8 +181,14 @@ struct simplex_solver_settings_t {
   bool eliminate_singletons;  // true to eliminate singletons from the basis
   bool print_presolve_stats;  // true to print presolve stats
   bool barrier_presolve;      // true to use barrier presolve
+  // Substitute out zero-cost free variables in barrier presolve (QP/SOCP only):
+  // -1 automatic (on, off when the solve feeds a barrier cache), 0 disabled, 1 enabled
+  i_t barrier_presolve_eliminate_free_variables;
   bool cudss_deterministic;   // true to use cuDSS deterministic mode, false for non-deterministic
   i_t cudss_nd_nlevels;       // -1 automatic/unset, else METIS nested-dissection depth for cuDSS
+  i_t cudss_hybrid_execute_mode;  // -1 unset (cuDSS default, off), 0 off, 1 on
+  i_t cudss_host_nthreads;        // -1 unset (threading layer maximum), else host thread count
+  i_t cudss_matrix_view;          // KKT part cuDSS reads: 0 full, 1 upper, 2 lower
   bool barrier;               // true to use barrier method, false to use dual simplex method
   bool deterministic;  // true to use B&B deterministic mode, false to use non-deterministic mode
   bool eliminate_dense_columns;      // true to eliminate dense columns from A*D*A^T

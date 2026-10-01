@@ -277,6 +277,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     CUDSS_CALL_AND_CHECK_EXIT(
       cudssSetDeviceMemHandler(handle, &mem_handler), status, "cudssSetDeviceMemHandler");
 
+    bool cudss_mt_enabled         = false;
     const char* cudss_mt_lib_file = nullptr;
     char* env_value               = std::getenv("CUDSS_THREADING_LIB");
     if (env_value != nullptr) {
@@ -295,6 +296,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       } else {
         cudssStatus_t threading_status = cudssSetThreadingLayer(handle, cudss_mt_lib_file);
         if (threading_status == CUDSS_STATUS_SUCCESS) {
+          cudss_mt_enabled = true;
           settings.log.printf("cuDSS Threading layer       : %s\n", cudss_mt_lib_file);
         } else {
           settings.log.printf(
@@ -350,7 +352,39 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
         status,
         "cudssConfigSet for nd nlevels");
     }
+
+    if (settings_.cudss_hybrid_execute_mode >= 0) {
+      settings_.log.printf("cuDSS hybrid execute mode   : %d\n",
+                           settings_.cudss_hybrid_execute_mode);
+      int32_t hybrid_execute_mode = settings_.cudss_hybrid_execute_mode;
+      CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig,
+                                               CUDSS_CONFIG_HYBRID_EXECUTE_MODE,
+                                               &hybrid_execute_mode,
+                                               sizeof(int32_t)),
+                                status,
+                                "cudssConfigSet for hybrid execute mode");
+    }
+
+    // Host threads only apply to multi-threaded cuDSS, i.e. once a threading layer is loaded.
+    if (settings_.cudss_host_nthreads > 0) {
+      if (cudss_mt_enabled) {
+        settings_.log.printf("cuDSS host threads          : %d\n", settings_.cudss_host_nthreads);
+        int32_t host_nthreads = settings_.cudss_host_nthreads;
+        CUDSS_CALL_AND_CHECK_EXIT(
+          cudssConfigSet(solverConfig, CUDSS_CONFIG_HOST_NTHREADS, &host_nthreads, sizeof(int32_t)),
+          status,
+          "cudssConfigSet for host nthreads");
+      } else {
+        settings_.log.printf(
+          "cuDSS host threads          : ignored (%d requested, no threading layer)\n",
+          settings_.cudss_host_nthreads);
+      }
+    }
 #endif
+    if (settings_.cudss_matrix_view != 0) {
+      settings_.log.printf("cuDSS matrix view           : %s\n",
+                           settings_.cudss_matrix_view == 1 ? "upper" : "lower");
+    }
 
 #if USE_ITERATIVE_REFINEMENT
     int32_t ir_n_steps = 2;
@@ -503,7 +537,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                              CUDSS_R_32I,
                              CUDSS_R_64F,
                              positive_definite ? CUDSS_MTYPE_SPD : CUDSS_MTYPE_SYMMETRIC,
-                             CUDSS_MVIEW_FULL,
+                             matrix_view(),
                              CUDSS_BASE_ZERO),
         status,
         "cudssMatrixCreateCsr");
@@ -520,7 +554,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                              CUDA_R_32I,
                              CUDA_R_64F,
                              positive_definite ? CUDSS_MTYPE_SPD : CUDSS_MTYPE_SYMMETRIC,
-                             CUDSS_MVIEW_FULL,
+                             matrix_view(),
                              CUDSS_BASE_ZERO),
         status,
         "cudssMatrixCreateCsr");
@@ -737,7 +771,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                            CUDSS_R_32I,
                            CUDSS_R_64F,
                            positive_definite ? CUDSS_MTYPE_SPD : CUDSS_MTYPE_SYMMETRIC,
-                           CUDSS_MVIEW_FULL,
+                           matrix_view(),
                            CUDSS_BASE_ZERO),
       status,
       "cudssMatrixCreateCsr");
@@ -754,7 +788,7 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
                            CUDA_R_32I,
                            CUDA_R_64F,
                            positive_definite ? CUDSS_MTYPE_SPD : CUDSS_MTYPE_SYMMETRIC,
-                           CUDSS_MVIEW_FULL,
+                           matrix_view(),
                            CUDSS_BASE_ZERO),
       status,
       "cudssMatrixCreateCsr");
@@ -947,6 +981,17 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
   void set_positive_definite(bool positive_definite) override
   {
     this->positive_definite = positive_definite;
+  }
+
+  // The KKT matrices are stored fully symmetric (both triangles), so either triangle describes
+  // the same matrix; reading one halves what cuDSS scans.
+  cudssMatrixViewType_t matrix_view() const
+  {
+    switch (settings_.cudss_matrix_view) {
+      case 1: return CUDSS_MVIEW_UPPER;
+      case 2: return CUDSS_MVIEW_LOWER;
+      default: return CUDSS_MVIEW_FULL;
+    }
   }
 
  private:
