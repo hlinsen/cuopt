@@ -75,11 +75,8 @@ f_t device_custom_vector_norm_inf(InputIteratorT in, i_t size, cuda::stream_ref 
 // rmm::device_scalar and blocking on .value(). Lets callers batch several reductions and defer
 // the host readback to a single copy + sync.
 template <typename i_t, typename f_t, typename InputIteratorT>
-void enqueue_norm_inf_into(InputIteratorT in,
-                           i_t size,
-                           f_t* out,
-                           rmm::device_buffer& tmp,
-                           rmm::cuda_stream_view stream_view)
+void enqueue_norm_inf_into(
+  InputIteratorT in, i_t size, f_t* out, rmm::device_buffer& tmp, rmm::cuda_stream_view stream_view)
 {
   if (size == 0) {
     RAFT_CUDA_TRY(cudaMemsetAsync(out, 0, sizeof(f_t), stream_view.value()));
@@ -100,11 +97,8 @@ void enqueue_norm_inf_into(InputIteratorT in,
 // Sum reduction into a caller-supplied device pointer/temp-storage buffer, deferring the host
 // readback (see enqueue_norm_inf_into).
 template <typename i_t, typename f_t, typename InputIteratorT>
-void enqueue_sum_into(InputIteratorT in,
-                      i_t size,
-                      f_t* out,
-                      rmm::device_buffer& tmp,
-                      rmm::cuda_stream_view stream_view)
+void enqueue_sum_into(
+  InputIteratorT in, i_t size, f_t* out, rmm::device_buffer& tmp, rmm::cuda_stream_view stream_view)
 {
   size_t temp_storage_bytes = 0;
   cub::DeviceReduce::Sum(nullptr, temp_storage_bytes, in, out, size, stream_view);
@@ -118,11 +112,8 @@ void enqueue_sum_into(InputIteratorT in,
 // thrust::reduce(..., f_t(0), thrust::maximum<f_t>()) usage) into a caller-supplied device
 // pointer/temp-storage buffer, deferring the host readback (see enqueue_norm_inf_into).
 template <typename i_t, typename f_t, typename InputIteratorT>
-void enqueue_max_into(InputIteratorT in,
-                      i_t size,
-                      f_t* out,
-                      rmm::device_buffer& tmp,
-                      rmm::cuda_stream_view stream_view)
+void enqueue_max_into(
+  InputIteratorT in, i_t size, f_t* out, rmm::device_buffer& tmp, rmm::cuda_stream_view stream_view)
 {
   size_t temp_storage_bytes = 0;
   f_t init                  = 0;

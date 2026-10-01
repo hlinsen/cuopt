@@ -184,12 +184,12 @@ struct simplex_solver_settings_t {
   // Substitute out zero-cost free variables in barrier presolve (QP/SOCP only):
   // -1 automatic (on, off when the solve feeds a barrier cache), 0 disabled, 1 enabled
   i_t barrier_presolve_eliminate_free_variables;
-  bool cudss_deterministic;   // true to use cuDSS deterministic mode, false for non-deterministic
-  i_t cudss_nd_nlevels;       // -1 automatic/unset, else METIS nested-dissection depth for cuDSS
+  bool cudss_deterministic;  // true to use cuDSS deterministic mode, false for non-deterministic
+  i_t cudss_nd_nlevels;      // -1 automatic/unset, else METIS nested-dissection depth for cuDSS
   i_t cudss_hybrid_execute_mode;  // -1 unset (cuDSS default, off), 0 off, 1 on
   i_t cudss_host_nthreads;        // -1 unset (threading layer maximum), else host thread count
   i_t cudss_matrix_view;          // KKT part cuDSS reads: 0 full, 1 upper, 2 lower
-  bool barrier;               // true to use barrier method, false to use dual simplex method
+  bool barrier;                   // true to use barrier method, false to use dual simplex method
   bool deterministic;  // true to use B&B deterministic mode, false to use non-deterministic mode
   bool eliminate_dense_columns;      // true to eliminate dense columns from A*D*A^T
   i_t barrier_iterative_refinement;  // 0: off, 1: gmres (default), 2: fixed_point
@@ -213,9 +213,9 @@ struct simplex_solver_settings_t {
   i_t augmented;  // -1 automatic, 0 to solve with ADAT, 1 to solve with augmented system
   i_t dualize;    // -1 automatic, 0 to not dualize, 1 to dualize
   i_t ordering;   // -1 automatic, 0 to use nested dissection, 1 to use AMD
-  i_t initial_perturbation;  // -1 automatic, 0 to not perturb, 1 to perturb
-  i_t remove_perturbation;   // -1 automatic, 0 disabled, 1 enabled
-  i_t primal_pricing;        // 0 Dantzig (default), 1 Devex
+  i_t initial_perturbation;                       // -1 automatic, 0 to not perturb, 1 to perturb
+  i_t remove_perturbation;                        // -1 automatic, 0 disabled, 1 enabled
+  i_t primal_pricing;                             // 0 Dantzig (default), 1 Devex
   barrier_initial_point_t barrier_initial_point;  // -1 automatic, 0 Lustig-Marsten-Shanno,
                                                   // 1 dual least squares, 2 SeDuMi mu-based
   i_t postsolve_info;                             // -1 automatic (disabled), 0 disabled, 1 enabled

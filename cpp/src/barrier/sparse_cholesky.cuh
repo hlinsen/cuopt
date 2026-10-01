@@ -357,12 +357,11 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
       settings_.log.printf("cuDSS hybrid execute mode   : %d\n",
                            settings_.cudss_hybrid_execute_mode);
       int32_t hybrid_execute_mode = settings_.cudss_hybrid_execute_mode;
-      CUDSS_CALL_AND_CHECK_EXIT(cudssConfigSet(solverConfig,
-                                               CUDSS_CONFIG_HYBRID_EXECUTE_MODE,
-                                               &hybrid_execute_mode,
-                                               sizeof(int32_t)),
-                                status,
-                                "cudssConfigSet for hybrid execute mode");
+      CUDSS_CALL_AND_CHECK_EXIT(
+        cudssConfigSet(
+          solverConfig, CUDSS_CONFIG_HYBRID_EXECUTE_MODE, &hybrid_execute_mode, sizeof(int32_t)),
+        status,
+        "cudssConfigSet for hybrid execute mode");
     }
 
     // Host threads only apply to multi-threaded cuDSS, i.e. once a threading layer is loaded.

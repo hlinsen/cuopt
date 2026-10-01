@@ -44,8 +44,8 @@
 #include <utilities/logger.hpp>
 #include <utilities/macros.cuh>
 
-#include <numeric>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <span>
 
@@ -2266,9 +2266,9 @@ class iteration_data_t {
     handle_ptr->sync_stream();
   }
 
-  // Lazily wire a no-copy cuSparse view over device_augmented's buffers (which may be a pinned/cached
-  // matrix). Rebuilt defensively whenever the underlying data pointer changes, which also
-  // covers pin/unpin transitions since device_augmented then resolves to a different buffer.
+  // Lazily wire a no-copy cuSparse view over device_augmented's buffers (which may be a
+  // pinned/cached matrix). Rebuilt defensively whenever the underlying data pointer changes, which
+  // also covers pin/unpin transitions since device_augmented then resolves to a different buffer.
   void ensure_augmented_csr_view()
   {
     if (cusparse_augmented_view_ != nullptr &&
@@ -5107,11 +5107,10 @@ void apply_barrier_linear_objective(iteration_data_t<int, double>& data,
 
 void apply_barrier_rhs(iteration_data_t<int, double>& data, double const* barrier_b, int m)
 {
-  cuopt_expects(
-    barrier_b != nullptr && static_cast<int>(data.b.size()) == m &&
-      static_cast<int>(data.d_b_.size()) == m,
-    error_type_t::ValidationError,
-    "update_rhs: barrier RHS size does not match cached iteration_data_t.");
+  cuopt_expects(barrier_b != nullptr && static_cast<int>(data.b.size()) == m &&
+                  static_cast<int>(data.d_b_.size()) == m,
+                error_type_t::ValidationError,
+                "update_rhs: barrier RHS size does not match cached iteration_data_t.");
   std::copy(barrier_b, barrier_b + m, data.b.data());
   raft::copy(
     data.d_b_.data(), data.b.data(), static_cast<std::size_t>(m), data.handle_ptr->get_stream());

@@ -29,7 +29,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import gc
 import io
 import json
 import os
@@ -120,7 +119,9 @@ def _capture_solver_output():
     finally:
         os.dup2(saved_stderr, 2)
         os.close(saved_stderr)
-        with os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as reader:
+        with os.fdopen(
+            read_fd, "r", encoding="utf-8", errors="replace"
+        ) as reader:
             text = reader.read()
         capture.write(text)
         capture.seek(0)
@@ -212,8 +213,7 @@ def portfolio_objective(info, x_np):
     d_matrix = np.diag(info["D_diag"])
     return (
         -info["mu"] @ x_np
-        + info["gamma"]
-        * (x_np @ d_matrix @ x_np + y @ info["Omega"] @ y)
+        + info["gamma"] * (x_np @ d_matrix @ x_np + y @ info["Omega"] @ y)
         + info["tc_rate"] * np.sum(z)
     )
 
@@ -236,7 +236,9 @@ def build_cuopt_portfolio_problem(info: dict) -> Problem:
     ys = [prob.addVariable(lb=0.0, ub=0.1, name=f"y{j}") for j in range(k)]
     zs = [prob.addVariable(lb=0.0, ub=1.0e6, name=f"z{i}") for i in range(n)]
 
-    budget_constr = prob.addConstraint(LinearExpression(xs, [1.0] * n, 0.0) == d_rhs)
+    budget_constr = prob.addConstraint(
+        LinearExpression(xs, [1.0] * n, 0.0) == d_rhs
+    )
 
     for j in range(k):
         c = [-float(F[i, j]) for i in range(n)] + [1.0]
@@ -248,10 +250,14 @@ def build_cuopt_portfolio_problem(info: dict) -> Problem:
     for i in range(n):
         x0i = float(x0[i])
         x0_le_constrs.append(
-            prob.addConstraint(LinearExpression([xs[i], zs[i]], [1.0, -1.0], 0.0) <= x0i)
+            prob.addConstraint(
+                LinearExpression([xs[i], zs[i]], [1.0, -1.0], 0.0) <= x0i
+            )
         )
         x0_ge_constrs.append(
-            prob.addConstraint(LinearExpression([xs[i], zs[i]], [1.0, 1.0], 0.0) >= x0i)
+            prob.addConstraint(
+                LinearExpression([xs[i], zs[i]], [1.0, 1.0], 0.0) >= x0i
+            )
         )
 
     qv1, qv2, qc = [], [], []
@@ -276,7 +282,9 @@ def build_cuopt_portfolio_problem(info: dict) -> Problem:
         constant=0.0,
     )
     lin_vars = xs + ys + zs
-    lin_c = np.concatenate([-mu, np.zeros(k, dtype=np.float64), np.full(n, tc_rate)])
+    lin_c = np.concatenate(
+        [-mu, np.zeros(k, dtype=np.float64), np.full(n, tc_rate)]
+    )
     linear = LinearExpression(lin_vars, lin_c.tolist(), 0.0)
     prob.setObjective(quad + linear, sense=MINIMIZE)
 
@@ -337,7 +345,9 @@ def solve_portfolio(
     return portfolio_x(prob)
 
 
-def _perturb_portfolio_params(info: dict, seed: int) -> tuple[np.ndarray, float, np.ndarray, float]:
+def _perturb_portfolio_params(
+    info: dict, seed: int
+) -> tuple[np.ndarray, float, np.ndarray, float]:
     """Small value-only perturbation; structure of the Problem is unchanged."""
     rng = np.random.default_rng(seed)
     mu = info["mu"] * (1.0 + 0.001 * rng.standard_normal(info["n"]))
@@ -347,7 +357,9 @@ def _perturb_portfolio_params(info: dict, seed: int) -> tuple[np.ndarray, float,
     return mu, d, x0, tc
 
 
-def _base_portfolio_params(info: dict) -> tuple[np.ndarray, float, np.ndarray, float]:
+def _base_portfolio_params(
+    info: dict,
+) -> tuple[np.ndarray, float, np.ndarray, float]:
     """Unperturbed parameters from ``info``."""
     return info["mu"], float(info["d"]), info["x0"], float(info["tc_rate"])
 
@@ -408,9 +420,15 @@ def run_cache_benchmark(
         )
         warm_ms.append(ms)
         objective_records.append(obj_snap)
-        warm_reuse_hits.append(_count_log_matches(log_text, _REUSE_SYMBOLIC_LINE))
-        warm_rebuild_hits.append(_count_log_matches(log_text, _REBUILT_SYMBOLIC_LINE))
-        warm_store_hash_hits.append(_count_log_matches(log_text, _STORE_SYMBOLIC_HASH_LINE))
+        warm_reuse_hits.append(
+            _count_log_matches(log_text, _REUSE_SYMBOLIC_LINE)
+        )
+        warm_rebuild_hits.append(
+            _count_log_matches(log_text, _REBUILT_SYMBOLIC_LINE)
+        )
+        warm_store_hash_hits.append(
+            _count_log_matches(log_text, _STORE_SYMBOLIC_HASH_LINE)
+        )
         if profile:
             warm_profiles.append(profile)
 
@@ -447,7 +465,9 @@ def run_cache_benchmark(
     }
 
 
-def _param_schedule(info: dict, n_warm: int, *, same_values: bool) -> list[tuple[str, np.ndarray, float, np.ndarray, float]]:
+def _param_schedule(
+    info: dict, n_warm: int, *, same_values: bool
+) -> list[tuple[str, np.ndarray, float, np.ndarray, float]]:
     schedule: list[tuple[str, np.ndarray, float, np.ndarray, float]] = []
     if same_values:
         mu, d, x0, tc = _base_portfolio_params(info)
@@ -479,10 +499,14 @@ def _solve_one_objective(
         prob._session = session
     update_portfolio_values(prob, mu, d, x0, tc)
     with _capture_solver_output():
-        solution = prob.solve(settings, session=session if use_session else None)
+        solution = prob.solve(
+            settings, session=session if use_session else None
+        )
     snap = _objective_snapshot(prob, info, solution, mu, d, x0, tc, label)
     snap["use_session"] = use_session
-    snap["session_capsule"] = solution.lp_solve_session if use_session else None
+    snap["session_capsule"] = (
+        solution.lp_solve_session if use_session else None
+    )
     return snap
 
 
@@ -524,7 +548,9 @@ def verify_objectives_across_modes(
                 use_session=True,
                 session=session,
             )
-        delta = abs(base["cuopt_primal_objective"] - sess["cuopt_primal_objective"])
+        delta = abs(
+            base["cuopt_primal_objective"] - sess["cuopt_primal_objective"]
+        )
         paired.append(
             {
                 "label": label,
@@ -620,9 +646,13 @@ def _write_results(
                 "**Note:** Rebuild cuOpt with cache profiling enabled and set "
                 "`CUOPT_CACHE_PROFILE=1` for per-cache rows.\n\n"
             )
-        f.write(f"- Problem: portfolio QP, k={k}, scale={scale}, n={n_assets}\n")
-        f.write(f"- Solver: Barrier (QP)\n")
-        f.write(f"- Parameters: {'identical every solve' if bench.get('same_values') else 'perturbed on warm solves'}\n")
+        f.write(
+            f"- Problem: portfolio QP, k={k}, scale={scale}, n={n_assets}\n"
+        )
+        f.write("- Solver: Barrier (QP)\n")
+        f.write(
+            f"- Parameters: {'identical every solve' if bench.get('same_values') else 'perturbed on warm solves'}\n"
+        )
         f.write(f"- Warm iterations: {n_warm}\n\n")
         f.write("## Measured (aggregate)\n\n")
         f.write("| Metric | ms |\n|--------|----|\n")
@@ -639,18 +669,26 @@ def _write_results(
             "| ID | Cache item | Cold | Warm (avg) | Est. save (cold−warm) | "
             "% of cold solve |\n"
         )
-        f.write("|----|------------|------|------------|----------------------|"
-                "-----------------|\n")
+        f.write(
+            "|----|------------|------|------------|----------------------|"
+            "-----------------|\n"
+        )
         for cid, name in CACHE_ITEM_NAMES.items():
             cold_ms = cold_cache.get(cid, 0.0)
             warm_ms = warm_cache.get(cid, 0.0)
             save_ms = cache_save.get(cid, 0.0)
-            pct = (save_ms / bench["cold_ms"] * 100.0) if bench["cold_ms"] > 0 else 0.0
+            pct = (
+                (save_ms / bench["cold_ms"] * 100.0)
+                if bench["cold_ms"] > 0
+                else 0.0
+            )
             f.write(
                 f"| {cid} | {name} | {cold_ms:.2f} | {warm_ms:.2f} | "
                 f"{save_ms:.2f} | {pct:.1f}% |\n"
             )
-        f.write("\nSee `docs/solver_session_cache.md` for cache definitions.\n")
+        f.write(
+            "\nSee `docs/solver_session_cache.md` for cache definitions.\n"
+        )
 
 
 def _print_bench_summary(label: str, bench: dict, n_warm: int) -> None:
@@ -659,9 +697,13 @@ def _print_bench_summary(label: str, bench: dict, n_warm: int) -> None:
     print(f"  session_enabled:    {bench.get('use_session', False)}")
     print(f"  session after cold: {bench.get('session_after_cold', False)}")
     print(f"  Cold solve (1st):     {bench['cold_ms']:.2f} ms")
-    print(f"  Warm solve (avg):     {bench['warm_avg_ms']:.2f} ms  (n={n_warm})")
+    print(
+        f"  Warm solve (avg):     {bench['warm_avg_ms']:.2f} ms  (n={n_warm})"
+    )
     print(f"  Warm solve (best):    {bench['warm_min_ms']:.2f} ms")
-    print(f"  Aggregate save:       {bench['saved_ms']:.2f} ms ({bench['saved_pct']:.1f}%)")
+    print(
+        f"  Aggregate save:       {bench['saved_ms']:.2f} ms ({bench['saved_pct']:.1f}%)"
+    )
     c07_c = bench.get("cold_cache_ms", {}).get("C07", 0.0)
     c07_w = bench.get("warm_cache_ms_avg", {}).get("C07", 0.0)
     print(f"  C07 symbolic (cold/warm avg): {c07_c:.2f} / {c07_w:.2f} ms")
@@ -680,11 +722,17 @@ def _print_bench_summary(label: str, bench: dict, n_warm: int) -> None:
     if bench.get("use_session"):
         warm_reuse = bench.get("warm_reuse_log_counts", [])
         if warm_reuse and all(c >= 1 for c in warm_reuse):
-            print("  Fingerprint/sparsity gate: PASS (warm runs reused symbolic analysis)")
+            print(
+                "  Fingerprint/sparsity gate: PASS (warm runs reused symbolic analysis)"
+            )
         elif warm_reuse and any(c >= 1 for c in warm_reuse):
-            print("  Fingerprint/sparsity gate: PARTIAL (some warm runs reused symbolic)")
+            print(
+                "  Fingerprint/sparsity gate: PARTIAL (some warm runs reused symbolic)"
+            )
         else:
-            print("  Fingerprint/sparsity gate: FAIL (no warm reuse log; check session wiring)")
+            print(
+                "  Fingerprint/sparsity gate: FAIL (no warm reuse log; check session wiring)"
+            )
     if bench.get("objective_records"):
         _print_objective_records(
             "session" if bench.get("use_session") else "baseline",
@@ -711,7 +759,9 @@ def _assert_log_expectations(mode: str, bench: dict) -> None:
     c07_w = bench.get("warm_cache_ms_avg", {}).get("C07", 0.0)
 
     if mode == "baseline":
-        if bench.get("cold_reuse_log_count", 0) != 0 or any(c != 0 for c in warm_reuse):
+        if bench.get("cold_reuse_log_count", 0) != 0 or any(
+            c != 0 for c in warm_reuse
+        ):
             raise AssertionError(
                 f"baseline: unexpected sparsity reuse log "
                 f"(cold={bench.get('cold_reuse_log_count')}, warm={warm_reuse})"
@@ -725,7 +775,9 @@ def _assert_log_expectations(mode: str, bench: dict) -> None:
         )
     elif mode == "session":
         if bench.get("cold_reuse_log_count", 0) != 0:
-            raise AssertionError("session cold: unexpected sparsity reuse log on first solve")
+            raise AssertionError(
+                "session cold: unexpected sparsity reuse log on first solve"
+            )
         if c07_c < 50.0:
             raise AssertionError(
                 f"session cold: expected C07 symbolic on first solve, got {c07_c:.2f} ms"
@@ -775,10 +827,16 @@ def _compare_mode_objectives(
     print("Cross-process objective check (baseline vs session)")
     print("=" * 50)
     all_ok = True
-    for b_rec, s_rec in zip(baseline["objective_records"], session["objective_records"]):
+    for b_rec, s_rec in zip(
+        baseline["objective_records"], session["objective_records"]
+    ):
         if b_rec["label"] != s_rec["label"]:
-            raise AssertionError("objective record label mismatch between processes")
-        delta = abs(b_rec["cuopt_primal_objective"] - s_rec["cuopt_primal_objective"])
+            raise AssertionError(
+                "objective record label mismatch between processes"
+            )
+        delta = abs(
+            b_rec["cuopt_primal_objective"] - s_rec["cuopt_primal_objective"]
+        )
         ok = delta <= obj_atol
         all_ok = all_ok and ok
         print(
@@ -801,17 +859,27 @@ def run_single_benchmark(mode: str) -> dict:
         else "Session enabled (reuse handle + symbolic cache)"
     )
 
-    if os.environ.get("CUOPT_CACHE_PROFILE", "1").lower() not in ("0", "false", "no"):
+    if os.environ.get("CUOPT_CACHE_PROFILE", "1").lower() not in (
+        "0",
+        "false",
+        "no",
+    ):
         os.environ["CUOPT_CACHE_PROFILE"] = "1"
 
     k, scale = 50, 100
-    if os.environ.get("CUOPT_PORTFOLIO_BENCHMARK_SMALL", "").lower() in ("1", "true", "yes"):
+    if os.environ.get("CUOPT_PORTFOLIO_BENCHMARK_SMALL", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
         k, scale = 5, 2
 
     print("=" * 70)
     print(f"Portfolio QP benchmark — mode={mode}")
     print("=" * 70)
-    print(f"\nProblem settings: k={k}, scale={scale} -> n={k * scale} stocks, {k} factors")
+    print(
+        f"\nProblem settings: k={k}, scale={scale} -> n={k * scale} stocks, {k} factors"
+    )
 
     info = generate_portfolio_data(k=k, scale=scale, seed=42)
     same_values = os.environ.get("CUOPT_CACHE_SAME_VALUES", "").lower() in (
@@ -847,17 +915,25 @@ def run_single_benchmark(mode: str) -> dict:
     )
     _print_bench_summary(label, bench, n_warm)
     _assert_objectives(bench["objective_records"], formula_atol=formula_atol)
-    print("  Objective check: PASS (Optimal; cuOpt vs formula within tolerance)")
+    print(
+        "  Objective check: PASS (Optimal; cuOpt vs formula within tolerance)"
+    )
     _assert_log_expectations(mode, bench)
 
-    artifact = Path(os.environ.get("CUOPT_BENCHMARK_ARTIFACT", f"/tmp/cuopt_bench_{mode}.json"))
+    artifact = Path(
+        os.environ.get(
+            "CUOPT_BENCHMARK_ARTIFACT", f"/tmp/cuopt_bench_{mode}.json"
+        )
+    )
     _write_bench_artifact(artifact, mode, bench)
     print(f"  Wrote artifact: {artifact}")
     return bench
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Portfolio QP session cache benchmark")
+    parser = argparse.ArgumentParser(
+        description="Portfolio QP session cache benchmark"
+    )
     parser.add_argument(
         "--mode",
         choices=("baseline", "session", "all"),
@@ -887,7 +963,15 @@ def main():
         env["CUOPT_BENCHMARK_ARTIFACT"] = str(baseline_artifact)
         print("\n>>> Process 1/2: baseline (session disabled)")
         rc = subprocess.run(
-            ["stdbuf", "-eL", "-oL", sys.executable, str(script), "--mode", "baseline"],
+            [
+                "stdbuf",
+                "-eL",
+                "-oL",
+                sys.executable,
+                str(script),
+                "--mode",
+                "baseline",
+            ],
             env=env,
             check=False,
         )
@@ -897,7 +981,15 @@ def main():
         env["CUOPT_BENCHMARK_ARTIFACT"] = str(session_artifact)
         print("\n>>> Process 2/2: session (session enabled, new process)")
         rc = subprocess.run(
-            ["stdbuf", "-eL", "-oL", sys.executable, str(script), "--mode", "session"],
+            [
+                "stdbuf",
+                "-eL",
+                "-oL",
+                sys.executable,
+                str(script),
+                "--mode",
+                "session",
+            ],
             env=env,
             check=False,
         )
@@ -905,10 +997,16 @@ def main():
             sys.exit(rc.returncode)
 
         obj_atol = float(os.environ.get("CUOPT_OBJ_VERIFY_ATOL", "1e-6"))
-        _compare_mode_objectives(baseline_artifact, session_artifact, obj_atol=obj_atol)
+        _compare_mode_objectives(
+            baseline_artifact, session_artifact, obj_atol=obj_atol
+        )
 
-        baseline_bench = json.loads(baseline_artifact.read_text(encoding="utf-8"))
-        session_bench = json.loads(session_artifact.read_text(encoding="utf-8"))
+        baseline_bench = json.loads(
+            baseline_artifact.read_text(encoding="utf-8")
+        )
+        session_bench = json.loads(
+            session_artifact.read_text(encoding="utf-8")
+        )
         delta = baseline_bench["warm_avg_ms"] - session_bench["warm_avg_ms"]
         print("\n" + "=" * 50)
         print("Timing summary (separate processes)")

@@ -50,7 +50,9 @@ os.environ.setdefault("CUOPT_CACHE_PROFILE", "1")
 def _resolve_after_cache_clear(prob, settings, session):
     sol, log_text, profile = solve_with_log(prob, settings, session=session)
     if count_log_matches(log_text, _CLEAR_CACHE_LINE) >= 1:
-        sol, log_text, profile = solve_with_log(prob, settings, session=session)
+        sol, log_text, profile = solve_with_log(
+            prob, settings, session=session
+        )
     return sol, log_text, profile
 
 
@@ -70,9 +72,13 @@ def _case_adat_warm_reuse() -> None:
     assert_optimal(sol_c)
     session = sol_c.lp_solve_session
     perturb_lp_values(prob, xs, c, seed=101)
-    sol_w, warm_log, warm_prof = solve_with_log(prob, settings, session=session)
+    sol_w, warm_log, warm_prof = solve_with_log(
+        prob, settings, session=session
+    )
     assert_optimal(sol_w)
-    assert_warm_symbolic_reuse(cold_log, warm_log, cold_prof, warm_prof, expect_adat=True)
+    assert_warm_symbolic_reuse(
+        cold_log, warm_log, cold_prof, warm_prof, expect_adat=True
+    )
     print(
         f"  cold C07={cold_prof.get('C07', 0):.2f} ms  "
         f"warm C07={warm_prof.get('C07', 0):.2f} ms  "
@@ -88,7 +94,9 @@ def _case_augmented_warm_reuse() -> None:
     assert_optimal(sol_c)
     session = sol_c.lp_solve_session
     perturb_qp_values(prob, xs, c, seed=202)
-    sol_w, warm_log, warm_prof = solve_with_log(prob, settings, session=session)
+    sol_w, warm_log, warm_prof = solve_with_log(
+        prob, settings, session=session
+    )
     assert_optimal(sol_w)
     assert_warm_symbolic_reuse(
         cold_log, warm_log, cold_prof, warm_prof, expect_augmented=True
@@ -108,8 +116,12 @@ def _case_hash_mismatch_add_constraint() -> None:
     session = sol_c.lp_solve_session
     cold_c07 = cold_prof.get("C07", 0.0)
     perturb_lp_values(prob, xs, c, seed=303)
-    prob.addConstraint(LinearExpression([xs[0], xs[1]], [1.0, 1.0], 0.0) <= 5.0)
-    _, warm_log, warm_prof = _resolve_after_cache_clear(prob, settings, session)
+    prob.addConstraint(
+        LinearExpression([xs[0], xs[1]], [1.0, 1.0], 0.0) <= 5.0
+    )
+    _, warm_log, warm_prof = _resolve_after_cache_clear(
+        prob, settings, session
+    )
     assert_full_symbolic_reanalyze(warm_log, warm_prof, cold_c07=cold_c07)
     print(
         f"  warm C07={warm_prof.get('C07', 0):.2f} ms (cold ref={cold_c07:.2f})  "
@@ -125,20 +137,34 @@ def _case_cross_augmented_to_adat() -> None:
     session = sol_qp.lp_solve_session
     prob_lp, xs, c = build_sparse_lp(seed=23)
     settings_adat = session_barrier_settings(session_enabled=True, augmented=0)
-    _, lp_log, lp_prof = _resolve_after_cache_clear(prob_lp, settings_adat, session)
+    _, lp_log, lp_prof = _resolve_after_cache_clear(
+        prob_lp, settings_adat, session
+    )
     assert_full_symbolic_reanalyze(lp_log, lp_prof)
     perturb_lp_values(prob_lp, xs, c, seed=404)
-    _, warm_log, warm_prof = solve_with_log(prob_lp, settings_adat, session=session)
-    assert_warm_symbolic_reuse(lp_log, warm_log, lp_prof, warm_prof, expect_adat=True)
-    print("  augmented session -> ADAT LP re-analyzed, then ADAT warm reuse OK")
+    _, warm_log, warm_prof = solve_with_log(
+        prob_lp, settings_adat, session=session
+    )
+    assert_warm_symbolic_reuse(
+        lp_log, warm_log, lp_prof, warm_prof, expect_adat=True
+    )
+    print(
+        "  augmented session -> ADAT LP re-analyzed, then ADAT warm reuse OK"
+    )
 
 
 def main() -> None:
     cases = [
         ("ADAT session warm reuse", _case_adat_warm_reuse),
         ("Augmented QP warm reuse", _case_augmented_warm_reuse),
-        ("Sparsity mismatch (add constraint)", _case_hash_mismatch_add_constraint),
-        ("Cross-system mismatch (augmented -> ADAT)", _case_cross_augmented_to_adat),
+        (
+            "Sparsity mismatch (add constraint)",
+            _case_hash_mismatch_add_constraint,
+        ),
+        (
+            "Cross-system mismatch (augmented -> ADAT)",
+            _case_cross_augmented_to_adat,
+        ),
     ]
     print("Session cache verification (GPU required)")
     for name, fn in cases:
