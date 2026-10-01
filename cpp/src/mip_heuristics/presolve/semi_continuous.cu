@@ -91,17 +91,18 @@ std::vector<f_t> call_host_bounds_strengthening(const optimization_problem_t<i_t
   csr_matrix_t<i_t, f_t> Arow(1, 1, 1);
   lp_problem.A.to_compressed_row(Arow);
 
-  // convert_user_problem returns an equality-form LP. Empty row_sense makes
-  // bounds_strengthening_t use rhs as both lower and upper row bounds.
-  std::vector<char> row_sense;
-  simplex::bounds_strengthening_t<i_t, f_t> strengthening(lp_problem, Arow, row_sense, var_types);
+  // convert_user_problem returns an equality-form LP, so bounds_strengthening_t uses rhs as both
+  // lower and upper row bounds.
+  simplex::bounds_strengthening_t<i_t, f_t> strengthening;
   std::vector<bool> bounds_changed(lp_problem.num_cols, false);
   for (i_t idx : sc_indices) {
     bounds_changed[idx] = true;
   }
   auto lower = lp_problem.lower;
   auto upper = lp_problem.upper;
-  auto ok    = strengthening.bounds_strengthening(simplex_settings, bounds_changed, lower, upper);
+  strengthening.compute_activities(Arow, lower, upper);
+  auto ok = strengthening.propagate(
+    Arow, var_types, simplex_settings, lp_problem, bounds_changed, lower, upper);
   if (!ok) { return op_problem.get_variable_upper_bounds_host(); }
 
   upper.resize(user_problem.num_cols);

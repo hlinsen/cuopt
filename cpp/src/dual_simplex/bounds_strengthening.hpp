@@ -11,35 +11,102 @@
 
 namespace cuopt::mathematical_optimization::simplex {
 
+struct bounds_strengthening_params {
+  double huge_value               = 1e15;
+  double recompute_factor         = 1e6;
+  double min_relative_improvement = 0.3;
+  double min_improvement_factor   = 1e3;
+};
+
+template <typename i_t, typename f_t>
+struct row_activity_t {
+  f_t max      = 0;
+  f_t max_peak = 0;
+  i_t max_inf  = 0;
+
+  f_t min      = 0;
+  f_t min_peak = 0;
+  i_t min_inf  = 0;
+
+  // Set when cancellation made the incremental sums unreliable. The row is recomputed from scratch
+  // before propagation reads it.
+  bool recompute = false;
+};
+
 template <typename i_t, typename f_t>
 class bounds_strengthening_t {
  public:
   // For pure LP bounds strengthening, var_types should be defaulted (i.e. left empty)
-  bounds_strengthening_t(const lp_problem_t<i_t, f_t>& problem,
-                         const csr_matrix_t<i_t, f_t>& Arow,
-                         const std::vector<char>& row_sense,
-                         const std::vector<variable_type_t>& var_types);
+  bounds_strengthening_t() = default;
 
-  // If bounds_changed is empty, all constraints are scanned for changes.
-  // Otherwise, bounds_changed must be a vector of length n, where n is the number of variables.
-  bool bounds_strengthening(const simplex_solver_settings_t<i_t, f_t>& settings,
-                            const std::vector<bool>& bounds_changed,
-                            std::vector<f_t>& lower_bounds,
-                            std::vector<f_t>& upper_bounds);
+  void compute_row_activity(i_t i,
+                            const csr_matrix_t<i_t, f_t>& Arow,
+                            const std::vector<f_t>& lower,
+                            const std::vector<f_t>& upper);
+  void compute_activities(const csr_matrix_t<i_t, f_t>& Arow,
+                          const std::vector<f_t>& lower,
+                          const std::vector<f_t>& upper);
+
+  void update_activities(i_t var,
+                         f_t old_lb,
+                         f_t new_lb,
+                         f_t old_ub,
+                         f_t new_ub,
+                         const lp_problem_t<i_t, f_t>& lp,
+                         const csr_matrix_t<i_t, f_t>& Arow);
+
+  bool propagate_full(const csr_matrix_t<i_t, f_t>& Arow,
+                      const std::vector<variable_type_t>& var_types,
+                      const simplex_solver_settings_t<i_t, f_t>& settings,
+                      const lp_problem_t<i_t, f_t>& lp,
+                      std::vector<f_t>& lower,
+                      std::vector<f_t>& upper);
+
+  bool propagate(const csr_matrix_t<i_t, f_t>& Arow,
+                 const std::vector<variable_type_t>& var_types,
+                 const simplex_solver_settings_t<i_t, f_t>& settings,
+                 const lp_problem_t<i_t, f_t>& lp,
+                 const std::vector<bool>& bounds_changed,
+                 std::vector<f_t>& lower,
+                 std::vector<f_t>& upper);
+
+  bool propagate(i_t var,
+                 const csr_matrix_t<i_t, f_t>& Arow,
+                 const std::vector<variable_type_t>& var_types,
+                 const simplex_solver_settings_t<i_t, f_t>& settings,
+                 const lp_problem_t<i_t, f_t>& lp,
+                 std::vector<f_t>& lower,
+                 std::vector<f_t>& upper);
 
   size_t last_nnz_processed{0};
 
  private:
-  const csc_matrix_t<i_t, f_t>& A;
-  const csr_matrix_t<i_t, f_t>& Arow;
-  const std::vector<variable_type_t>& var_types;
+  bounds_strengthening_params params;
 
-  std::vector<f_t> lower;
-  std::vector<f_t> upper;
+  std::vector<row_activity_t<i_t, f_t>> row_activities;
+  std::vector<uint8_t> row_queued;
+  std::vector<i_t> row_queue;
 
-  std::vector<f_t> delta_min_activity;
-  std::vector<f_t> delta_max_activity;
-  std::vector<f_t> constraint_lb;
-  std::vector<f_t> constraint_ub;
+  size_t nnz_processed{0};
+
+  bool run_bound_propagation(const csr_matrix_t<i_t, f_t>& Arow,
+                             const std::vector<variable_type_t>& var_types,
+                             const simplex_solver_settings_t<i_t, f_t>& settings,
+                             const lp_problem_t<i_t, f_t>& lp,
+                             std::vector<f_t>& lower,
+                             std::vector<f_t>& upper);
 };
+
+template <typename i_t, typename f_t>
+bool full_bound_strengthening(const csr_matrix_t<i_t, f_t>& Arow,
+                              const std::vector<variable_type_t>& var_types,
+                              const simplex_solver_settings_t<i_t, f_t>& settings,
+                              const lp_problem_t<i_t, f_t>& lp,
+                              std::vector<f_t>& lower,
+                              std::vector<f_t>& upper)
+{
+  bounds_strengthening_t<i_t, f_t> strengthening;
+  return strengthening.propagate_full(Arow, var_types, settings, lp, lower, upper);
+}
+
 }  // namespace cuopt::mathematical_optimization::simplex

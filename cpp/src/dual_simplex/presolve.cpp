@@ -1310,7 +1310,7 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
     // Empty var_types means that all variables are continuous
     bounds_strengthening_t<i_t, f_t> strengthening(problem, Arow, row_sense, {});
     std::vector<bool> bounds_changed(problem.num_cols, true);
-    strengthening.bounds_strengthening(settings, bounds_changed, problem.lower, problem.upper);
+    strengthening.propagate(settings, bounds_changed, problem.lower, problem.upper);
   }
 
   settings.log.debug(

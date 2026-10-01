@@ -64,6 +64,7 @@ class branch_and_bound_worker_t {
   simplex::lp_solution_t<i_t, f_t> leaf_solution;
   std::vector<simplex::variable_status_t> leaf_vstatus;
   std::vector<f_t> leaf_edge_norms;
+  const csr_matrix_t<i_t, f_t>& Arow;
 
   simplex::basis_update_mpf_t<i_t, f_t> basis_factors;
   std::vector<i_t> basic_list;
@@ -131,10 +132,9 @@ class branch_and_bound_worker_t {
       leaf_problem(original_lp),
       leaf_solution(original_lp.num_rows, original_lp.num_cols),
       leaf_vstatus(original_lp.num_cols),
+      Arow(Arow),
       basis_factors(original_lp.num_rows, settings.refactor_frequency),
       basic_list(original_lp.num_rows),
-      nonbasic_list(),
-      node_presolver(leaf_problem, Arow, {}, var_type),
       bounds_changed(original_lp.num_cols, false),
       rng(settings.random_seed + pcgenerator_t::default_seed + rng_offset + worker_id,
           pcgenerator_t::default_stream ^ (worker_id + rng_offset)),
@@ -157,14 +157,39 @@ class branch_and_bound_worker_t {
       leaf_problem.lower = start_lower;
       leaf_problem.upper = start_upper;
       node_ptr->get_variable_bounds(leaf_problem.lower, leaf_problem.upper, bounds_changed);
-
+      node_presolver.compute_activities(Arow, leaf_problem.lower, leaf_problem.upper);
+      return node_presolver.propagate(Arow,
+                                      var_types,
+                                      settings,
+                                      leaf_problem,
+                                      bounds_changed,
+                                      leaf_problem.lower,
+                                      leaf_problem.upper);
     } else {
+      // A root re-solved in place (e.g., the RINS/RENS rounds) already holds its bounds.
+      if (node_ptr->parent == nullptr) { return true; }
+
+      i_t branch_var = node_ptr->branch_var;
+      f_t old_lb     = leaf_problem.lower[branch_var];
+      f_t old_ub     = leaf_problem.upper[branch_var];
       node_ptr->update_branched_variable_bounds(
         leaf_problem.lower, leaf_problem.upper, bounds_changed);
-    }
 
-    return node_presolver.bounds_strengthening(
-      settings, bounds_changed, leaf_problem.lower, leaf_problem.upper);
+      node_presolver.update_activities(branch_var,
+                                       old_lb,
+                                       leaf_problem.lower[branch_var],
+                                       old_ub,
+                                       leaf_problem.upper[branch_var],
+                                       leaf_problem,
+                                       Arow);
+      return node_presolver.propagate(branch_var,
+                                      Arow,
+                                      var_types,
+                                      settings,
+                                      leaf_problem,
+                                      leaf_problem.lower,
+                                      leaf_problem.upper);
+    }
   }
 
   void set_active() { is_active = true; }
@@ -287,8 +312,14 @@ class diving_worker_t : public branch_and_bound_worker_t<i_t, f_t> {
   // Apply bound strengthening to the starting variable bounds
   bool presolve_start_bounds(const simplex::simplex_solver_settings_t<i_t, f_t>& settings)
   {
-    return this->node_presolver.bounds_strengthening(
-      settings, this->bounds_changed, this->start_lower, this->start_upper);
+    this->node_presolver.compute_activities(this->Arow, this->start_lower, this->start_upper);
+    return this->node_presolver.propagate(this->Arow,
+                                          this->var_types,
+                                          settings,
+                                          this->leaf_problem,
+                                          this->bounds_changed,
+                                          this->start_lower,
+                                          this->start_upper);
   }
 
   // Set this node inactive

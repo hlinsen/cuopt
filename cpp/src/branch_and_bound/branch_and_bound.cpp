@@ -1298,7 +1298,10 @@ struct deterministic_bfs_policy_t
       case node_status_t::NUMERICAL: this->worker.record_numerical(node); break;
       default: break;
     }
-    if (status != node_status_t::HAS_CHILDREN) { this->worker.recompute_bounds_and_basis = true; }
+    if (status != node_status_t::HAS_CHILDREN) {
+      this->worker.recompute_bounds = true;
+      this->worker.recompute_basis  = true;
+    }
   }
 
   void on_numerical_issue(mip_node_t<i_t, f_t>* node) override
@@ -1404,9 +1407,11 @@ struct deterministic_diving_policy_t
       if (stack.size() > 1 && stack.front()->depth - stack.back()->depth > max_backtrack_depth) {
         stack.pop_back();
       }
-      this->worker.recompute_bounds_and_basis = false;
+      this->worker.recompute_bounds = false;
+      this->worker.recompute_basis  = false;
     } else {
-      this->worker.recompute_bounds_and_basis = true;
+      this->worker.recompute_bounds = true;
+      this->worker.recompute_basis  = true;
     }
   }
 };
@@ -1573,7 +1578,9 @@ bool branch_and_bound_t<i_t, f_t>::apply_symmetry_reductions(
                                                    node_ptr,
                                                    worker->leaf_problem,
                                                    worker->start_lower,
-                                                   worker->start_upper);
+                                                   worker->start_upper,
+                                                   worker->Arow,
+                                                   worker->node_presolver);
     i_t new_fix   = node_ptr->orbital_fix_zero.size() + node_ptr->orbital_fix_one.size();
     if (new_fix > prev_fix) {
       ++stats.orbital_fixing_nodes;
@@ -1585,8 +1592,8 @@ bool branch_and_bound_t<i_t, f_t>::apply_symmetry_reductions(
   }
 
   if (settings_.symmetry == 2 && worker->lexical_reduction != nullptr) {
-    i_t lexical_reductions_info =
-      worker->lexical_reduction->lexical_reduce(symmetry_, node_ptr, worker->leaf_problem);
+    i_t lexical_reductions_info = worker->lexical_reduction->lexical_reduce(
+      symmetry_, node_ptr, worker->leaf_problem, worker->Arow, worker->node_presolver);
     if (lexical_reductions_info > 0) {
       stats.lexical_reduction_nodes++;
       stats.lexical_reduction_fixings_applied += lexical_reductions_info;
@@ -2667,13 +2674,14 @@ void fix_variable(i_t j,
 }
 
 template <typename i_t, typename f_t>
-i_t apply_mutation(const simplex_solver_settings_t<i_t, f_t>& settings,
+i_t apply_mutation(const csr_matrix_t<i_t, f_t>& Arow,
+                   const simplex_solver_settings_t<i_t, f_t>& settings,
                    const std::vector<f_t>& incumbent,
                    const std::vector<i_t>& integer_list,
                    f_t target_fixrate,
-                   std::vector<f_t>& lower,
-                   std::vector<f_t>& upper,
-                   std::vector<bool>& bounds_changed)
+                   lp_problem_t<i_t, f_t>& lp,
+                   std::vector<bool>& bounds_changed,
+                   bounds_strengthening_t<i_t, f_t>& bounds_strengthening)
 {
   i_t num_fixed         = 0;
   i_t num_bound_changed = 0;
@@ -2681,8 +2689,13 @@ i_t apply_mutation(const simplex_solver_settings_t<i_t, f_t>& settings,
 
   for (i_t j : integer_list) {
     if (num_fixed >= target_num_fixed) break;
-    if (std::abs(lower[j] - upper[j]) <= settings.fixed_tol) continue;
-    fix_variable(j, lower, upper, bounds_changed, std::round(incumbent[j]));
+    if (std::abs(lp.lower[j] - lp.upper[j]) <= settings.fixed_tol) continue;
+    f_t old_lower = lp.lower[j];
+    f_t old_upper = lp.upper[j];
+    f_t fixed_val = std::round(incumbent[j]);
+    fix_variable(j, lp.lower, lp.upper, bounds_changed, fixed_val);
+    bounds_strengthening.update_activities(
+      j, old_lower, lp.lower[j], old_upper, lp.upper[j], lp, Arow);
     num_bound_changed += bounds_changed[j];
     ++num_fixed;
   }
@@ -2691,51 +2704,61 @@ i_t apply_mutation(const simplex_solver_settings_t<i_t, f_t>& settings,
 }
 
 template <typename i_t, typename f_t>
-i_t apply_rens_fixings(const simplex_solver_settings_t<i_t, f_t>& settings,
+i_t apply_rens_fixings(const csr_matrix_t<i_t, f_t>& Arow,
+                       const simplex_solver_settings_t<i_t, f_t>& settings,
                        const std::vector<f_t>& node_solution,
                        const std::vector<i_t>& integer_list,
                        i_t target_num_fixed,
-                       std::vector<f_t>& lower,
-                       std::vector<f_t>& upper,
-                       std::vector<bool>& bounds_changed)
+                       lp_problem_t<i_t, f_t>& lp,
+                       std::vector<bool>& bounds_changed,
+                       bounds_strengthening_t<i_t, f_t>& bounds_strengthening)
 {
   i_t num_fixed         = 0;
   i_t num_bound_changed = 0;
 
   for (i_t j : integer_list) {
     if (num_fixed >= target_num_fixed) break;
-    if (std::abs(lower[j] - upper[j]) <= settings.fixed_tol) continue;
-    f_t old_lower     = lower[j];
-    f_t old_upper     = upper[j];
-    lower[j]          = std::clamp(std::floor(node_solution[j]), old_lower, old_upper);
-    upper[j]          = std::clamp(std::ceil(node_solution[j]), old_lower, old_upper);
-    bounds_changed[j] = lower[j] != old_lower || upper[j] != old_upper;
+    if (std::abs(lp.lower[j] - lp.upper[j]) <= settings.fixed_tol) continue;
+    f_t old_lower     = lp.lower[j];
+    f_t old_upper     = lp.upper[j];
+    lp.lower[j]       = std::clamp(std::floor(node_solution[j]), old_lower, old_upper);
+    lp.upper[j]       = std::clamp(std::ceil(node_solution[j]), old_lower, old_upper);
+    bounds_changed[j] = lp.lower[j] != old_lower || lp.upper[j] != old_upper;
     num_bound_changed += bounds_changed[j];
-    if (std::abs(lower[j] - upper[j]) <= settings.fixed_tol) ++num_fixed;
+    if (bounds_changed[j]) {
+      bounds_strengthening.update_activities(
+        j, old_lower, lp.lower[j], old_upper, lp.upper[j], lp, Arow);
+    }
+    if (std::abs(lp.lower[j] - lp.upper[j]) <= settings.fixed_tol) ++num_fixed;
   }
 
   return num_bound_changed;
 }
 
 template <typename i_t, typename f_t>
-i_t apply_rins_fixings(const simplex_solver_settings_t<i_t, f_t>& settings,
+i_t apply_rins_fixings(const csr_matrix_t<i_t, f_t>& Arow,
+                       const simplex_solver_settings_t<i_t, f_t>& settings,
                        const std::vector<f_t>& current_sol,
                        const std::vector<i_t>& integer_list,
                        const std::vector<f_t>& current_incumbent,
                        f_t target_fixrate,
-                       std::vector<f_t>& lower,
-                       std::vector<f_t>& upper,
-                       std::vector<bool>& bounds_changed)
+                       lp_problem_t<i_t, f_t>& lp,
+                       std::vector<bool>& bounds_changed,
+                       bounds_strengthening_t<i_t, f_t>& bounds_strengthening)
 {
   i_t num_fixed        = 0;
   i_t target_num_fixed = target_fixrate * integer_list.size();
 
   for (i_t j : integer_list) {
     if (num_fixed >= target_num_fixed) break;
-    if (std::abs(lower[j] - upper[j]) <= settings.fixed_tol) continue;
+    if (std::abs(lp.lower[j] - lp.upper[j]) <= settings.fixed_tol) continue;
     if (std::abs(current_sol[j] - current_incumbent[j]) <= settings.integer_tol) {
+      f_t old_lower = lp.lower[j];
+      f_t old_upper = lp.upper[j];
       f_t fixed_val = std::round(current_sol[j]);
-      fix_variable(j, lower, upper, bounds_changed, fixed_val);
+      fix_variable(j, lp.lower, lp.upper, bounds_changed, fixed_val);
+      bounds_strengthening.update_activities(
+        j, old_lower, lp.lower[j], old_upper, lp.upper[j], lp, Arow);
       ++num_fixed;
     }
   }
@@ -2744,19 +2767,20 @@ i_t apply_rins_fixings(const simplex_solver_settings_t<i_t, f_t>& settings,
 }
 
 template <typename i_t, typename f_t>
-i_t extend_variable_fixings(const simplex_solver_settings_t<i_t, f_t>& settings,
+i_t extend_variable_fixings(const csr_matrix_t<i_t, f_t>& Arow,
+                            const simplex_solver_settings_t<i_t, f_t>& settings,
                             const std::vector<f_t>& obj_coeffs,
                             const std::vector<i_t>& fractional,
                             const std::vector<f_t>& current_sol,
                             const std::vector<f_t>& root_solution,
                             i_t target_num_fixed,
-                            std::vector<f_t>& lower,
-                            std::vector<f_t>& upper,
-                            std::vector<bool>& bounds_changed)
+                            lp_problem_t<i_t, f_t>& lp,
+                            std::vector<bool>& bounds_changed,
+                            bounds_strengthening_t<i_t, f_t>& bounds_strengthening)
 {
   std::vector<std::tuple<f_t, i_t, f_t>> candidates;
   for (i_t j : fractional) {
-    if (std::abs(lower[j] - upper[j]) <= settings.fixed_tol) { continue; }
+    if (std::abs(lp.lower[j] - lp.upper[j]) <= settings.fixed_tol) { continue; }
 
     f_t root_change = current_sol[j] - root_solution[j];
     f_t obj_coeff   = obj_coeffs[j];
@@ -2787,7 +2811,11 @@ i_t extend_variable_fixings(const simplex_solver_settings_t<i_t, f_t>& settings,
   for (auto [dist, j, fixed_val] : candidates) {
     if (num_fixed >= target_num_fixed) break;
 
-    fix_variable(j, lower, upper, bounds_changed, fixed_val);
+    f_t old_lower = lp.lower[j];
+    f_t old_upper = lp.upper[j];
+    fix_variable(j, lp.lower, lp.upper, bounds_changed, fixed_val);
+    bounds_strengthening.update_activities(
+      j, old_lower, lp.lower[j], old_upper, lp.upper[j], lp, Arow);
     ++num_fixed;
 
     // Limit the amount of fixing to the current LP.
@@ -2835,6 +2863,7 @@ void branch_and_bound_t<i_t, f_t>::mutation(diving_worker_t<i_t, f_t>* worker,
   std::vector<bool>& bounds_changed = worker->bounds_changed;
 
   std::fill(bounds_changed.begin(), bounds_changed.end(), false);
+  worker->node_presolver.compute_activities(worker->Arow, lower, upper);
 
   std::vector<i_t> integer_list;
   get_unfixed_integer_variables(
@@ -2845,16 +2874,22 @@ void branch_and_bound_t<i_t, f_t>::mutation(diving_worker_t<i_t, f_t>* worker,
     submip_get_max_fixrate(mutation_stats_, submip_settings.submip_settings, worker->rng);
   f_t fixrate = 0;
 
-  apply_mutation(submip_settings,
+  apply_mutation(worker->Arow,
+                 submip_settings,
                  worker->current_incumbent,
                  integer_list,
                  target_fixrate,
-                 lower,
-                 upper,
-                 bounds_changed);
-  bool is_feasible =
-    worker->node_presolver.bounds_strengthening(settings_, bounds_changed, lower, upper);
-  fixrate = calculate_fixrate(integer_list, lower, upper, settings_.fixed_tol);
+                 worker->leaf_problem,
+                 bounds_changed,
+                 worker->node_presolver);
+  bool is_feasible = worker->node_presolver.propagate(worker->Arow,
+                                                      worker->var_types,
+                                                      submip_settings,
+                                                      worker->leaf_problem,
+                                                      bounds_changed,
+                                                      lower,
+                                                      upper);
+  fixrate          = calculate_fixrate(integer_list, lower, upper, settings_.fixed_tol);
 
   DEBUG_SUBMIP("{} fixed variables = {:.0f} ({:.2f}), target fixrate = {} ({:.2f})",
                submip_settings.log.log_prefix,
@@ -2968,6 +3003,7 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
   std::vector<f_t>& current_sol     = worker->leaf_solution.x;
 
   std::fill(bounds_changed.begin(), bounds_changed.end(), false);
+  worker->node_presolver.compute_activities(worker->Arow, lower, upper);
 
   std::vector<i_t> fractional;
   i_t num_frac = fractional_variables(settings_, current_sol, worker->var_types, fractional);
@@ -2999,14 +3035,15 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
       // RINS neighbourhood: Fix all the integer variables where the current solution matches the
       // incumbent. We are using the `max_fixrate` here to allow RINS to fix all integer variables
       // that it can within our budget.
-      num_bound_changed = apply_rins_fixings(settings_,
+      num_bound_changed = apply_rins_fixings(worker->Arow,
+                                             settings_,
                                              current_sol,
                                              integer_list,
                                              worker->current_incumbent,
                                              max_fixrate - prev_fixrate,
-                                             lower,
-                                             upper,
-                                             bounds_changed);
+                                             worker->leaf_problem,
+                                             bounds_changed,
+                                             worker->node_presolver);
 
       // The RINS neighbourhood ran dry. If it is already tight enough, take it rather than
       // diluting it with fixings that do not agree with the incumbent.
@@ -3025,8 +3062,14 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
         }
       }
 
-      num_bound_changed = apply_rens_fixings(
-        settings_, current_sol, integer_list, round_target, lower, upper, bounds_changed);
+      num_bound_changed = apply_rens_fixings(worker->Arow,
+                                             settings_,
+                                             current_sol,
+                                             integer_list,
+                                             round_target,
+                                             worker->leaf_problem,
+                                             bounds_changed,
+                                             worker->node_presolver);
     }
 
     // Even considering the entire integer list, we were unable to fix a single variable in this
@@ -3042,15 +3085,16 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
         }
       }
 
-      num_bound_changed = extend_variable_fixings(settings_,
+      num_bound_changed = extend_variable_fixings(worker->Arow,
+                                                  settings_,
                                                   worker->leaf_problem.objective,
                                                   fractional,
                                                   current_sol,
                                                   worker->root_solution,
                                                   round_target,
-                                                  lower,
-                                                  upper,
-                                                  bounds_changed);
+                                                  worker->leaf_problem,
+                                                  bounds_changed,
+                                                  worker->node_presolver);
 
       // Even sweep over all integer variables, we exhausted all variables that can be fixed.
       // If this is the case, then tries to solve the sub-mip anyway.
@@ -3065,9 +3109,14 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
       break;
     }
 
-    bool is_feasible =
-      worker->node_presolver.bounds_strengthening(settings_, bounds_changed, lower, upper);
-    fixrate = calculate_fixrate(integer_list, lower, upper, settings_.fixed_tol);
+    bool is_feasible = worker->node_presolver.propagate(worker->Arow,
+                                                        worker->var_types,
+                                                        submip_settings,
+                                                        worker->leaf_problem,
+                                                        bounds_changed,
+                                                        lower,
+                                                        upper);
+    fixrate          = calculate_fixrate(integer_list, lower, upper, settings_.fixed_tol);
 
     DEBUG_SUBMIP(
       "{}Round {}: fixed {:.0f} ({:.2f}) -> {:.0f} ({:.2f}) variables. target round fixrate = {} "
@@ -3737,11 +3786,10 @@ auto branch_and_bound_t<i_t, f_t>::do_cut_pass(
   original_lp_.A.to_compressed_row(Arow_);
 
   f_t node_presolve_start_time = tic();
-  bounds_strengthening_t<i_t, f_t> node_presolve(original_lp_, Arow_, row_sense, var_types_);
-  std::vector<f_t> new_lower = original_lp_.lower;
-  std::vector<f_t> new_upper = original_lp_.upper;
-  bool feasible =
-    node_presolve.bounds_strengthening(settings_, bounds_changed, new_lower, new_upper);
+  std::vector<f_t> new_lower   = original_lp_.lower;
+  std::vector<f_t> new_upper   = original_lp_.upper;
+  bool feasible                = simplex::full_bound_strengthening(
+    Arow_, var_types_, settings_, original_lp_, new_lower, new_upper);
   mutex_original_lp_.lock();
   original_lp_.lower = new_lower;
   original_lp_.upper = new_upper;
@@ -4361,13 +4409,11 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       std::vector<bool> bounds_changed(original_lp_.num_cols, true);
       std::vector<char> row_sense;
 
-      bounds_strengthening_t<i_t, f_t> node_presolve(original_lp_, Arow_, row_sense, var_types_);
-
       mutex_original_lp_.lock();
       original_lp_.lower = lower_bounds;
       original_lp_.upper = upper_bounds;
-      bool feasible      = node_presolve.bounds_strengthening(
-        settings_, bounds_changed, original_lp_.lower, original_lp_.upper);
+      bool feasible      = simplex::full_bound_strengthening(
+        Arow_, var_types_, settings_, original_lp_, original_lp_.lower, original_lp_.upper);
       mutex_original_lp_.unlock();
       if (!feasible) {
         settings_.log.printf("Bound strengthening failed\n");
@@ -4842,8 +4888,9 @@ void branch_and_bound_t<i_t, f_t>::run_deterministic_bfs_loop(
         continue;
       }
 
-      bool is_child                     = (node->parent == worker.last_solved_node);
-      worker.recompute_bounds_and_basis = !is_child;
+      bool is_child           = (node->parent == worker.last_solved_node);
+      worker.recompute_bounds = !is_child;
+      worker.recompute_basis  = !is_child;
 
       node_status_t status = solve_node_deterministic(worker, node, search_tree);
 
@@ -5031,16 +5078,6 @@ node_status_t branch_and_bound_t<i_t, f_t>::solve_node_deterministic(
 
   std::fill(worker.bounds_changed.begin(), worker.bounds_changed.end(), false);
 
-  if (worker.recompute_bounds_and_basis) {
-    worker.leaf_problem.lower = original_lp_.lower;
-    worker.leaf_problem.upper = original_lp_.upper;
-    node_ptr->get_variable_bounds(
-      worker.leaf_problem.lower, worker.leaf_problem.upper, worker.bounds_changed);
-  } else {
-    node_ptr->update_branched_variable_bounds(
-      worker.leaf_problem.lower, worker.leaf_problem.upper, worker.bounds_changed);
-  }
-
   double remaining_time = settings_.time_limit - toc(exploration_stats_.start_time);
 
   // Bounds strengthening
@@ -5052,17 +5089,11 @@ node_status_t branch_and_bound_t<i_t, f_t>::solve_node_deterministic(
   lp_settings.time_limit    = remaining_time;
   lp_settings.scale_columns = false;
 
-  bool feasible = true;
-#ifndef DETERMINISM_DISABLE_BOUNDS_STRENGTHENING
-  raft::common::nvtx::range scope_bs("BB::bound_strengthening");
-  feasible = worker.node_presolver.bounds_strengthening(
-    lp_settings, worker.bounds_changed, worker.leaf_problem.lower, worker.leaf_problem.upper);
-
+  bool feasible = worker.set_lp_variable_bounds(node_ptr, settings_);
   if (settings_.deterministic) {
     // TEMP APPROXIMATION;
     worker.work_context.record_work_sync_on_horizon(worker.node_presolver.last_nnz_processed / 1e8);
   }
-#endif
 
   if (!feasible) {
     node_ptr->lower_bound = std::numeric_limits<f_t>::infinity();
@@ -5070,7 +5101,8 @@ node_status_t branch_and_bound_t<i_t, f_t>::solve_node_deterministic(
     worker.record_infeasible(node_ptr);
     --exploration_stats_.nodes_unexplored;
     ++exploration_stats_.nodes_explored;
-    worker.recompute_bounds_and_basis = true;
+    worker.recompute_bounds = true;
+    worker.recompute_basis  = true;
     return node_status_t::INFEASIBLE;
   }
 
@@ -5085,7 +5117,7 @@ node_status_t branch_and_bound_t<i_t, f_t>::solve_node_deterministic(
 
   dual_status_t lp_status = dual_phase2_with_advanced_basis(2,
                                                             0,
-                                                            worker.recompute_bounds_and_basis,
+                                                            worker.recompute_basis,
                                                             lp_start_time,
                                                             worker.leaf_problem,
                                                             lp_settings,
@@ -5620,14 +5652,15 @@ void branch_and_bound_t<i_t, f_t>::deterministic_dive(
 {
   raft::common::nvtx::range scope("BB::deterministic_dive");
 
-  worker.dive_lower = std::move(entry.resolved_lower);
-  worker.dive_upper = std::move(entry.resolved_upper);
+  worker.start_lower = std::move(entry.resolved_lower);
+  worker.start_upper = std::move(entry.resolved_upper);
 
-  const i_t max_nodes_per_dive      = settings_.diving_settings.node_limit;
-  const i_t max_backtrack_depth     = settings_.diving_settings.backtrack_limit;
-  i_t nodes_this_dive               = 0;
-  worker.lp_iters_this_dive         = 0;
-  worker.recompute_bounds_and_basis = true;
+  const i_t max_nodes_per_dive  = settings_.diving_settings.node_limit;
+  const i_t max_backtrack_depth = settings_.diving_settings.backtrack_limit;
+  i_t nodes_this_dive           = 0;
+  worker.lp_iters_this_dive     = 0;
+  worker.recompute_bounds       = true;
+  worker.recompute_basis        = true;
 
   // Create local search tree for the dive
   search_tree_t<i_t, f_t> dive_tree(std::move(entry.node));
@@ -5641,21 +5674,9 @@ void branch_and_bound_t<i_t, f_t>::deterministic_dive(
 
     // Prune check using snapshot upper bound
     if (node_ptr->lower_bound > worker.local_upper_bound) {
-      worker.recompute_bounds_and_basis = true;
+      worker.recompute_bounds = true;
+      worker.recompute_basis  = true;
       continue;
-    }
-
-    // Setup bounds for this node
-    std::fill(worker.bounds_changed.begin(), worker.bounds_changed.end(), false);
-
-    if (worker.recompute_bounds_and_basis) {
-      worker.leaf_problem.lower = worker.dive_lower;
-      worker.leaf_problem.upper = worker.dive_upper;
-      node_ptr->get_variable_bounds(
-        worker.leaf_problem.lower, worker.leaf_problem.upper, worker.bounds_changed);
-    } else {
-      node_ptr->update_branched_variable_bounds(
-        worker.leaf_problem.lower, worker.leaf_problem.upper, worker.bounds_changed);
     }
 
     double remaining_time = settings_.time_limit - toc(exploration_stats_.start_time);
@@ -5669,9 +5690,7 @@ void branch_and_bound_t<i_t, f_t>::deterministic_dive(
     lp_settings.time_limit    = remaining_time;
     lp_settings.scale_columns = false;
 
-#ifndef DETERMINISM_DISABLE_BOUNDS_STRENGTHENING
-    bool feasible = worker.node_presolver.bounds_strengthening(
-      lp_settings, worker.bounds_changed, worker.leaf_problem.lower, worker.leaf_problem.upper);
+    bool feasible = worker.set_lp_variable_bounds(node_ptr, settings_);
 
     if (settings_.deterministic) {
       // TEMP APPROXIMATION;
@@ -5680,17 +5699,15 @@ void branch_and_bound_t<i_t, f_t>::deterministic_dive(
     }
 
     if (!feasible) {
-      worker.recompute_bounds_and_basis = true;
+      worker.recompute_bounds = true;
+      worker.recompute_basis  = true;
       continue;
     }
-#endif
 
-    {
-      f_t factor                  = settings_.diving_settings.iteration_limit_factor;
-      i_t max_iter                = (i_t)(factor * worker.total_lp_iters_snapshot);
-      lp_settings.iteration_limit = max_iter - worker.lp_iters_this_dive;
-      if (lp_settings.iteration_limit <= 0) { break; }
-    }
+    f_t factor                  = settings_.diving_settings.iteration_limit_factor;
+    i_t max_iter                = (i_t)(factor * worker.total_lp_iters_snapshot);
+    lp_settings.iteration_limit = max_iter - worker.lp_iters_this_dive;
+    if (lp_settings.iteration_limit <= 0) { break; }
 
     // Solve LP relaxation
     worker.leaf_solution.resize(worker.leaf_problem.num_rows, worker.leaf_problem.num_cols);
@@ -5703,7 +5720,7 @@ void branch_and_bound_t<i_t, f_t>::deterministic_dive(
     decompress_vstatus(node_ptr->packed_vstatus, worker.leaf_problem.num_cols, worker.leaf_vstatus);
     dual_status_t lp_status = dual_phase2_with_advanced_basis(2,
                                                               0,
-                                                              worker.recompute_bounds_and_basis,
+                                                              worker.recompute_basis,
                                                               lp_start_time,
                                                               worker.leaf_problem,
                                                               lp_settings,
