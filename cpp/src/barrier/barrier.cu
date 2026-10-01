@@ -2317,6 +2317,8 @@ class iteration_data_t {
   f_t dual_residual_norm_save;
   f_t complementarity_residual_norm_save;
 
+  bool use_high_accuracy_ir = false;
+
   dense_vector_t<i_t, f_t> diag;
   pinned_dense_vector_t<i_t, f_t> inv_diag;
   dense_vector_t<i_t, f_t> inv_sqrt_diag;
@@ -2713,7 +2715,8 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     } op(data);
 
     if (settings.barrier_iterative_refinement != barrier_iterative_refinement_t::Off) {
-      const f_t ir_tol = data.has_sparse_cones() ? f_t(1e-12) : f_t(1e-8);
+      const f_t ir_tol =
+        (data.has_sparse_cones() || data.use_high_accuracy_ir) ? f_t(1e-12) : f_t(1e-8);
 
       const i_t internal_method =
         (settings.barrier_iterative_refinement == barrier_iterative_refinement_t::FixedPoint) ? 0
@@ -3316,7 +3319,8 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
     } op(data);
     if (settings.barrier_iterative_refinement != barrier_iterative_refinement_t::Off) {
       raft::common::nvtx::range fun_scope("Barrier: iterative_refinement");
-      const f_t ir_tol = data.has_sparse_cones() ? f_t(1e-12) : f_t(1e-8);
+      const f_t ir_tol =
+        (data.has_sparse_cones() || data.use_high_accuracy_ir) ? f_t(1e-12) : f_t(1e-8);
 
       const i_t internal_method =
         (settings.barrier_iterative_refinement == barrier_iterative_refinement_t::FixedPoint) ? 0
@@ -4624,14 +4628,13 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
                                             primal_objective,
                                             dual_objective);
     f_t user_primal_objective = compute_user_objective(lp, primal_objective);
+    f_t user_dual_objective   = compute_user_objective(lp, dual_objective);
 
     f_t relative_primal_residual = primal_residual_norm / (1.0 + norm_b);
     f_t relative_dual_residual   = dual_residual_norm / (1.0 + norm_c);
     f_t relative_complementarity_residual =
       complementarity_residual_norm /
       (1.0 + std::min(std::abs(user_primal_objective), std::abs(primal_objective)));
-
-    f_t user_dual_objective = compute_user_objective(lp, dual_objective);
 
     f_t objective_gap, relative_objective_gap;
     compute_objective_gap(
@@ -4796,6 +4799,11 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
 
       compute_objective_gap(
         lp, primal_objective, dual_objective, objective_gap, relative_objective_gap);
+
+      if (data.has_cones() && !data.use_high_accuracy_ir && relative_primal_residual < 1e-6 &&
+          relative_dual_residual < 1e-6 && relative_complementarity_residual < 1e-6) {
+        data.use_high_accuracy_ir = true;
+      }
 
       if (relative_primal_residual < settings.barrier_relaxed_feasibility_tol &&
           relative_dual_residual < settings.barrier_relaxed_optimality_tol &&

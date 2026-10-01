@@ -58,7 +58,7 @@ template <typename i_t, typename f_t, typename T>
 f_t iterative_refinement_fixed_point(T& op,
                                      const rmm::device_uvector<f_t>& b,
                                      rmm::device_uvector<f_t>& x,
-                                     f_t tol = 1e-8)
+                                     f_t tol)
 {
   rmm::device_uvector<f_t> x_sav(x, x.stream());
 
@@ -125,7 +125,7 @@ template <typename i_t, typename f_t, typename T>
 f_t iterative_refinement_gmres(T& op,
                                const rmm::device_uvector<f_t>& b,
                                rmm::device_uvector<f_t>& x,
-                               f_t tol = 1e-8)
+                               f_t tol)
 {
   // Parameters
   // Ideally, we do not need to restart here. But having restarts helps as a checkpoint to get
