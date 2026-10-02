@@ -448,6 +448,11 @@ Barrier Iterative Refinement
 * ``0`` (``CUOPT_BARRIER_IR_OFF``): Disable iterative refinement.
 * ``1`` (``CUOPT_BARRIER_IR_GMRES``): Restarted GMRES (default).
 * ``2`` (``CUOPT_BARRIER_IR_FIXED_POINT``): Fixed-point residual-correction.
+* ``3`` (``CUOPT_BARRIER_IR_AUTO_FIXED_POINT``): Start each solve without refinement and switch
+  fixed-point refinement on once the iterate nears convergence (residuals and complementarity
+  within a few orders of magnitude of their tolerances), or once to retry a step that made
+  insufficient progress.
+* ``4`` (``CUOPT_BARRIER_IR_AUTO_GMRES``): As ``3``, switching GMRES refinement on instead.
 
 .. note:: The default value is ``1`` (GMRES).
 

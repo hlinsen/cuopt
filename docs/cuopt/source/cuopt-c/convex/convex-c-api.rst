@@ -266,6 +266,8 @@ These constants are used to configure `CUOPT_BARRIER_ITERATIVE_REFINEMENT` via :
 .. doxygendefine:: CUOPT_BARRIER_IR_OFF
 .. doxygendefine:: CUOPT_BARRIER_IR_GMRES
 .. doxygendefine:: CUOPT_BARRIER_IR_FIXED_POINT
+.. doxygendefine:: CUOPT_BARRIER_IR_AUTO_FIXED_POINT
+.. doxygendefine:: CUOPT_BARRIER_IR_AUTO_GMRES
 
 
 Warm Start

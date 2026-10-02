@@ -192,7 +192,8 @@ struct simplex_solver_settings_t {
   bool barrier;                   // true to use barrier method, false to use dual simplex method
   bool deterministic;  // true to use B&B deterministic mode, false to use non-deterministic mode
   bool eliminate_dense_columns;      // true to eliminate dense columns from A*D*A^T
-  i_t barrier_iterative_refinement;  // 0: off, 1: gmres (default), 2: fixed_point
+  i_t barrier_iterative_refinement;  // 0: off, 1: gmres (default), 2: fixed_point,
+                                     // 3: auto fixed_point, 4: auto gmres
   bool
     barrier_csr_ir_matvec;  // true to use a single cuSPARSE SpMV over the unperturbed augmented
                             // CSR for the IR matvec, instead of the matrix-free augmented_multiply

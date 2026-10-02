@@ -149,11 +149,16 @@ enum presolver_t : int {
  * Off: Disable iterative refinement.
  * GMRES: Use restarted GMRES (default).
  * FixedPoint: Use a fixed-point residual-correction loop.
+ * AutoFixedPoint: Start each solve without refinement and switch fixed-point refinement on
+ *                 once the iterate nears convergence or a step makes insufficient progress.
+ * AutoGMRES: As AutoFixedPoint, switching GMRES refinement on instead.
  */
 enum barrier_iterative_refinement_t : int {
-  Off        = CUOPT_BARRIER_IR_OFF,
-  GMRES      = CUOPT_BARRIER_IR_GMRES,
-  FixedPoint = CUOPT_BARRIER_IR_FIXED_POINT
+  Off            = CUOPT_BARRIER_IR_OFF,
+  GMRES          = CUOPT_BARRIER_IR_GMRES,
+  FixedPoint     = CUOPT_BARRIER_IR_FIXED_POINT,
+  AutoFixedPoint = CUOPT_BARRIER_IR_AUTO_FIXED_POINT,
+  AutoGMRES      = CUOPT_BARRIER_IR_AUTO_GMRES
 };
 
 /**

@@ -666,6 +666,67 @@ TEST(barrier, mixed_linear_and_soc_block)
   EXPECT_NEAR(std::abs(solution.x[3]), 0.0, 1e-4);
 }
 
+TEST(barrier, mixed_linear_and_soc_block_every_iterative_refinement_mode)
+{
+  // mixed_linear_and_soc_block solved with each barrier_iterative_refinement mode.
+  raft::handle_t handle{};
+  init_handler(&handle);
+
+  user_problem_t<int, double> user_problem(&handle);
+
+  constexpr int m  = 2;
+  constexpr int n  = 4;
+  constexpr int nz = 3;
+
+  user_problem.num_rows  = m;
+  user_problem.num_cols  = n;
+  user_problem.objective = {1.0, 0.0, 0.0, 0.0};
+
+  user_problem.A.m      = m;
+  user_problem.A.n      = n;
+  user_problem.A.nz_max = nz;
+  user_problem.A.reallocate(nz);
+  user_problem.A.col_start = {0, 1, 2, 3, 3};
+  user_problem.A.i         = {0, 0, 1};
+  user_problem.A.x         = {1.0, -1.0, 1.0};
+
+  user_problem.rhs       = {0.0, 1.0};
+  user_problem.row_sense = {'E', 'E'};
+
+  user_problem.lower = {0.0, 0.0, 0.0, 0.0};
+  user_problem.upper = {inf, inf, inf, inf};
+
+  user_problem.num_range_rows = 0;
+  user_problem.problem_name   = "mixed_linear_and_soc_block_ir_modes";
+
+  user_problem.cone_var_start         = 1;
+  user_problem.second_order_cone_dims = {3};
+  user_problem.var_types.assign(n, variable_type_t::CONTINUOUS);
+
+  for (int mode : {CUOPT_BARRIER_IR_OFF,
+                   CUOPT_BARRIER_IR_GMRES,
+                   CUOPT_BARRIER_IR_FIXED_POINT,
+                   CUOPT_BARRIER_IR_AUTO_FIXED_POINT,
+                   CUOPT_BARRIER_IR_AUTO_GMRES}) {
+    SCOPED_TRACE(mode);
+    simplex_solver_settings_t<int, double> settings;
+    settings.barrier                      = true;
+    settings.barrier_presolve             = true;
+    settings.dualize                      = 0;
+    settings.barrier_iterative_refinement = mode;
+
+    lp_solution_t<int, double> solution(m, n);
+    auto status = solve_linear_program_with_barrier(user_problem, settings, solution);
+
+    EXPECT_EQ(status, lp_status_t::OPTIMAL);
+    EXPECT_NEAR(solution.objective, 1.0, 1e-4);
+    EXPECT_NEAR(solution.x[0], 1.0, 1e-4);
+    EXPECT_NEAR(solution.x[1], 1.0, 1e-4);
+    EXPECT_NEAR(solution.x[2], 1.0, 1e-4);
+    EXPECT_NEAR(std::abs(solution.x[3]), 0.0, 1e-4);
+  }
+}
+
 TEST(barrier, mixed_linear_and_soc_tail_coupling)
 {
   // Variables ordered as [l | t, u, v], where (t, u, v) \in Q^3.

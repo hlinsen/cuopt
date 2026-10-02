@@ -182,7 +182,7 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_FOLDING, &pdlp_settings.folding, -1, 1, -1},
     {CUOPT_DUALIZE, &pdlp_settings.dualize, -1, 1, -1},
     {CUOPT_ORDERING, &pdlp_settings.ordering, -1, 1, -1},
-    {CUOPT_BARRIER_ITERATIVE_REFINEMENT, &pdlp_settings.barrier_iterative_refinement, CUOPT_BARRIER_IR_OFF, CUOPT_BARRIER_IR_FIXED_POINT, CUOPT_BARRIER_IR_GMRES},
+    {CUOPT_BARRIER_ITERATIVE_REFINEMENT, &pdlp_settings.barrier_iterative_refinement, CUOPT_BARRIER_IR_OFF, CUOPT_BARRIER_IR_AUTO_GMRES, CUOPT_BARRIER_IR_GMRES},
     {CUOPT_DUAL_SIMPLEX_INITIAL_PERTURBATION, &pdlp_settings.initial_perturbation, -1, 1, -1},
     {CUOPT_DUAL_SIMPLEX_REMOVE_PERTURBATION, &pdlp_settings.remove_perturbation, -1, 1, -1},
     {CUOPT_PRIMAL_SIMPLEX_PRICING, &pdlp_settings.primal_pricing, 0, 1, 1},

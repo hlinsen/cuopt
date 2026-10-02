@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <cuopt/mathematical_optimization/constants.h>
+#include <barrier/auto_iterative_refinement.hpp>
 #include <cuopt/mathematical_optimization/pdlp/solver_settings.hpp>
 #include <cuopt/mathematical_optimization/solve.hpp>
 #include <dual_simplex/presolve.hpp>
@@ -268,6 +269,93 @@ TEST(barrier, qplib_8515_ruiz_forced_off)
   auto solution = solve_lp(&handle, mps_data, settings);
 
   EXPECT_EQ(solution.get_termination_status(), pdlp_termination_status_t::IterationLimit);
+}
+
+using barrier::auto_iterative_refinement_t;
+using auto_ir_state_t = auto_iterative_refinement_t<int, double>::state_t;
+
+static simplex_solver_settings_t<int, double> auto_ir_settings()
+{
+  simplex_solver_settings_t<int, double> settings;
+  settings.barrier_relative_feasibility_tol     = 1e-8;
+  settings.barrier_relative_optimality_tol      = 1e-8;
+  settings.barrier_relative_complementarity_tol = 1e-8;
+  return settings;
+}
+
+// One iterate through update() and record(), as the barrier loop does.
+static bool auto_ir_step(auto_iterative_refinement_t<int, double>& ir,
+                         int iter,
+                         double primal_residual,
+                         double dual_residual,
+                         double gap,
+                         double step_length = 0.9)
+{
+  const bool turned_on =
+    ir.update(auto_ir_settings(), iter, primal_residual, dual_residual, gap, step_length);
+  ir.record(primal_residual, dual_residual, gap);
+  return turned_on;
+}
+
+TEST(barrier_auto_iterative_refinement, stays_off_away_from_convergence)
+{
+  auto_iterative_refinement_t<int, double> ir;
+  EXPECT_FALSE(auto_ir_step(ir, 0, 1e-1, 1e1, 1e-1));
+  EXPECT_FALSE(auto_ir_step(ir, 1, 1e-3, 1e-3, 1e-3));  // gap above 1e4 * tol
+  EXPECT_FALSE(auto_ir_step(ir, 2, 1e-1, 1e-3, 1e-5));  // primal residual above 1e6 * tol
+  EXPECT_EQ(ir.state, auto_ir_state_t::Off);
+}
+
+TEST(barrier_auto_iterative_refinement, turns_on_after_one_watched_iteration)
+{
+  auto_iterative_refinement_t<int, double> ir;
+  EXPECT_FALSE(auto_ir_step(ir, 5, 1e-3, 1e-3, 5e-5));
+  EXPECT_EQ(ir.state, auto_ir_state_t::Watch);
+  EXPECT_TRUE(auto_ir_step(ir, 6, 1e-3, 1e-3, 5e-5));
+  EXPECT_TRUE(ir.on());
+  // Stays on, even if the iterate moves away again
+  EXPECT_FALSE(auto_ir_step(ir, 7, 1e-1, 1e1, 1e-1));
+  EXPECT_TRUE(ir.on());
+}
+
+TEST(barrier_auto_iterative_refinement, turns_on_immediately_near_tolerances)
+{
+  auto_iterative_refinement_t<int, double> ir;
+  EXPECT_TRUE(auto_ir_step(ir, 5, 1e-5, 1e-5, 1e-6));
+}
+
+TEST(barrier_auto_iterative_refinement, turns_on_when_a_residual_regresses)
+{
+  auto_iterative_refinement_t<int, double> watching;
+  EXPECT_FALSE(auto_ir_step(watching, 4, 1e-3, 1e-3, 1e-3));
+  EXPECT_FALSE(auto_ir_step(watching, 5, 1e-3, 1e-3, 5e-6));
+  EXPECT_EQ(watching.state, auto_ir_state_t::Watch);
+
+  auto_iterative_refinement_t<int, double> regressed;
+  EXPECT_FALSE(auto_ir_step(regressed, 4, 1e-3, 1e-3, 1e-3));
+  EXPECT_TRUE(auto_ir_step(regressed, 5, 1e-3, 3e-3, 5e-6));  // dual residual more than doubled
+}
+
+TEST(barrier_auto_iterative_refinement, turns_on_after_a_small_step)
+{
+  auto_iterative_refinement_t<int, double> ir;
+  EXPECT_FALSE(auto_ir_step(ir, 4, 1e-3, 1e-3, 1e-3));
+  EXPECT_TRUE(auto_ir_step(ir, 5, 1e-3, 1e-3, 5e-6, 0.01));
+}
+
+TEST(barrier_auto_iterative_refinement, insufficient_progress)
+{
+  const auto settings = auto_ir_settings();
+  auto_iterative_refinement_t<int, double> ir;
+
+  ir.record(1e-6, 1e-6, 1e-9);  // previous gap below tolerance
+  EXPECT_TRUE(ir.insufficient_progress(settings, 5, 1e-6, 2e-6));
+  EXPECT_FALSE(ir.insufficient_progress(settings, 5, 1e-6, 1e-6));  // no residual got worse
+  EXPECT_FALSE(ir.insufficient_progress(settings, 1, 1e-6, 2e-6));  // too early
+
+  ir.record(1e-3, 1e-3, 1e-3);
+  EXPECT_FALSE(ir.insufficient_progress(settings, 5, 1e-3, 2e-3));  // worse, but under 100x
+  EXPECT_TRUE(ir.insufficient_progress(settings, 5, 1e-3, 2e-1));
 }
 
 }  // namespace cuopt::mathematical_optimization::simplex::test

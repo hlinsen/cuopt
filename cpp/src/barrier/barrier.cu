@@ -5,6 +5,7 @@
  */
 /* clang-format on */
 
+#include <barrier/auto_iterative_refinement.hpp>
 #include <barrier/barrier.hpp>
 
 #include <barrier/conjugate_gradient.hpp>
@@ -2318,6 +2319,33 @@ class iteration_data_t {
   f_t complementarity_residual_norm_save;
 
   bool use_high_accuracy_ir = false;
+  auto_iterative_refinement_t<i_t, f_t> auto_ir;
+
+  // AutoFixedPoint / AutoGMRES: refinement switched on by auto_ir
+  bool auto_refinement() const
+  {
+    return settings_.barrier_iterative_refinement ==
+             barrier_iterative_refinement_t::AutoFixedPoint ||
+           settings_.barrier_iterative_refinement == barrier_iterative_refinement_t::AutoGMRES;
+  }
+
+  // Whether KKT solves are refined: always for GMRES / FixedPoint, for the auto modes once on.
+  bool refine_kkt_solves() const
+  {
+    if (settings_.barrier_iterative_refinement == barrier_iterative_refinement_t::Off) {
+      return false;
+    }
+    return !auto_refinement() || auto_ir.on();
+  }
+
+  // iterative_refinement() method: 1 GMRES (GMRES, AutoGMRES), 0 fixed point
+  i_t refinement_method() const
+  {
+    return settings_.barrier_iterative_refinement == barrier_iterative_refinement_t::GMRES ||
+               settings_.barrier_iterative_refinement == barrier_iterative_refinement_t::AutoGMRES
+             ? 1
+             : 0;
+  }
 
   dense_vector_t<i_t, f_t> diag;
   pinned_dense_vector_t<i_t, f_t> inv_diag;
@@ -2714,14 +2742,10 @@ int barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
       }
     } op(data);
 
-    if (settings.barrier_iterative_refinement != barrier_iterative_refinement_t::Off) {
+    if (data.refine_kkt_solves()) {
       const f_t ir_tol =
         (data.has_sparse_cones() || data.use_high_accuracy_ir) ? f_t(1e-12) : f_t(1e-8);
-
-      const i_t internal_method =
-        (settings.barrier_iterative_refinement == barrier_iterative_refinement_t::FixedPoint) ? 0
-                                                                                              : 1;
-      iterative_refinement<i_t, f_t, op_t>(op, rhs, soln, ir_tol, internal_method);
+      iterative_refinement<i_t, f_t, op_t>(op, rhs, soln, ir_tol, data.refinement_method());
     }
 
     for (i_t k = 0; k < lp.num_cols; k++) {
@@ -3317,16 +3341,12 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
         data_.chol->solve(b, x);
       }
     } op(data);
-    if (settings.barrier_iterative_refinement != barrier_iterative_refinement_t::Off) {
+    if (data.refine_kkt_solves()) {
       raft::common::nvtx::range fun_scope("Barrier: iterative_refinement");
       const f_t ir_tol =
         (data.has_sparse_cones() || data.use_high_accuracy_ir) ? f_t(1e-12) : f_t(1e-8);
-
-      const i_t internal_method =
-        (settings.barrier_iterative_refinement == barrier_iterative_refinement_t::FixedPoint) ? 0
-                                                                                              : 1;
       const f_t solve_err = iterative_refinement<i_t, f_t, op_t>(
-        op, data.d_augmented_rhs_, data.d_augmented_soln_, ir_tol, internal_method);
+        op, data.d_augmented_rhs_, data.d_augmented_soln_, ir_tol, data.refinement_method());
       if (solve_err > 1e-1) {
         settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e after IR\n", solve_err);
       }
@@ -3396,8 +3416,7 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
       // GMRES can handle large, potentially ill-conditioned systems better than simple Richardson
       // or classical iterative refinement, at the potential cost of higher computational work and
       // memory. This is only used on the pure Schur-complement (n_dense_columns == 0).
-      if (settings.barrier_iterative_refinement != barrier_iterative_refinement_t::Off &&
-          data.n_dense_columns == 0) {
+      if (data.refine_kkt_solves() && data.n_dense_columns == 0) {
         struct adat_op_t {
           adat_op_t(iteration_data_t<i_t, f_t>& data) : data_(data) {}
           iteration_data_t<i_t, f_t>& data_;
@@ -3414,11 +3433,8 @@ i_t barrier_solver_t<i_t, f_t>::gpu_compute_search_direction(iteration_data_t<i_
           }
         } adat_op(data);
 
-        const i_t internal_method =
-          (settings.barrier_iterative_refinement == barrier_iterative_refinement_t::FixedPoint) ? 0
-                                                                                                : 1;
         const f_t adat_solve_err = iterative_refinement<i_t, f_t, adat_op_t>(
-          adat_op, data.d_h_, data.d_dy_, f_t(1e-8), internal_method);
+          adat_op, data.d_h_, data.d_dy_, f_t(1e-8), data.refinement_method());
         if (adat_solve_err > 1e-1) {
           settings.log.debug("||ADAT*dy - h|| %e after IR\n", adat_solve_err);
         }
@@ -4573,6 +4589,10 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
       settings.log.printf("Adaptive regularization enabled\n");
     }
 
+    // Refinement state is per solve; a cached iteration_data still holds the previous solve's.
+    data.auto_ir              = auto_iterative_refinement_t<i_t, f_t>{};
+    data.use_high_accuracy_ir = false;
+
     i_t initial_status = initial_point(data);
     if (toc(start_time) > settings.time_limit) {
       settings.log.printf("Barrier time limit exceeded\n");
@@ -4679,6 +4699,75 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
                            ? settings.barrier_primal_regularization
                            : (data.has_cones() ? 1e-8 : 1e-6);
 
+    // Residuals, objectives and gaps of the current iterate, as reported in the iteration log.
+    auto compute_iterate_metrics = [&]() {
+      compute_residual_norms_mu_and_objective(data,
+                                              primal_residual_norm,
+                                              dual_residual_norm,
+                                              complementarity_residual_norm,
+                                              mu,
+                                              primal_objective,
+                                              dual_objective);
+
+      f_t user_primal_objective = compute_user_objective(lp, primal_objective);
+      relative_primal_residual  = primal_residual_norm / (1.0 + norm_b);
+      relative_dual_residual    = dual_residual_norm / (1.0 + norm_c);
+      relative_complementarity_residual =
+        complementarity_residual_norm /
+        (1.0 + std::min(std::abs(user_primal_objective), std::abs(primal_objective)));
+
+      compute_objective_gap(
+        lp, primal_objective, dual_objective, objective_gap, relative_objective_gap);
+    };
+
+    // Auto refinement. update_auto_ir advances its Off -> Watch -> On state for the current
+    // iterate. Until refinement is on, the iterate before each step is kept so that a step which
+    // fails or makes insufficient progress can be retried once with refinement on.
+    const bool auto_ir = data.auto_refinement();
+    rmm::device_uvector<f_t> d_w_prev(0, stream_view_);
+    rmm::device_uvector<f_t> d_x_prev(0, stream_view_);
+    rmm::device_uvector<f_t> d_y_prev(0, stream_view_);
+    rmm::device_uvector<f_t> d_v_prev(0, stream_view_);
+    rmm::device_uvector<f_t> d_z_prev(0, stream_view_);
+    auto copy_iterate_vector = [&](rmm::device_uvector<f_t>& dst,
+                                   const rmm::device_uvector<f_t>& src) {
+      dst.resize(src.size(), stream_view_);
+      raft::copy(dst.data(), src.data(), src.size(), stream_view_);
+    };
+    auto can_retry_with_refinement = [&]() {
+      return auto_ir && !data.auto_ir.on() && !data.auto_ir.recovery_attempted;
+    };
+    auto update_auto_ir = [&](f_t step_length) {
+      if (data.auto_ir.update(settings,
+                              iter,
+                              relative_primal_residual,
+                              relative_dual_residual,
+                              relative_complementarity_residual,
+                              step_length)) {
+        settings.log.printf("Iterative refinement on (auto) from iteration %d\n", iter + 1);
+      }
+      data.auto_ir.record(
+        relative_primal_residual, relative_dual_residual, relative_complementarity_residual);
+    };
+    auto retry_with_refinement = [&](const char* reason) {
+      if (!can_retry_with_refinement()) { return false; }
+      data.auto_ir.state              = auto_iterative_refinement_t<i_t, f_t>::state_t::On;
+      data.auto_ir.recovery_attempted = true;
+      iter--;
+      settings.log.printf(
+        "%s: retrying iteration %d with iterative refinement on (auto)\n", reason, iter + 1);
+      copy_iterate_vector(data.d_w_, d_w_prev);
+      copy_iterate_vector(data.d_x_, d_x_prev);
+      copy_iterate_vector(data.d_y_, d_y_prev);
+      copy_iterate_vector(data.d_v_, d_v_prev);
+      copy_iterate_vector(data.d_z_, d_z_prev);
+      compute_iterate_metrics();
+      data.auto_ir.record(
+        relative_primal_residual, relative_dual_residual, relative_complementarity_residual);
+      return true;
+    };
+    if (auto_ir) { update_auto_ir(f_t(1)); }
+
     while (iter < iteration_limit) {
       raft::common::nvtx::range fun_scope("Barrier: iteration");
 
@@ -4689,6 +4778,14 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
       if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
         settings.log.printf("Barrier solver halted\n");
         return lp_status_t::CONCURRENT_LIMIT;
+      }
+
+      if (can_retry_with_refinement()) {
+        copy_iterate_vector(d_w_prev, data.d_w_);
+        copy_iterate_vector(d_x_prev, data.d_x_);
+        copy_iterate_vector(d_y_prev, data.d_y_);
+        copy_iterate_vector(d_v_prev, data.d_v_);
+        copy_iterate_vector(d_z_prev, data.d_z_);
       }
 
       // Compute the affine step. This is the call that (re)factorizes the
@@ -4782,23 +4879,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
 
       compute_next_iterate(data, settings.barrier_step_scale, step_primal, step_dual);
 
-      compute_residual_norms_mu_and_objective(data,
-                                              primal_residual_norm,
-                                              dual_residual_norm,
-                                              complementarity_residual_norm,
-                                              mu,
-                                              primal_objective,
-                                              dual_objective);
-
-      f_t user_primal_objective = compute_user_objective(lp, primal_objective);
-      relative_primal_residual  = primal_residual_norm / (1.0 + norm_b);
-      relative_dual_residual    = dual_residual_norm / (1.0 + norm_c);
-      relative_complementarity_residual =
-        complementarity_residual_norm /
-        (1.0 + std::min(std::abs(user_primal_objective), std::abs(primal_objective)));
-
-      compute_objective_gap(
-        lp, primal_objective, dual_objective, objective_gap, relative_objective_gap);
+      compute_iterate_metrics();
 
       if (data.has_cones() && !data.use_high_accuracy_ir && relative_primal_residual < 1e-6 &&
           relative_dual_residual < 1e-6 && relative_complementarity_residual < 1e-6) {
@@ -4843,6 +4924,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
       elapsed_time = toc(start_time);
 
       if (primal_objective != primal_objective || dual_objective != dual_objective) {
+        if (retry_with_refinement("Numerical error in objective")) { continue; }
         settings.log.printf("Numerical error in objective\n");
         return check_for_suboptimal_solution(data,
                                              start_time,
@@ -4908,6 +4990,15 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
                          data.cusparse_view_,
                          solution);
         return lp_status_t::OPTIMAL;
+      }
+
+      if (auto_ir) {
+        if (data.auto_ir.insufficient_progress(
+              settings, iter, relative_primal_residual, relative_dual_residual) &&
+            retry_with_refinement("Insufficient progress")) {
+          continue;
+        }
+        update_auto_ir(std::min(step_primal, step_dual));
       }
 
       // Check if the solution is getting worse

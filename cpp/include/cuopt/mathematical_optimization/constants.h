@@ -270,9 +270,11 @@
 #define CUOPT_MIP_SCALING_NO_OBJECTIVE 2
 
 /* @brief Iterative refinement for barrier method */
-#define CUOPT_BARRIER_IR_OFF         0
-#define CUOPT_BARRIER_IR_GMRES       1
-#define CUOPT_BARRIER_IR_FIXED_POINT 2
+#define CUOPT_BARRIER_IR_OFF              0
+#define CUOPT_BARRIER_IR_GMRES            1
+#define CUOPT_BARRIER_IR_FIXED_POINT      2
+#define CUOPT_BARRIER_IR_AUTO_FIXED_POINT 3
+#define CUOPT_BARRIER_IR_AUTO_GMRES       4
 
 #define CUOPT_BARRIER_CSR_IR_MATVEC_OFF 0
 #define CUOPT_BARRIER_CSR_IR_MATVEC_ON  1

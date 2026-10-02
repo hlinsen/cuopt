@@ -525,7 +525,8 @@ class SolverConfig(BaseModel):
         description="Set whether, and how, the barrier solver applies "
         "iterative refinement after each solve. 0 to disable, 1 for "
         "restarted GMRES (default), 2 for a fixed-point residual-correction "
-        "loop",
+        "loop, 3 or 4 to switch fixed-point or GMRES refinement on "
+        "automatically near convergence",
     )
     crossover: Optional[bool] = Field(
         default=False,
