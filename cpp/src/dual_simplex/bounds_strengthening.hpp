@@ -8,6 +8,9 @@
 #pragma once
 
 #include <dual_simplex/presolve.hpp>
+#include <utilities/circular_deque.hpp>
+
+#include <limits>
 
 namespace cuopt::mathematical_optimization::simplex {
 
@@ -16,17 +19,29 @@ struct bounds_strengthening_params {
   double recompute_factor         = 1e6;
   double min_relative_improvement = 0.3;
   double min_improvement_factor   = 1e3;
+  // Derived bounds larger than this in magnitude are discarded
+  double max_derived_bound = 1e8;
 };
 
+// The finite parts of the activities are accumulated with compensated (Dot2) summation: the
+// activity is max + max_err (resp. min + min_err), where the error terms collect the rounding of
+// every product and addition.
 template <typename i_t, typename f_t>
 struct row_activity_t {
   f_t max      = 0;
+  f_t max_err  = 0;
   f_t max_peak = 0;
   i_t max_inf  = 0;
 
   f_t min      = 0;
+  f_t min_err  = 0;
   f_t min_peak = 0;
   i_t min_inf  = 0;
+
+  // Largest slack for which some variable of the row can still receive an accepted bound.
+  // It is refreshed whenever the row is propagated and only
+  // overestimated in between, so a row whose slack exceeds it can be skipped safely.
+  f_t capacity_threshold = std::numeric_limits<f_t>::infinity();
 
   // Set when cancellation made the incremental sums unreliable. The row is recomputed from scratch
   // before propagation reads it.
@@ -85,9 +100,11 @@ class bounds_strengthening_t {
 
   std::vector<row_activity_t<i_t, f_t>> row_activities;
   std::vector<uint8_t> row_queued;
-  std::vector<i_t> row_queue;
+  circular_deque_t<i_t> row_queue;
 
   size_t nnz_processed{0};
+
+  void queue_row(i_t i, const lp_problem_t<i_t, f_t>& lp, f_t tol);
 
   bool run_bound_propagation(const csr_matrix_t<i_t, f_t>& Arow,
                              const std::vector<variable_type_t>& var_types,

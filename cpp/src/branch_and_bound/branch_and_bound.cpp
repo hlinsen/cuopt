@@ -3976,6 +3976,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   root_lp_current_lower_bound_        = -inf;
   exploration_stats_.nodes_unexplored = 0;
   exploration_stats_.nodes_explored   = 0;
+  lower_bound_numerical_              = inf;
   original_lp_.A.to_compressed_row(Arow_);
 
   active_submip_solvers_mutex_.lock();
@@ -4200,9 +4201,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     return mip_status_t::OPTIMAL;
   }
 
-  is_running_            = true;
-  lower_bound_numerical_ = inf;
-
+  is_running_ = true;
   if (num_fractional != 0 && settings_.max_cut_passes > 0) { print_table_header(); }
 
   cut_pool_t<i_t, f_t> cut_pool(original_lp_.num_cols, settings_);

@@ -9,9 +9,22 @@
 
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 
 namespace cuopt::mathematical_optimization::simplex {
+
+// One step of the Ogita-Rump-Oishi Dot2 algorithm: adds coeff * value to sum and accumulates the
+// rounding errors of the product and of the addition in err, so sum + err is accurate to about
+// twice the working precision. The product is formed with fma(coeff, value, 0) rather than coeff *
+// value, so GCC's default -ffp-contract=fast cannot fuse it into the addition and break the TwoSum.
+template <typename f_t>
+static inline void dot2_add(f_t coeff, f_t value, f_t& sum, f_t& err)
+{
+  const f_t h = std::fma(coeff, value, 0.0);
+  const f_t t = sum + h;
+  const f_t z = t - sum;
+  err += ((sum - (t - z)) + (h - z)) + std::fma(coeff, value, -h);
+  sum = t;
+}
 
 // Computes the min/max activity of row i over the bounds [lower, upper]. Infinite or huge
 // contributions are counted in min_inf/max_inf instead of being added to the sum.
@@ -30,17 +43,19 @@ void bounds_strengthening_t<i_t, f_t>::compute_row_activity(i_t i,
   for (i_t k = begin; k < end; ++k) {
     i_t j         = Arow.j[k];
     f_t aij       = Arow.x[k];
-    f_t alpha_max = aij * (aij > 0 ? upper[j] : lower[j]);
-    f_t alpha_min = aij * (aij < 0 ? upper[j] : lower[j]);
+    f_t bound_max = aij > 0 ? upper[j] : lower[j];
+    f_t bound_min = aij < 0 ? upper[j] : lower[j];
+    f_t alpha_max = aij * bound_max;
+    f_t alpha_min = aij * bound_min;
 
     if (std::isfinite(alpha_max) && std::abs(alpha_max) < params.huge_value) {
-      activity.max += alpha_max;
+      dot2_add(aij, bound_max, activity.max, activity.max_err);
     } else {
       ++activity.max_inf;
     }
 
     if (std::isfinite(alpha_min) && std::abs(alpha_min) < params.huge_value) {
-      activity.min += alpha_min;
+      dot2_add(aij, bound_min, activity.min, activity.min_err);
     } else {
       ++activity.min_inf;
     }
@@ -61,7 +76,7 @@ void bounds_strengthening_t<i_t, f_t>::compute_activities(const csr_matrix_t<i_t
 {
   row_activities.resize(Arow.m);
   row_queued.resize(Arow.m, false);
-  row_queue.reserve(Arow.m);
+  row_queue.clear_resize(std::max(Arow.m, 1));
 
   for (i_t i = 0; i < Arow.m; ++i) {
     compute_row_activity(i, Arow, lower, upper);
@@ -83,30 +98,39 @@ void bounds_strengthening_t<i_t, f_t>::update_activities(i_t var,
   i_t end   = lp.A.col_start[var + 1];
   nnz_processed += end - begin;
 
+  // A wider range can raise the capacity threshold of the rows, so reset it until the row is
+  // propagated again.
+  const bool loosened = new_ub - new_lb > old_ub - old_lb;
+
   for (i_t k = begin; k < end; ++k) {
     i_t i                              = lp.A.i[k];
     row_activity_t<i_t, f_t>& activity = row_activities[i];
+    if (loosened) { activity.capacity_threshold = inf; }
 
     // A row waiting for recomputation is rebuilt from the current bounds anyway.
     if (activity.recompute) { continue; }
 
     f_t aij           = lp.A.x[k];
-    f_t old_alpha_max = aij * (aij > 0 ? old_ub : old_lb);
-    f_t old_alpha_min = aij * (aij < 0 ? old_ub : old_lb);
-    f_t new_alpha_max = aij * (aij > 0 ? new_ub : new_lb);
-    f_t new_alpha_min = aij * (aij < 0 ? new_ub : new_lb);
+    f_t old_bound_max = aij > 0 ? old_ub : old_lb;
+    f_t old_bound_min = aij < 0 ? old_ub : old_lb;
+    f_t new_bound_max = aij > 0 ? new_ub : new_lb;
+    f_t new_bound_min = aij < 0 ? new_ub : new_lb;
+    f_t old_alpha_max = aij * old_bound_max;
+    f_t old_alpha_min = aij * old_bound_min;
+    f_t new_alpha_max = aij * new_bound_max;
+    f_t new_alpha_min = aij * new_bound_min;
 
     // Replace the old contribution to the max activity with the new one, moving it between the
     // finite sum and the infinite count when needed.
     if (old_alpha_max != new_alpha_max) {
       if (std::isfinite(old_alpha_max) && std::abs(old_alpha_max) < params.huge_value) {
-        activity.max -= old_alpha_max;
+        dot2_add(-aij, old_bound_max, activity.max, activity.max_err);
       } else {
         --activity.max_inf;
       }
 
       if (std::isfinite(new_alpha_max) && std::abs(new_alpha_max) < params.huge_value) {
-        activity.max += new_alpha_max;
+        dot2_add(aij, new_bound_max, activity.max, activity.max_err);
       } else {
         ++activity.max_inf;
       }
@@ -117,13 +141,13 @@ void bounds_strengthening_t<i_t, f_t>::update_activities(i_t var,
     // Same for the min activity.
     if (old_alpha_min != new_alpha_min) {
       if (std::isfinite(old_alpha_min) && std::abs(old_alpha_min) < params.huge_value) {
-        activity.min -= old_alpha_min;
+        dot2_add(-aij, old_bound_min, activity.min, activity.min_err);
       } else {
         --activity.min_inf;
       }
 
       if (std::isfinite(new_alpha_min) && std::abs(new_alpha_min) < params.huge_value) {
-        activity.min += new_alpha_min;
+        dot2_add(aij, new_bound_min, activity.min, activity.min_err);
       } else {
         ++activity.min_inf;
       }
@@ -140,6 +164,33 @@ void bounds_strengthening_t<i_t, f_t>::update_activities(i_t var,
   }
 }
 
+// Queues row i unless it is already queued or neither of its sides can tighten a bound. A row
+// awaiting recomputation is always queued.
+template <typename i_t, typename f_t>
+void bounds_strengthening_t<i_t, f_t>::queue_row(i_t i, const lp_problem_t<i_t, f_t>& lp, f_t tol)
+{
+  if (row_queued[i]) { return; }
+
+  const row_activity_t<i_t, f_t>& activity = row_activities[i];
+  if (!activity.recompute) {
+    const f_t max_a = activity.max + activity.max_err;
+    const f_t min_a = activity.min + activity.min_err;
+    const f_t rhs   = lp.rhs[i];
+    const bool propagate_upper =
+      (activity.max_inf != 0 || max_a > rhs + tol) &&
+      (activity.min_inf == 1 ||
+       (activity.min_inf == 0 && rhs - min_a <= activity.capacity_threshold));
+    const bool propagate_lower =
+      (activity.min_inf != 0 || min_a < rhs - tol) &&
+      (activity.max_inf == 1 ||
+       (activity.max_inf == 0 && max_a - rhs <= activity.capacity_threshold));
+    if (!propagate_upper && !propagate_lower) { return; }
+  }
+
+  row_queue.push_back(i);
+  row_queued[i] = true;
+}
+
 // Recomputes all activities from [lower, upper] and propagates every row, tightening lower and
 // upper in place.
 template <typename i_t, typename f_t>
@@ -152,9 +203,9 @@ bool bounds_strengthening_t<i_t, f_t>::propagate_full(
   std::vector<f_t>& upper)
 {
   compute_activities(Arow, lower, upper);
-  row_queue.resize(lp.A.m);
-  std::iota(row_queue.begin(), row_queue.end(), 0);
-  std::fill(row_queued.begin(), row_queued.end(), true);
+  for (i_t i = 0; i < lp.A.m; ++i) {
+    queue_row(i, lp, settings.primal_tol);
+  }
   return run_bound_propagation(Arow, var_types, settings, lp, lower, upper);
 }
 
@@ -177,11 +228,7 @@ bool bounds_strengthening_t<i_t, f_t>::propagate(
     const i_t col_end   = lp.A.col_start[j + 1];
     nnz_processed += col_end - col_start;
     for (i_t p = col_start; p < col_end; ++p) {
-      const i_t i = lp.A.i[p];
-      if (!row_queued[i]) {
-        row_queued[i] = true;
-        row_queue.push_back(i);
-      }
+      queue_row(lp.A.i[p], lp, settings.primal_tol);
     }
   }
   return run_bound_propagation(Arow, var_types, settings, lp, lower, upper);
@@ -203,11 +250,7 @@ bool bounds_strengthening_t<i_t, f_t>::propagate(
   const i_t col_end   = lp.A.col_start[var + 1];
   nnz_processed += col_end - col_start;
   for (i_t p = col_start; p < col_end; ++p) {
-    const i_t i = lp.A.i[p];
-    if (!row_queued[i]) {
-      row_queued[i] = true;
-      row_queue.push_back(i);
-    }
+    queue_row(lp.A.i[p], lp, settings.primal_tol);
   }
   return run_bound_propagation(Arow, var_types, settings, lp, lower, upper);
 }
@@ -224,42 +267,56 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
   bool feasible = true;
   i_t iter      = 0;
   while (feasible && !row_queue.empty()) {
-    i_t row = row_queue.back();
-    row_queue.pop_back();
+    i_t row         = row_queue.pop_front();
     row_queued[row] = false;
     ++iter;
 
     if (row_activities[row].recompute) { compute_row_activity(row, Arow, lower, upper); }
     row_activity_t activity = row_activities[row];
-    f_t max_tol =
-      settings.primal_tol * std::max({1.0, std::abs(activity.max), std::abs(lp.rhs[row])});
-    f_t min_tol =
-      settings.primal_tol * std::max({1.0, std::abs(activity.min), std::abs(lp.rhs[row])});
+    const f_t max_a         = activity.max + activity.max_err;
+    const f_t min_a         = activity.min + activity.min_err;
+    f_t max_tol = settings.primal_tol * std::max({1.0, std::abs(max_a), std::abs(lp.rhs[row])});
+    f_t min_tol = settings.primal_tol * std::max({1.0, std::abs(min_a), std::abs(lp.rhs[row])});
 
-    if ((activity.max_inf == 0 && lp.rhs[row] - activity.max > max_tol) ||
-        (activity.min_inf == 0 && activity.min - lp.rhs[row] > min_tol)) {
+    if ((activity.max_inf == 0 && lp.rhs[row] - max_a > max_tol) ||
+        (activity.min_inf == 0 && min_a - lp.rhs[row] > min_tol)) {
       settings.log.debug(
         "Iter:: %d, Infeasible constraint %d, rhs %e, min_a %e (%d inf), max_a %e (%d inf)\n",
         iter,
         row,
         lp.rhs[row],
-        activity.min,
+        min_a,
         activity.min_inf,
-        activity.max,
+        max_a,
         activity.max_inf);
       feasible = false;
       break;
     }
 
-    // No bound can be derived when both sides have two or more infinite contributions.
-    if (activity.min_inf > 1 && activity.max_inf > 1) { continue; }
-
     // Smallest absolute change for which a new bound is accepted.
     const f_t tol             = settings.primal_tol;
     const f_t min_improvement = params.min_improvement_factor * tol;
-    i_t row_start             = Arow.row_start[row];
-    i_t row_end               = Arow.row_start[row + 1];
+    const f_t rhs             = lp.rhs[row];
+
+    // A side of the row (a x <= rhs or a x >= rhs) is propagated only if it is not redundant and
+    // either a single infinite contribution can be bounded or its slack is within the capacity
+    // threshold.
+    const bool propagate_upper =
+      (activity.max_inf != 0 || max_a > rhs + tol) &&
+      (activity.min_inf == 1 ||
+       (activity.min_inf == 0 && rhs - min_a <= activity.capacity_threshold));
+    const bool propagate_lower =
+      (activity.min_inf != 0 || min_a < rhs - tol) &&
+      (activity.max_inf == 1 ||
+       (activity.max_inf == 0 && max_a - rhs <= activity.capacity_threshold));
+    if (!propagate_upper && !propagate_lower) { continue; }
+
+    i_t row_start = Arow.row_start[row];
+    i_t row_end   = Arow.row_start[row + 1];
     nnz_processed += row_end - row_start;
+
+    // The capacity threshold is recomputed from the bounds seen during this scan.
+    f_t threshold = -tol;
 
     for (i_t p = row_start; p < row_end; ++p) {
       const i_t j    = Arow.j[p];
@@ -270,6 +327,21 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
       const f_t ub = upper[j];
       if (lb == ub) { continue; }
 
+      // A continuous column singleton (e.g., a slack) only has bounds implied by this row, so
+      // tightening it cannot reach any other row.
+      const bool is_integer = !var_types.empty() && var_types[j] == variable_type_t::INTEGER;
+      if (!is_integer && lp.A.col_start[j + 1] - lp.A.col_start[j] == 1) { continue; }
+
+      // Largest slack for which x_j can still receive an accepted bound.
+      const f_t range = ub - lb;
+      const f_t reduction =
+        !std::isfinite(range)
+          ? inf
+          : (is_integer
+               ? range - settings.integer_tol
+               : range - std::max(params.min_relative_improvement * range, min_improvement));
+      threshold = std::max({threshold, std::abs(a_ij) * reduction, tol});
+
       // Read the activity again for each variable, since earlier tightenings in this row have
       // already updated it, possibly marking it for recomputation.
       if (row_activities[row].recompute) { compute_row_activity(row, Arow, lower, upper); }
@@ -277,8 +349,10 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
 
       // Contribution of x_j to the min/max activity, flagged as infinite the same way as in
       // compute_row_activity.
-      const f_t alpha_min = a_ij * (a_ij < 0 ? ub : lb);
-      const f_t alpha_max = a_ij * (a_ij > 0 ? ub : lb);
+      const f_t bound_min = a_ij < 0 ? ub : lb;
+      const f_t bound_max = a_ij > 0 ? ub : lb;
+      const f_t alpha_min = a_ij * bound_min;
+      const f_t alpha_max = a_ij * bound_max;
       const bool alpha_min_inf =
         !std::isfinite(alpha_min) || std::abs(alpha_min) >= params.huge_value;
       const bool alpha_max_inf =
@@ -289,11 +363,15 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
 
       // a_ij x_j <= rhs - (min activity of the other variables): an upper bound if a_ij > 0, a
       // lower bound otherwise. If x_j is the only infinite contributor, the residual is the finite
-      // sum.
-      if (current.min_inf == 0 || (current.min_inf == 1 && alpha_min_inf)) {
-        const f_t residual = current.min_inf == 0 ? current.min - alpha_min : current.min;
-        const f_t gamma    = (lp.rhs[row] - residual) / a_ij;
-        if (std::abs(gamma) < params.huge_value) {
+      // sum. The slack rhs - residual is formed with Dot2, since rhs and the residual often nearly
+      // cancel.
+      if (propagate_upper && (current.min_inf == 0 || (current.min_inf == 1 && alpha_min_inf))) {
+        f_t slack     = rhs;
+        f_t slack_err = -current.min_err;
+        dot2_add(-1.0, current.min, slack, slack_err);
+        if (current.min_inf == 0) { dot2_add(a_ij, bound_min, slack, slack_err); }
+        const f_t gamma = (slack + slack_err) / a_ij;
+        if (std::abs(gamma) < params.max_derived_bound) {
           if (a_ij > 0) {
             new_ub = std::min(new_ub, gamma);
           } else {
@@ -304,10 +382,13 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
 
       // a_ij x_j >= rhs - (max activity of the other variables): a lower bound if a_ij > 0, an
       // upper bound otherwise.
-      if (current.max_inf == 0 || (current.max_inf == 1 && alpha_max_inf)) {
-        const f_t residual = current.max_inf == 0 ? current.max - alpha_max : current.max;
-        const f_t gamma    = (lp.rhs[row] - residual) / a_ij;
-        if (std::abs(gamma) < params.huge_value) {
+      if (propagate_lower && (current.max_inf == 0 || (current.max_inf == 1 && alpha_max_inf))) {
+        f_t slack     = rhs;
+        f_t slack_err = -current.max_err;
+        dot2_add(-1.0, current.max, slack, slack_err);
+        if (current.max_inf == 0) { dot2_add(a_ij, bound_max, slack, slack_err); }
+        const f_t gamma = (slack + slack_err) / a_ij;
+        if (std::abs(gamma) < params.max_derived_bound) {
           if (a_ij > 0) {
             new_lb = std::max(new_lb, gamma);
           } else {
@@ -320,7 +401,7 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
       // ones must shrink the range by min_relative_improvement.
       bool tighten_lb = false;
       bool tighten_ub = false;
-      if (!var_types.empty() && var_types[j] == variable_type_t::INTEGER) {
+      if (is_integer) {
         new_lb     = std::ceil(new_lb - settings.integer_tol);
         new_ub     = std::floor(new_ub + settings.integer_tol);
         tighten_lb = new_lb > lb && new_lb - lb > min_improvement * std::abs(new_lb);
@@ -371,20 +452,18 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
       const i_t col_end   = lp.A.col_start[j + 1];
       nnz_processed += col_end - col_start;
       for (i_t q = col_start; q < col_end; ++q) {
-        const i_t i = lp.A.i[q];
-        if (!row_queued[i]) {
-          row_queued[i] = true;
-          row_queue.push_back(i);
-        }
+        queue_row(lp.A.i[q], lp, tol);
       }
     }
+
+    // An infeasible scan stops early and only saw part of the row.
+    if (feasible) { row_activities[row].capacity_threshold = threshold; }
   }
 
   // Clear the rows left in the queue when infeasibility stops the propagation early.
-  for (i_t i : row_queue) {
-    row_queued[i] = false;
+  while (!row_queue.empty()) {
+    row_queued[row_queue.pop_front()] = false;
   }
-  row_queue.clear();
 
   last_nnz_processed = nnz_processed;
   nnz_processed      = 0;
