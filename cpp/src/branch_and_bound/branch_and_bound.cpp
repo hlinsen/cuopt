@@ -4713,7 +4713,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   basis_update_mpf_t<i_t, f_t> basis_update(original_lp_.num_rows, settings_.refactor_frequency);
   lp_status_t root_status  = lp_status_t::UNSET;
   solving_root_relaxation_ = true;
-  root_heuristics_t<i_t, f_t> root_heuristics(settings_.num_threads - 1);
 
   // Started here so the lanes run through the root LP and every cut pass. No relaxation exists
   // yet, so they seed from the anchor.
