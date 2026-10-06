@@ -161,8 +161,8 @@ void domain_t<i_t, f_t>::update_activities(const lp_problem_t<i_t, f_t>& lp,
 
     // An activity much smaller than its peak has lost precision to numerical cancellations,
     // so mark the row to be recomputed from scratch.
-    if (activity.max_peak > params.recompute_factor * std::abs(activity.max) ||
-        activity.min_peak > params.recompute_factor * std::abs(activity.min)) {
+    if (activity.max_peak > params.recompute_factor * std::max<f_t>(std::abs(activity.max), 1.0) ||
+        activity.min_peak > params.recompute_factor * std::max<f_t>(std::abs(activity.min), 1.0)) {
       activity.recompute = true;
     }
   }
@@ -277,7 +277,11 @@ bool domain_t<i_t, f_t>::apply_and_propagate(const csr_matrix_t<i_t, f_t>& Arow,
                                              bound_change_t<i_t, f_t> bound_change,
                                              lp_problem_t<i_t, f_t>& lp)
 {
-  if (!apply(lp, bound_change)) return true;
+  if (!apply(lp, bound_change)) {
+    last_nnz_processed = nnz_processed;
+    nnz_processed      = 0;
+    return true;
+  }
 
   i_t j         = bound_change.var;
   i_t col_start = lp.A.col_start[j];

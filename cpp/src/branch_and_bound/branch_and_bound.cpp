@@ -481,13 +481,12 @@ i_t branch_and_bound_t<i_t, f_t>::find_reduced_cost_fixings(f_t upper_bound,
   std::vector<f_t> reduced_costs = root_relax_soln_.z;
   lower_bounds                   = original_lp_.lower;
   upper_bounds                   = original_lp_.upper;
-  std::vector<bool> bounds_changed(original_lp_.num_cols, false);
-  const f_t root_obj    = compute_objective(original_lp_, root_relax_soln_.x);
-  const f_t threshold   = 100.0 * settings_.integer_tol;
-  const f_t weaken      = settings_.integer_tol;
-  const f_t fixed_tol   = settings_.fixed_tol;
-  i_t num_improved      = 0;
-  i_t num_fixed         = 0;
+  const f_t root_obj             = compute_objective(original_lp_, root_relax_soln_.x);
+  const f_t threshold            = 100.0 * settings_.integer_tol;
+  const f_t weaken               = settings_.integer_tol;
+  const f_t fixed_tol            = settings_.fixed_tol;
+  i_t num_improved               = 0;
+  i_t num_fixed                  = 0;
   i_t num_cols_to_check = reduced_costs.size();  // Reduced costs will be smaller than the original
                                                  // problem because we have added slacks for cuts
   for (i_t j = 0; j < num_cols_to_check; j++) {
@@ -504,8 +503,7 @@ i_t branch_and_bound_t<i_t, f_t>::find_reduced_cost_fixings(f_t upper_bound,
                                       : new_upper_bound;
         if (reduced_cost_upper_bound < upper_j && var_types_[j] == variable_type_t::INTEGER) {
           num_improved++;
-          upper_bounds[j]   = reduced_cost_upper_bound;
-          bounds_changed[j] = true;
+          upper_bounds[j] = reduced_cost_upper_bound;
         }
       }
       if (upper_j < inf && reduced_costs[j] < 0) {
@@ -515,8 +513,7 @@ i_t branch_and_bound_t<i_t, f_t>::find_reduced_cost_fixings(f_t upper_bound,
                                       : new_lower_bound;
         if (reduced_cost_lower_bound > lower_j && var_types_[j] == variable_type_t::INTEGER) {
           num_improved++;
-          lower_bounds[j]   = reduced_cost_lower_bound;
-          bounds_changed[j] = true;
+          lower_bounds[j] = reduced_cost_lower_bound;
         }
       }
       if (var_types_[j] == variable_type_t::INTEGER &&
@@ -1762,12 +1759,20 @@ void branch_and_bound_t<i_t, f_t>::plunge_with(bfs_worker_t<i_t, f_t>* worker,
 
   worker->recompute_basis = true;
   worker->ensure_orbital_fixing();
-  start_node->rebuild_variable_bounds(worker->domain);
+
+  // The branching of the start node itself is applied when its LP is solved.
+  if (start_node->parent != nullptr) {
+    start_node->parent->rebuild_variable_bounds(worker->domain);
+  } else {
+    worker->domain.clear();
+  }
 
   bool is_start_feasible = worker->rebuild_bounds_from_stack(original_lp_, settings_);
   if (!is_start_feasible) {
+    start_node->lower_bound = inf;
     search_tree_.graphviz_node(settings_.log, start_node, "infeasible", inf);
     search_tree_.update(start_node, node_status_t::INFEASIBLE);
+    ++exploration_stats_.nodes_explored;
     --exploration_stats_.nodes_unexplored;
     return;
   }
@@ -2162,7 +2167,7 @@ void branch_and_bound_t<i_t, f_t>::dive_with(diving_worker_t<i_t, f_t>* worker,
   if (!is_start_feasible) {
     if (worker->search_strategy != search_strategy_t::RINS &&
         worker->search_strategy != search_strategy_t::RENS &&
-        worker->search_strategy != search_strategy_t::MUTATION) {
+        worker->search_strategy != search_strategy_t::MUTATION && !settings.inside_root_node) {
       diving_worker_pool_.return_worker_to_pool(worker);
     }
     return;
@@ -3011,10 +3016,11 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
   while (solver_status_ == mip_status_t::UNSET && is_running_ &&
          !(submip_settings.concurrent_halt &&
            submip_settings.concurrent_halt->load(std::memory_order::acquire))) {
-    f_t prev_fixrate   = fixrate;
-    f_t target_fixrate = worker->search_strategy == search_strategy_t::RINS
-                           ? max_fixrate
-                           : std::min(1.0 - (1.0 - fixrate) * close_ratio, max_fixrate);
+    f_t prev_stack_size = worker->domain.size();
+    f_t prev_fixrate    = fixrate;
+    f_t target_fixrate  = worker->search_strategy == search_strategy_t::RINS
+                            ? max_fixrate
+                            : std::min(1.0 - (1.0 - fixrate) * close_ratio, max_fixrate);
 
     i_t round_num_fixed = (target_fixrate - prev_fixrate) * num_integers;
     if (round_num_fixed == 0) {
@@ -3068,7 +3074,7 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
     // Even considering the entire integer list, we were unable to fix a single variable in this
     // iteration. Iterate over the fractional variables again and fixing those that closest to
     // an integer solution first in order to reach the fixing threshold.
-    if (fixrate == prev_fixrate) {
+    if (fixrate == prev_fixrate && prev_stack_size == worker->domain.size()) {
       fixrate    = extend_variable_fixings(worker->Arow,
                                         worker->var_types,
                                         settings_,
@@ -3091,7 +3097,7 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
     }
 
     DEBUG_SUBMIP(
-      "{}Round {}: fixed {:.0f} ({:.2f}) -> {:.0f} ({:.2f}) variables. target round fixrate = {} "
+      "{}Round {}: fixed {:.0f} ({:.2f}) -> {:.0f} ({:.2f}) variables. round target = {} "
       "({:.2f}). "
       "max fixrate = {:.4g}",
       submip_settings.log.log_prefix,
@@ -3100,8 +3106,8 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
       prev_fixrate,
       fixrate * num_integers,
       fixrate,
-      round_target,
-      round_target_fixrate,
+      round_num_fixed,
+      target_fixrate,
       max_fixrate);
 
     if (fixrate < 0) {
@@ -4851,17 +4857,22 @@ void branch_and_bound_t<i_t, f_t>::run_deterministic_bfs_loop(
         continue;
       }
 
-      bool is_child          = (node->parent == worker.last_solved_node);
-      worker.recompute_basis = !is_child;
+      bool is_child             = (node->parent == worker.last_solved_node);
+      worker.recompute_basis    = !is_child;
+      const size_t domain_start = worker.domain.size();
 
       node_status_t status = solve_node_deterministic(worker, node, search_tree);
 
       if (status == node_status_t::PENDING) {
+        // Undo the branching of this node, so the retry applies it again on the parent's domain.
+        if (is_child && worker.domain.size() > domain_start) { worker.backtrack_bound_changes(); }
         deterministic_scheduler_->wait_for_next_sync(worker.work_context);
         continue;
       }
 
-      worker.last_solved_node = node;
+      // A node without children is freed by the search tree, so it cannot be the parent of the next
+      // node.
+      worker.last_solved_node = status == node_status_t::HAS_CHILDREN ? node : nullptr;
 
       worker.current_node = nullptr;
       continue;

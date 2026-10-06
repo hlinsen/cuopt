@@ -147,7 +147,10 @@ class branch_and_bound_worker_t {
                               const simplex::simplex_solver_settings_t<i_t, f_t>& settings)
   {
     // A root re-solved in place (e.g., the RINS/RENS rounds) already holds its bounds.
-    if (node_ptr->parent == nullptr) { return true; }
+    if (node_ptr->parent == nullptr) {
+      domain.last_nnz_processed = 0;
+      return true;
+    }
     return domain.apply_and_propagate(
       Arow, var_types, settings, node_ptr->update_variable_bounds(), leaf_problem);
   }
