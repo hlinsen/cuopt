@@ -1575,7 +1575,6 @@ bool branch_and_bound_t<i_t, f_t>::apply_symmetry_reductions(
                                                    worker->leaf_problem,
                                                    original_lp_.lower,
                                                    original_lp_.upper,
-                                                   worker->Arow,
                                                    worker->domain);
     i_t new_fix   = node_ptr->orbital_fix_zero.size() + node_ptr->orbital_fix_one.size();
     if (new_fix > prev_fix) {
@@ -1589,7 +1588,7 @@ bool branch_and_bound_t<i_t, f_t>::apply_symmetry_reductions(
 
   if (settings_.symmetry == 2 && worker->lexical_reduction != nullptr) {
     i_t lexical_reductions_info = worker->lexical_reduction->lexical_reduce(
-      symmetry_, node_ptr, worker->leaf_problem, worker->Arow, worker->domain);
+      symmetry_, node_ptr, worker->leaf_problem, worker->domain);
     if (lexical_reductions_info > 0) {
       stats.lexical_reduction_nodes++;
       stats.lexical_reduction_fixings_applied += lexical_reductions_info;

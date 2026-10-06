@@ -344,7 +344,6 @@ class orbital_fixing_t {
                      simplex::lp_problem_t<i_t, f_t>& problem,
                      const std::vector<f_t>& root_lower,
                      const std::vector<f_t>& root_upper,
-                     const csr_matrix_t<i_t, f_t>& Arow,
                      simplex::domain_t<i_t, f_t>& domain)
   {
     // At the start of a new plunge, restore the parent's cumulative orbital
@@ -605,7 +604,6 @@ class lexical_reduction_t {
   i_t lexical_reduce(mip_symmetry_t<i_t, f_t>* symmetry,
                      mip_node_t<i_t, f_t>* node_ptr,
                      simplex::lp_problem_t<i_t, f_t>& problem,
-                     const csr_matrix_t<i_t, f_t>& Arow,
                      simplex::domain_t<i_t, f_t>& domain)
   {
     reverse_branched_variables_.clear();
