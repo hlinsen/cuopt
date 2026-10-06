@@ -1663,6 +1663,10 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
     num_nonzeros, settings.concurrent_nnz_cutoff, settings.inside_mip, available_threads);
   const bool enable_dual_simplex = pdlp::should_enable_concurrent_dual_simplex(
     num_nonzeros, settings.concurrent_nnz_cutoff, settings.inside_mip);
+  CUOPT_LOG_CONDITIONAL_INFO(settings.inside_mip,
+                             "MIP concurrent LP participants: PDLP=1 Barrier=%d budget=%.3fs",
+                             enable_barrier,
+                             settings.time_limit);
 
   if (settings.num_gpus > 1) {
     int device_count = raft::device_setter::get_device_count();
@@ -1721,6 +1725,7 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
   std::exception_ptr pdlp_exception;
   optimization_problem_solution_t<i_t, f_t> sol_pdlp{pdlp_termination_status_t::NumericalError,
                                                      problem.handle_ptr->get_stream()};
+  std::atomic<bool> gpu_optimal_reported{false};
 
   auto dispatch_concurrent_solvers = [&]() {
 #pragma omp taskgroup
@@ -1746,6 +1751,12 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
               call_barrier_thread();
             } else {
               call_barrier_thread();
+            }
+            if (sol_barrier_ptr != nullptr &&
+                std::get<1>(*sol_barrier_ptr) == simplex::lp_status_t::OPTIMAL &&
+                !gpu_optimal_reported.exchange(true)) {
+              CUOPT_LOG_INFO("Concurrent LP reached Optimal: method=Barrier elapsed=%.3fs",
+                             timer.elapsed_time());
             }
           } catch (const std::exception& e) {
             CUOPT_LOG_ERROR("Exception in concurrent barrier LP: %s", e.what());
@@ -1785,6 +1796,11 @@ optimization_problem_solution_t<i_t, f_t> run_concurrent(
       // PDLP runs synchronously on the dispatcher, concurrently with the queued tasks.
       try {
         sol_pdlp = run_pdlp(problem, settings_pdlp, timer, is_batch_mode);
+        if (sol_pdlp.get_termination_status() == pdlp_termination_status_t::Optimal &&
+            !gpu_optimal_reported.exchange(true)) {
+          CUOPT_LOG_INFO("Concurrent LP reached Optimal: method=PDLP elapsed=%.3fs",
+                         timer.elapsed_time());
+        }
       } catch (const std::exception& e) {
         CUOPT_LOG_ERROR("Exception in concurrent PDLP: %s", e.what());
         pdlp_exception = std::current_exception();
