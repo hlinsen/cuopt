@@ -633,6 +633,11 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
     RAFT_CUDA_TRY(cudaDeviceSynchronize());
     std::cout << "Time Limit reached, returning current solution" << std::endl;
 #endif
+    {
+      print_final_termination_criteria(timer,
+                                       current_termination_strategy_.get_convergence_information(),
+                                       pdlp_termination_status_t::TimeLimit);
+    }
     return current_termination_strategy_.fill_return_problem_solution(
       internal_solver_iterations_,
       pdhg_solver_,
@@ -666,6 +671,11 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
       return finalize_batch_return_with_limit_reached(pdlp_termination_status_t::IterationLimit);
     }
 
+    {
+      print_final_termination_criteria(timer,
+                                       current_termination_strategy_.get_convergence_information(),
+                                       pdlp_termination_status_t::IterationLimit);
+    }
     return current_termination_strategy_.fill_return_problem_solution(
       internal_solver_iterations_,
       pdhg_solver_,
@@ -691,6 +701,11 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
       return finalize_batch_return_with_limit_reached(pdlp_termination_status_t::ConcurrentLimit);
     }
 
+    {
+      print_final_termination_criteria(timer,
+                                       current_termination_strategy_.get_convergence_information(),
+                                       pdlp_termination_status_t::ConcurrentLimit);
+    }
     return current_termination_strategy_.fill_return_problem_solution(
       internal_solver_iterations_,
       pdhg_solver_,
@@ -891,6 +906,49 @@ void pdlp_solver_t<i_t, f_t>::print_final_termination_criteria(
   const pdlp_termination_status_t& termination_status,
   bool is_average)
 {
+  if (!batch_mode_) {
+    CUOPT_LOG_INFO(
+      "PDLP final accuracy: mode=%d status=%s iterate=%s iterations=%d elapsed=%.3fs "
+      "budget=%.3fs",
+      static_cast<int>(settings_.pdlp_solver_mode),
+      optimization_problem_solution_t<i_t, f_t>::get_termination_status_string(termination_status)
+        .c_str(),
+      is_average ? "average" : "current",
+      internal_solver_iterations_,
+      timer.elapsed_time(),
+      settings_.time_limit);
+    CUOPT_LOG_INFO("PDLP objectives: primal=%+.9e dual=%+.9e gap_abs=%.9e gap_rel=%.9e",
+                   convergence_information.get_primal_objective().element(0, stream_view_),
+                   convergence_information.get_dual_objective().element(0, stream_view_),
+                   convergence_information.get_gap().element(0, stream_view_),
+                   convergence_information.get_relative_gap_value());
+    CUOPT_LOG_INFO(
+      "PDLP L2 residuals: primal_abs=%.9e primal_rel=%.9e dual_abs=%.9e "
+      "dual_rel=%.9e",
+      convergence_information.get_l2_primal_residual().element(0, stream_view_),
+      convergence_information.get_relative_l2_primal_residual_value(),
+      convergence_information.get_l2_dual_residual().element(0, stream_view_),
+      convergence_information.get_relative_l2_dual_residual_value());
+    if (settings_.per_constraint_residual) {
+      // These are max_i(residual_i - relative_tolerance * |bound/coefficient_i|),
+      // not normalized residuals. Each is checked against its absolute tolerance.
+      CUOPT_LOG_INFO(
+        "PDLP component residuals: primal_adjusted_max=%.9e "
+        "dual_adjusted_max=%.9e",
+        convergence_information.get_relative_linf_primal_residual().element(0, stream_view_),
+        convergence_information.get_relative_linf_dual_residual().element(0, stream_view_));
+    }
+    CUOPT_LOG_INFO(
+      "PDLP tolerances: primal_abs=%.9e primal_rel=%.9e dual_abs=%.9e "
+      "dual_rel=%.9e gap_abs=%.9e gap_rel=%.9e per_constraint=%d",
+      settings_.tolerances.absolute_primal_tolerance,
+      settings_.tolerances.relative_primal_tolerance,
+      settings_.tolerances.absolute_dual_tolerance,
+      settings_.tolerances.relative_dual_tolerance,
+      settings_.tolerances.absolute_gap_tolerance,
+      settings_.tolerances.relative_gap_tolerance,
+      static_cast<int>(settings_.per_constraint_residual));
+  }
   if (!inside_mip_) {
     // TODO less critical batch mode: handle this
     print_termination_criteria(timer, is_average);

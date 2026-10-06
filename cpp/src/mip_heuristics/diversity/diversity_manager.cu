@@ -17,6 +17,8 @@
 #include <mip_heuristics/presolve/trivial_presolve.cuh>
 #include <mip_heuristics/problem/problem_helpers.cuh>
 
+#include <cuopt/mathematical_optimization/solve.hpp>
+#include <pdlp/root_lp_snapshot.cuh>
 #include <pdlp/solve.cuh>
 
 #include <utilities/copy_helpers.hpp>
@@ -32,6 +34,30 @@
 constexpr bool fj_only_run = false;
 
 namespace cuopt::mathematical_optimization::mip {
+
+// Private diagnostic bridge: keep the non-exported MIP constructor inside this library.
+CUOPT_EXPORT optimization_problem_solution_t<int, double> solve_root_snapshot_diagnostic(
+  optimization_problem_t<int, double>& op,
+  const pdlp_solver_settings_t<int, double>& settings,
+  bool& root_unchanged)
+{
+  problem_t<int, double> root(op);
+  const auto original_matrix = cuopt::host_copy(root.coefficients, root.handle_ptr->get_stream());
+  const auto original_objective =
+    cuopt::host_copy(root.objective_coefficients, root.handle_ptr->get_stream());
+  const auto original_rows =
+    cuopt::host_copy(root.constraint_lower_bounds, root.handle_ptr->get_stream());
+  auto snapshot = make_root_lp_snapshot(root);
+  auto result   = solve_lp(snapshot, settings);
+  root_unchanged =
+    original_matrix == cuopt::host_copy(root.coefficients, root.handle_ptr->get_stream()) &&
+    original_objective ==
+      cuopt::host_copy(root.objective_coefficients, root.handle_ptr->get_stream()) &&
+    original_rows == cuopt::host_copy(root.constraint_lower_bounds, root.handle_ptr->get_stream()) &&
+    result.get_primal_solution().size() == root.objective_coefficients.size() &&
+    result.get_dual_solution().size() == root.constraint_lower_bounds.size();
+  return result;
+}
 
 size_t fp_recombiner_config_t::max_n_of_vars_from_other =
   fp_recombiner_config_t::initial_n_of_vars_from_other;
@@ -567,28 +593,42 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   } else if (!fj_only_run) {
     convert_greater_to_less(*problem_ptr);
 
-    f_t absolute_tolerance = context.settings.tolerances.absolute_tolerance;
-
     pdlp_solver_settings_t<i_t, f_t> pdlp_settings{};
-    pdlp_settings.tolerances.absolute_dual_tolerance = absolute_tolerance;
-    pdlp_settings.tolerances.relative_dual_tolerance =
-      context.settings.tolerances.relative_tolerance;
-    pdlp_settings.tolerances.absolute_primal_tolerance = absolute_tolerance;
-    pdlp_settings.tolerances.relative_primal_tolerance =
-      context.settings.tolerances.relative_tolerance;
     pdlp_settings.time_limit              = lp_time_limit;
     pdlp_settings.first_primal_feasible   = false;
     pdlp_settings.concurrent_halt         = &global_concurrent_halt;
     pdlp_settings.method                  = context.settings.method;
-    pdlp_settings.concurrent_nnz_cutoff   = context.settings.concurrent_nnz_cutoff;
-    pdlp_settings.inside_mip              = true;
-    pdlp_settings.pdlp_solver_mode        = pdlp_solver_mode_t::Stable2;
+    pdlp_settings.inside_mip              = false;
     pdlp_settings.num_gpus                = context.settings.num_gpus;
-    pdlp_settings.presolver               = presolver_t::None;
-    pdlp_settings.per_constraint_residual = true;
-    set_pdlp_solver_mode(pdlp_settings);
     timer_t lp_timer(lp_time_limit);
-    auto lp_result = solve_lp_with_method<i_t, f_t>(*problem_ptr, pdlp_settings, lp_timer);
+    auto root_lp_snapshot    = make_root_lp_snapshot(*problem_ptr);
+    pdlp_settings.time_limit = lp_timer.remaining_time();
+    CUOPT_LOG_INFO(
+      "Root LP call started: method=%s budget=%.3fs mip_elapsed=%.3fs pdlp_mode=%d "
+      "inside_mip=%d presolver=Default per_constraint=%d snapshot_seconds=%.3f",
+      method_to_string(pdlp_settings.method).c_str(),
+      lp_time_limit,
+      timer.elapsed_time(),
+      static_cast<int>(pdlp_settings.pdlp_solver_mode),
+      static_cast<int>(pdlp_settings.inside_mip),
+      static_cast<int>(pdlp_settings.per_constraint_residual),
+      lp_timer.elapsed_time());
+    auto lp_result          = solve_lp(root_lp_snapshot, pdlp_settings);
+    const auto root_lp_info = lp_result.get_additional_termination_informations();
+    const auto root_lp_method =
+      root_lp_info.empty() ? method_t::Unset : root_lp_info.front().solved_by;
+    CUOPT_LOG_INFO("Root LP call completed: status=%s method=%s elapsed=%.3fs budget=%.3fs",
+                   lp_result.get_termination_status_string().c_str(),
+                   method_to_string(root_lp_method).c_str(),
+                   lp_timer.elapsed_time(),
+                   lp_time_limit);
+    CUOPT_LOG_INFO(
+      "Root LP postsolve mapping: primal=%zu expected_primal=%zu dual=%zu "
+      "expected_dual=%zu",
+      lp_result.get_primal_solution().size(),
+      lp_optimal_solution.size(),
+      lp_result.get_dual_solution().size(),
+      lp_dual_optimal_solution.size());
 
     // The concurrent root LP can fail to produce a usable solution -- e.g. the barrier
     // hits a numerical error on an infeasible problem and PDLP returns NumericalError
