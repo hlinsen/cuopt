@@ -195,6 +195,7 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                 error_type_t::RuntimeError,
                 "preprocess_problem should be called before running the solver");
 
+  CUOPT_LOG_INFO("MIP solver run_solver entry: elapsed=%.2f", timer_.elapsed_time());
   diversity_manager_t<i_t, f_t> dm(context);
   if (context.problem_ptr->empty) {
     CUOPT_LOG_INFO("Problem fully reduced in presolve");
@@ -286,6 +287,12 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
   }
 
   context.work_unit_scheduler_.register_context(context.gpu_heur_loop);
+
+  CUOPT_LOG_INFO("MIP solver setup before B&B/symmetry: elapsed=%.2f", timer_.elapsed_time());
+  // LP-free fix-and-propagate incumbent attempt as early as possible (problem space is final here)
+  if (context.settings.determinism_mode == CUOPT_MODE_OPPORTUNISTIC) {
+    dm.run_early_fix_propagate();
+  }
 
 #ifdef DETECT_SYMMETRY_AFTER_PRESOLVE
   // Detect symmetry after all presolve steps (PaPILO, cuOpt probing, bounds, trivial presolve).
@@ -516,6 +523,7 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
     }
 
     // Start the primal heuristics
+    CUOPT_LOG_INFO("MIP solver starting B&B and heuristics: elapsed=%.2f", timer_.elapsed_time());
     context.diversity_manager_ptr = &dm;
     sol                           = dm.run_solver();
   }  // implicit barrier for all tasks created in B&B and heuristics

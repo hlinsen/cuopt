@@ -20,6 +20,8 @@
 #include <cuopt/mathematical_optimization/solve.hpp>
 #include <pdlp/root_lp_snapshot.cuh>
 #include <pdlp/solve.cuh>
+#include <mip_heuristics/relaxed_lp/relaxed_lp.cuh>
+#include "fix_propagate_host.hpp"
 
 #include <utilities/copy_helpers.hpp>
 #include <utilities/scope_guard.hpp>
@@ -214,6 +216,251 @@ void diversity_manager_t<i_t, f_t>::generate_solution(f_t time_limit, bool rando
   // if a feasible is found, it is added to the population
   ls.generate_solution(sol, random_start, &population, time_limit);
   population.add_solution(std::move(sol), "generate_solution");
+}
+
+template <typename i_t, typename f_t>
+bool diversity_manager_t<i_t, f_t>::fpc_complete_continuous(solution_t<i_t, f_t>& sol,
+                                                            cuopt::timer_t& fpc_timer,
+                                                            int attempt,
+                                                            bool detect_infeasibility)
+{
+  raft::common::nvtx::range fun_scope("fpc_complete_continuous");
+  auto stream          = problem_ptr->handle_ptr->get_stream();
+  const double t_start = timer.elapsed_time();
+  auto [fixed_problem, fixed_assignment, variable_map] =
+    sol.fix_variables(problem_ptr->integer_indices);
+  fixed_problem.check_problem_representation(true);
+  // objective-free completion: only primal feasibility of the continuous part matters for an
+  // incumbent, and the cost vector (range 7e-12..4e7) is what keeps PDLP from reaching 1e-6
+  // per-row accuracy on the fixed LP; the objective of the result is evaluated on the original.
+  thrust::fill(problem_ptr->handle_ptr->get_thrust_policy(),
+               fixed_problem.objective_coefficients.begin(),
+               fixed_problem.objective_coefficients.end(),
+               f_t(0));
+  fixed_problem.presolve_data.objective_offset = 0;
+  auto& lp_state = fixed_problem.lp_state;
+  lp_state.resize(fixed_problem, stream);
+  thrust::fill(problem_ptr->handle_ptr->get_thrust_policy(),
+               lp_state.prev_dual.begin(),
+               lp_state.prev_dual.end(),
+               f_t(0));
+  const bool dual_warm = false;
+  CUOPT_LOG_INFO(
+    "FPC attempt %d completion LP: fixed problem vars=%d cstrs=%d nnz=%d dual_warm=%d build=%.2fs "
+    "elapsed=%.2f",
+    attempt,
+    fixed_problem.n_variables,
+    fixed_problem.n_constraints,
+    fixed_problem.nnz,
+    (int)dual_warm,
+    timer.elapsed_time() - t_start,
+    timer.elapsed_time());
+  relaxed_lp_settings_t lp_settings;
+  lp_settings.tolerance               = problem_ptr->tolerances.absolute_tolerance;
+  lp_settings.return_first_feasible   = true;
+  lp_settings.save_state              = true;
+  lp_settings.check_infeasibility     = detect_infeasibility;
+  lp_settings.per_constraint_residual = true;
+  lp_settings.has_initial_primal      = true;
+  // time-chunked completion: each chunk restarts PDLP from the previous iterate (warm start)
+  int chunk_id = 0;
+  while (!fpc_timer.check_time_limit() && !timer.check_time_limit()) {
+    if (check_b_b_preemption()) { return false; }
+    const double chunk     = chunk_id == 0 ? 20. : (chunk_id == 1 ? 40. : 60.);
+    lp_settings.time_limit = std::min(chunk, fpc_timer.remaining_time());
+    if (lp_settings.time_limit < 1.) { break; }
+    const double t_chunk = timer.elapsed_time();
+    auto resp = get_relaxed_lp_solution(fixed_problem, fixed_assignment, lp_state, lp_settings);
+    auto status = resp.get_termination_status();
+    const auto& info = resp.get_additional_termination_information();
+    sol.unfix_variables(fixed_assignment, variable_map);
+    const bool feas = sol.get_feasible();
+    CUOPT_LOG_INFO(
+      "FPC attempt %d completion chunk %d: status=%s iters=%d l2_primal_res=%g "
+      "l2_dual_res=%g gap=%g chunk_time=%.2fs feasible=%d max_cstr_viol=%g excess=%g obj=%g "
+      "elapsed=%.2f",
+      attempt,
+      chunk_id,
+      resp.get_termination_status_string().c_str(),
+      info.number_of_steps_taken,
+      info.l2_primal_residual,
+      info.l2_dual_residual,
+      info.gap,
+      timer.elapsed_time() - t_chunk,
+      (int)feas,
+      sol.compute_max_constraint_violation(),
+      sol.get_total_excess(),
+      sol.get_user_objective(),
+      timer.elapsed_time());
+    chunk_id++;
+    if (feas) { return true; }
+    if (status == pdlp_termination_status_t::PrimalInfeasible ||
+        status == pdlp_termination_status_t::DualInfeasible ||
+        status == pdlp_termination_status_t::NumericalError) {
+      return false;
+    }
+  }
+  return false;
+}
+
+template <typename i_t, typename f_t>
+void diversity_manager_t<i_t, f_t>::run_early_fix_propagate()
+{
+  if (early_fpc_done || problem_ptr->n_integer_vars == 0 ||
+      problem_ptr->n_integer_vars == problem_ptr->n_variables) {
+    return;
+  }
+  const char* disable_heuristics_env = std::getenv("CUOPT_DISABLE_GPU_HEURISTICS");
+  if (disable_heuristics_env != nullptr && std::string(disable_heuristics_env) == "1") { return; }
+  early_fpc_done       = true;
+  population.timer     = timer;
+  fpc_external_publish = true;
+  CUOPT_LOG_INFO("Early fix-and-propagate start: elapsed=%.2f", timer.elapsed_time());
+  run_fix_propagate_complete(false, 25.);
+  fpc_external_publish = false;
+}
+
+template <typename i_t, typename f_t>
+bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t max_budget)
+{
+  raft::common::nvtx::range fun_scope("run_fix_propagate_complete");
+  auto* handle_ptr     = problem_ptr->handle_ptr;
+  auto stream          = handle_ptr->get_stream();
+  const f_t budget     = std::min<f_t>(timer.remaining_time() * 0.8, max_budget);
+  timer_t fpc_timer(budget);
+  const f_t int_tol    = problem_ptr->tolerances.integrality_tolerance;
+  const double t_build = timer.elapsed_time();
+
+  // host copies of the model and the LP optimum
+  const i_t n_vars  = problem_ptr->n_variables;
+  const i_t n_cstrs = problem_ptr->n_constraints;
+  auto h_offsets    = cuopt::host_copy(problem_ptr->offsets, stream);
+  auto h_cols       = cuopt::host_copy(problem_ptr->variables, stream);
+  auto h_vals       = cuopt::host_copy(problem_ptr->coefficients, stream);
+  auto h_clb        = cuopt::host_copy(problem_ptr->constraint_lower_bounds, stream);
+  auto h_cub        = cuopt::host_copy(problem_ptr->constraint_upper_bounds, stream);
+  auto h_int        = cuopt::host_copy(problem_ptr->integer_indices, stream);
+  auto [h_vlb, h_vub] = cuopt::extract_host_bounds<f_t>(problem_ptr->variable_bounds, handle_ptr);
+  // reference point: the root LP optimum, or (before the root LP) zero clamped to the bounds
+  std::vector<f_t> h_lp;
+  if (use_lp) {
+    h_lp = cuopt::host_copy(lp_optimal_solution, stream);
+  } else {
+    h_lp.resize(n_vars);
+    for (i_t j = 0; j < n_vars; ++j) {
+      h_lp[j] = std::min(std::max(f_t(0), h_vlb[j]), h_vub[j]);
+    }
+  }
+  host_fix_propagate_t<i_t, f_t> fp_host;
+  fp_host.abs_tol = problem_ptr->tolerances.absolute_tolerance;
+  fp_host.build(n_vars, n_cstrs, h_offsets, h_cols, h_vals, h_clb, h_cub, h_vlb, h_vub, h_int);
+  i_t n_frac = 0, n_at_one = 0;
+  for (auto v : h_int) {
+    f_t x = h_lp[v];
+    if ((x - std::floor(x) > int_tol) && (std::ceil(x) - x > int_tol)) n_frac++;
+    if (x >= 1. - int_tol) n_at_one++;
+  }
+  CUOPT_LOG_INFO(
+    "FPC start: use_lp=%d budget=%.1fs n_int=%zu lp_fractional=%d lp_ge_one=%d int_rows=%d "
+    "(int_only=%d mixed=%d) int_row_nnz=%zu build=%.2fs elapsed=%.2f",
+    (int)use_lp,
+    budget,
+    h_int.size(),
+    n_frac,
+    n_at_one,
+    fp_host.n_rows(),
+    fp_host.n_binary_only_rows,
+    fp_host.n_mixed_rows,
+    fp_host.row_cols.size(),
+    timer.elapsed_time() - t_build,
+    timer.elapsed_time());
+
+  // processing order: most decided (closest to integral) first
+  std::vector<i_t> order(h_int.begin(), h_int.end());
+  std::stable_sort(order.begin(), order.end(), [&](i_t a, i_t b) {
+    f_t fa = std::abs(h_lp[a] - std::floor(h_lp[a]) - 0.5);
+    f_t fb = std::abs(h_lp[b] - std::floor(h_lp[b]) - 0.5);
+    return fa > fb;
+  });
+
+  // with the LP: nearest / up-biased / down-biased; without: upper bounds / lower bounds
+  const int n_attempts = use_lp ? 3 : 2;
+  for (int attempt = 0; attempt < n_attempts; ++attempt) {
+    if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption()) {
+      break;
+    }
+    // value preference: 0 = LP nearest, 1 = up-biased (any positive LP value -> up),
+    // 2 = down-biased (only LP values at the upper end -> up)
+    std::vector<f_t> pref(n_vars, 0.);
+    for (auto v : h_int) {
+      f_t x  = h_lp[v];
+      f_t fl = std::floor(x + int_tol);
+      f_t fr = x - fl;
+      if (!use_lp) {
+        pref[v] = attempt == 0 ? h_vub[v] : h_vlb[v];
+      } else if (attempt == 0) {
+        pref[v] = std::round(x);
+      } else if (attempt == 1) {
+        pref[v] = fr > int_tol ? fl + 1 : fl;
+      } else {
+        pref[v] = fr >= 1. - int_tol ? fl + 1 : fl;
+      }
+    }
+    const double t_dive = timer.elapsed_time();
+    i_t n_flipped = 0, n_implied = 0;
+    fp_host.work      = 0;
+    i_t n_conflicts   = fp_host.dive(order, pref, n_flipped, n_implied);
+    i_t n_dead        = 0;
+    for (i_t r = 0; r < fp_host.n_rows(); ++r) {
+      n_dead += fp_host.row_dead[r];
+    }
+    i_t n_ones = 0, n_diff = 0;
+    for (auto v : h_int) {
+      n_ones += fp_host.col_lb[v] > 0.5;
+      n_diff += std::abs(fp_host.col_lb[v] - std::round(h_lp[v])) > 0.5;
+    }
+    solution_t<i_t, f_t> sol(*problem_ptr);
+    {
+      std::vector<f_t> h_assign = h_lp;
+      for (auto v : h_int) {
+        h_assign[v] = fp_host.col_lb[v];
+      }
+      sol.copy_new_assignment(h_assign);
+    }
+    bool feas = sol.compute_feasibility();
+    CUOPT_LOG_INFO(
+      "FPC attempt %d dive: time=%.3fs conflicts=%d dead_rows=%d flipped=%d implied_off_pref=%d "
+      "ones=%d differs_from_lp_nearest=%d work=%ld feasible=%d max_cstr_viol=%g elapsed=%.2f",
+      attempt,
+      timer.elapsed_time() - t_dive,
+      n_conflicts,
+      n_dead,
+      n_flipped,
+      n_implied,
+      n_ones,
+      n_diff,
+      (long)fp_host.work,
+      (int)feas,
+      sol.compute_max_constraint_violation(),
+      timer.elapsed_time());
+    if (!feas) { feas = fpc_complete_continuous(sol, fpc_timer, attempt, !use_lp); }
+    if (feas) {
+      CUOPT_LOG_INFO("FPC attempt %d found feasible solution obj=%g elapsed=%.2f",
+                     attempt,
+                     sol.get_user_objective(),
+                     timer.elapsed_time());
+      if (fpc_external_publish) {
+        population.add_external_solution(
+          sol.get_host_assignment(), sol.get_objective(), solution_origin_t::FIX_PROPAGATE);
+      } else {
+        population.add_solution(std::move(sol),
+                                use_lp ? "fix_propagate_complete" : "fix_propagate_complete_nolp");
+      }
+      return true;
+    }
+  }
+  CUOPT_LOG_INFO("FPC end without feasible solution elapsed=%.2f", timer.elapsed_time());
+  return false;
 }
 
 template <typename i_t, typename f_t>
@@ -583,6 +830,14 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   ls.start_cpufj_scratch_threads(population);
 
   if (check_b_b_preemption()) { return population.best_feasible(); }
+  CUOPT_LOG_INFO("Heuristics start (before root LP): elapsed=%.2f", timer.elapsed_time());
+  // LP-free fix-and-propagate attempt before the root LP (bounded, objective-free completion)
+  if (!fj_only_run && !early_fpc_done && !simplex_solution_exists.load() &&
+      !check_b_b_preemption()) {
+    run_fix_propagate_complete(false, 25.);
+    population.add_external_solutions_to_population();
+    if (check_b_b_preemption()) { return population.best_feasible(); }
+  }
   lp_state_t<i_t, f_t>& lp_state = problem_ptr->lp_state;
   // resize because some constructor might be called before the presolve
   lp_state.resize(*problem_ptr, problem_ptr->handle_ptr->get_stream());
@@ -760,6 +1015,12 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     solution_t<i_t, f_t> sol(*problem_ptr);
     run_fj_alone(sol);
     return sol;
+  }
+
+  if (ls.lp_optimal_exists && !check_b_b_preemption() && !timer.check_time_limit()) {
+    run_fix_propagate_complete(true, 700.);
+    population.add_external_solutions_to_population();
+    if (timer.check_time_limit() || check_b_b_preemption()) { return population.best_feasible(); }
   }
 
   generate_solution(timer.remaining_time(), false);
