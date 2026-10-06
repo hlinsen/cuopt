@@ -39,6 +39,20 @@ class diversity_manager_t {
   void generate_solution(f_t time_limit, bool random_start = true);
   void run_fj_alone(solution_t<i_t, f_t>& solution);
   void run_fp_alone();
+  // Fix-and-propagate the integers (LP-guided order and values when use_lp, otherwise bound
+  // preferences), with bounds propagation and backtracking over the integer rows, then complete
+  // the continuous part with an objective-free fixed-integer PDLP solve. Returns true if a
+  // feasible solution was added to the population.
+  bool run_fix_propagate_complete(bool use_lp, f_t max_budget);
+  // LP-free fix-and-propagate right after presolve (before B&B setup / symmetry detection);
+  // results go through the thread-safe external queue since the population is not set up yet.
+  void run_early_fix_propagate();
+  bool early_fpc_done{false};
+  bool fpc_external_publish{false};
+  bool fpc_complete_continuous(solution_t<i_t, f_t>& sol,
+                               cuopt::timer_t& fpc_timer,
+                               int attempt,
+                               bool detect_infeasibility);
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring
