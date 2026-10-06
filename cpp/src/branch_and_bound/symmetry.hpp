@@ -8,7 +8,7 @@
 #pragma once
 
 #include <branch_and_bound/mip_node.hpp>
-#include <dual_simplex/bounds_strengthening.hpp>
+#include <dual_simplex/domain.hpp>
 #include <dual_simplex/presolve.hpp>
 #include <dual_simplex/simplex_solver_settings.hpp>
 #include <dual_simplex/user_problem.hpp>
@@ -342,10 +342,10 @@ class orbital_fixing_t {
                      const simplex::simplex_solver_settings_t<i_t, f_t>& settings,
                      mip_node_t<i_t, f_t>* node_ptr,
                      simplex::lp_problem_t<i_t, f_t>& problem,
-                     const std::vector<f_t>& start_lower,
-                     const std::vector<f_t>& start_upper,
+                     const std::vector<f_t>& root_lower,
+                     const std::vector<f_t>& root_upper,
                      const csr_matrix_t<i_t, f_t>& Arow,
-                     simplex::bounds_strengthening_t<i_t, f_t>& node_presolver)
+                     simplex::domain_t<i_t, f_t>& domain)
   {
     // At the start of a new plunge, restore the parent's cumulative orbital
     // fixings into the problem.  These bound changes were derived during the
@@ -355,18 +355,10 @@ class orbital_fixing_t {
     // non-monotonic.
     if (start_plunge_) {
       for (i_t v : cumulative_fix_zero_) {
-        const f_t old_lower = problem.lower[v];
-        const f_t old_upper = problem.upper[v];
-        problem.lower[v]    = 0.0;
-        problem.upper[v]    = 0.0;
-        node_presolver.update_activities(v, old_lower, 0.0, old_upper, 0.0, problem, Arow);
+        domain.apply(problem, v, 0.0, 0.0, simplex::bound_change_origin_t::SYMMETRY);
       }
       for (i_t v : cumulative_fix_one_) {
-        const f_t old_lower = problem.lower[v];
-        const f_t old_upper = problem.upper[v];
-        problem.lower[v]    = 1.0;
-        problem.upper[v]    = 1.0;
-        node_presolver.update_activities(v, old_lower, 1.0, old_upper, 1.0, problem, Arow);
+        domain.apply(problem, v, 1.0, 1.0, simplex::bound_change_origin_t::SYMMETRY);
       }
     }
 
@@ -392,11 +384,11 @@ class orbital_fixing_t {
     // Exclude root-level fixings (from reduced cost fixing / bound strengthening
     // after cuts) because these can be asymmetric w.r.t. the symmetry group.
     for (i_t j : symmetry->binary_variables) {
-      if (marked_b1_[j] == 0 && problem.lower[j] == 1.0 && start_lower[j] < 1.0) {
+      if (marked_b1_[j] == 0 && problem.lower[j] == 1.0 && root_lower[j] < 1.0) {
         f1_.push_back(j);
         marked_f1_[j] = 1;
       }
-      if (marked_b0_[j] == 0 && problem.upper[j] == 0.0 && start_upper[j] > 0.0) {
+      if (marked_b0_[j] == 0 && problem.upper[j] == 0.0 && root_upper[j] > 0.0) {
         f0_.push_back(j);
         marked_f0_[j] = 1;
       }
@@ -555,18 +547,10 @@ class orbital_fixing_t {
 
     // Apply the fixings from non-conflicting orbits
     for (i_t v : fix_zero_) {
-      const f_t old_lower = problem.lower[v];
-      const f_t old_upper = problem.upper[v];
-      problem.lower[v]    = 0.0;
-      problem.upper[v]    = 0.0;
-      node_presolver.update_activities(v, old_lower, 0.0, old_upper, 0.0, problem, Arow);
+      domain.apply(problem, v, 0.0, 0.0, simplex::bound_change_origin_t::SYMMETRY);
     }
     for (i_t v : fix_one_) {
-      const f_t old_lower = problem.lower[v];
-      const f_t old_upper = problem.upper[v];
-      problem.lower[v]    = 1.0;
-      problem.upper[v]    = 1.0;
-      node_presolver.update_activities(v, old_lower, 1.0, old_upper, 1.0, problem, Arow);
+      domain.apply(problem, v, 1.0, 1.0, simplex::bound_change_origin_t::SYMMETRY);
     }
 
     // Accumulate this node's fixings and store in the node so that
@@ -622,7 +606,7 @@ class lexical_reduction_t {
                      mip_node_t<i_t, f_t>* node_ptr,
                      simplex::lp_problem_t<i_t, f_t>& problem,
                      const csr_matrix_t<i_t, f_t>& Arow,
-                     simplex::bounds_strengthening_t<i_t, f_t>& node_presolver)
+                     simplex::domain_t<i_t, f_t>& domain)
   {
     reverse_branched_variables_.clear();
     mip_node_t<i_t, f_t>* node = node_ptr;
@@ -679,11 +663,7 @@ class lexical_reduction_t {
           break;
         }
         if (val_j == 0 && val_p_j == -1) {
-          const f_t old_lower = problem.lower[p_j];
-          const f_t old_upper = problem.upper[p_j];
-          problem.lower[p_j]  = 0.0;
-          problem.upper[p_j]  = 0.0;
-          node_presolver.update_activities(p_j, old_lower, 0.0, old_upper, 0.0, problem, Arow);
+          domain.apply(problem, p_j, 0.0, 0.0, simplex::bound_change_origin_t::SYMMETRY);
           num_fixings++;
           continue;  // continue to the next pair
         }

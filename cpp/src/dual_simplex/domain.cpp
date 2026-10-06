@@ -5,9 +5,10 @@
  */
 /* clang-format on */
 
-#include <dual_simplex/bounds_strengthening.hpp>
+#include <dual_simplex/domain.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 
 namespace cuopt::mathematical_optimization::simplex {
@@ -17,7 +18,7 @@ namespace cuopt::mathematical_optimization::simplex {
 // twice the working precision. The product is formed with fma(coeff, value, 0) rather than coeff *
 // value, so GCC's default -ffp-contract=fast cannot fuse it into the addition and break the TwoSum.
 template <typename f_t>
-static inline void dot2_add(f_t coeff, f_t value, f_t& sum, f_t& err)
+inline void dot2_add(f_t coeff, f_t value, f_t& sum, f_t& err)
 {
   const f_t h = std::fma(coeff, value, 0.0);
   const f_t t = sum + h;
@@ -29,10 +30,10 @@ static inline void dot2_add(f_t coeff, f_t value, f_t& sum, f_t& err)
 // Computes the min/max activity of row i over the bounds [lower, upper]. Infinite or huge
 // contributions are counted in min_inf/max_inf instead of being added to the sum.
 template <typename i_t, typename f_t>
-void bounds_strengthening_t<i_t, f_t>::compute_row_activity(i_t i,
-                                                            const csr_matrix_t<i_t, f_t>& Arow,
-                                                            const std::vector<f_t>& lower,
-                                                            const std::vector<f_t>& upper)
+void domain_t<i_t, f_t>::compute_row_activity(i_t i,
+                                              const csr_matrix_t<i_t, f_t>& Arow,
+                                              const std::vector<f_t>& lower,
+                                              const std::vector<f_t>& upper)
 {
   i_t begin = Arow.row_start[i];
   i_t end   = Arow.row_start[i + 1];
@@ -70,51 +71,54 @@ void bounds_strengthening_t<i_t, f_t>::compute_row_activity(i_t i,
 
 // Computes the activities of all rows from scratch.
 template <typename i_t, typename f_t>
-void bounds_strengthening_t<i_t, f_t>::compute_activities(const csr_matrix_t<i_t, f_t>& Arow,
-                                                          const std::vector<f_t>& lower,
-                                                          const std::vector<f_t>& upper)
+void domain_t<i_t, f_t>::compute_activities(const csr_matrix_t<i_t, f_t>& Arow,
+                                            const lp_problem_t<i_t, f_t>& lp,
+                                            const std::vector<i_t>& slacks)
 {
   row_activities.resize(Arow.m);
   row_queued.resize(Arow.m, false);
   row_queue.clear_resize(std::max(Arow.m, 1));
 
+  row_slack.assign(Arow.m, -1);
+  for (i_t s : slacks) {
+    assert(lp.A.col_start[s + 1] - lp.A.col_start[s] == 1);
+    row_slack[lp.A.i[lp.A.col_start[s]]] = s;
+  }
+
   for (i_t i = 0; i < Arow.m; ++i) {
-    compute_row_activity(i, Arow, lower, upper);
+    compute_row_activity(i, Arow, lp.lower, lp.upper);
   }
 }
 
 // Incrementally updates the activities of every row in column var after its bounds changed from
 // [old_lb, old_ub] to [new_lb, new_ub].
 template <typename i_t, typename f_t>
-void bounds_strengthening_t<i_t, f_t>::update_activities(i_t var,
-                                                         f_t old_lb,
-                                                         f_t new_lb,
-                                                         f_t old_ub,
-                                                         f_t new_ub,
-                                                         const lp_problem_t<i_t, f_t>& lp,
-                                                         const csr_matrix_t<i_t, f_t>& Arow)
+void domain_t<i_t, f_t>::update_activities(const lp_problem_t<i_t, f_t>& lp,
+                                           const bound_change_t<i_t, f_t>& bound_change)
 {
-  i_t begin = lp.A.col_start[var];
-  i_t end   = lp.A.col_start[var + 1];
+  i_t begin = lp.A.col_start[bound_change.var];
+  i_t end   = lp.A.col_start[bound_change.var + 1];
   nnz_processed += end - begin;
-
-  // A wider range can raise the capacity threshold of the rows, so reset it until the row is
-  // propagated again.
-  const bool loosened = new_ub - new_lb > old_ub - old_lb;
 
   for (i_t k = begin; k < end; ++k) {
     i_t i                              = lp.A.i[k];
     row_activity_t<i_t, f_t>& activity = row_activities[i];
-    if (loosened) { activity.capacity_threshold = inf; }
+
+    // A wider range can raise the capacity threshold of the rows, so reset it until the row is
+    // propagated again.
+    if (bound_change.new_upper - bound_change.new_lower >
+        bound_change.old_upper - bound_change.old_lower) {
+      activity.capacity_threshold = inf;
+    }
 
     // A row waiting for recomputation is rebuilt from the current bounds anyway.
     if (activity.recompute) { continue; }
 
     f_t aij           = lp.A.x[k];
-    f_t old_bound_max = aij > 0 ? old_ub : old_lb;
-    f_t old_bound_min = aij < 0 ? old_ub : old_lb;
-    f_t new_bound_max = aij > 0 ? new_ub : new_lb;
-    f_t new_bound_min = aij < 0 ? new_ub : new_lb;
+    f_t old_bound_max = aij > 0 ? bound_change.old_upper : bound_change.old_lower;
+    f_t old_bound_min = aij < 0 ? bound_change.old_upper : bound_change.old_lower;
+    f_t new_bound_max = aij > 0 ? bound_change.new_upper : bound_change.new_lower;
+    f_t new_bound_min = aij < 0 ? bound_change.new_upper : bound_change.new_lower;
     f_t old_alpha_max = aij * old_bound_max;
     f_t old_alpha_min = aij * old_bound_min;
     f_t new_alpha_max = aij * new_bound_max;
@@ -155,19 +159,26 @@ void bounds_strengthening_t<i_t, f_t>::update_activities(i_t var,
       activity.min_peak = std::max(activity.min_peak, std::abs(activity.min));
     }
 
-    // An activity much smaller than its peak has lost precision to cancellation in the
-    // incremental sum, so mark the row to be recomputed from scratch.
+    // An activity much smaller than its peak has lost precision to numerical cancellations,
+    // so mark the row to be recomputed from scratch.
     if (activity.max_peak > params.recompute_factor * std::abs(activity.max) ||
         activity.min_peak > params.recompute_factor * std::abs(activity.min)) {
       activity.recompute = true;
     }
   }
 }
+template <typename i_t, typename f_t>
+void domain_t<i_t, f_t>::update_activities_from_stack(const lp_problem_t<i_t, f_t>& lp, i_t start)
+{
+  for (size_t k = start; k < bound_changes.size(); ++k) {
+    update_activities(lp, bound_changes[k]);
+  }
+}
 
 // Queues row i unless it is already queued or neither of its sides can tighten a bound. A row
 // awaiting recomputation is always queued.
 template <typename i_t, typename f_t>
-void bounds_strengthening_t<i_t, f_t>::queue_row(i_t i, const lp_problem_t<i_t, f_t>& lp, f_t tol)
+void domain_t<i_t, f_t>::queue_row(i_t i, const lp_problem_t<i_t, f_t>& lp, f_t tol)
 {
   if (row_queued[i]) { return; }
 
@@ -176,13 +187,21 @@ void bounds_strengthening_t<i_t, f_t>::queue_row(i_t i, const lp_problem_t<i_t, 
     const f_t max_a = activity.max + activity.max_err;
     const f_t min_a = activity.min + activity.min_err;
     const f_t rhs   = lp.rhs[i];
+
+    // The slack is never tightened, so a side whose only infinite contribution is the slack is
+    // skipped.
+    const i_t s              = row_slack.empty() ? -1 : row_slack[i];
+    const f_t a_s            = s >= 0 ? lp.A.x[lp.A.col_start[s]] : 0;
+    const bool slack_max_inf = s >= 0 && (a_s > 0 ? lp.upper[s] == inf : lp.lower[s] == -inf);
+    const bool slack_min_inf = s >= 0 && (a_s > 0 ? lp.lower[s] == -inf : lp.upper[s] == inf);
+
     const bool propagate_upper =
       (activity.max_inf != 0 || max_a > rhs + tol) &&
-      (activity.min_inf == 1 ||
+      ((activity.min_inf == 1 && !slack_min_inf) ||
        (activity.min_inf == 0 && rhs - min_a <= activity.capacity_threshold));
     const bool propagate_lower =
       (activity.min_inf != 0 || min_a < rhs - tol) &&
-      (activity.max_inf == 1 ||
+      ((activity.max_inf == 1 && !slack_max_inf) ||
        (activity.max_inf == 0 && max_a - rhs <= activity.capacity_threshold));
     if (!propagate_upper && !propagate_lower) { return; }
   }
@@ -194,36 +213,29 @@ void bounds_strengthening_t<i_t, f_t>::queue_row(i_t i, const lp_problem_t<i_t, 
 // Recomputes all activities from [lower, upper] and propagates every row, tightening lower and
 // upper in place.
 template <typename i_t, typename f_t>
-bool bounds_strengthening_t<i_t, f_t>::propagate_full(
-  const csr_matrix_t<i_t, f_t>& Arow,
-  const std::vector<variable_type_t>& var_types,
-  const simplex_solver_settings_t<i_t, f_t>& settings,
-  const lp_problem_t<i_t, f_t>& lp,
-  std::vector<f_t>& lower,
-  std::vector<f_t>& upper)
+bool domain_t<i_t, f_t>::propagate_full(const csr_matrix_t<i_t, f_t>& Arow,
+                                        const std::vector<variable_type_t>& var_types,
+                                        const simplex_solver_settings_t<i_t, f_t>& settings,
+                                        lp_problem_t<i_t, f_t>& lp,
+                                        const std::vector<i_t>& slacks)
 {
-  compute_activities(Arow, lower, upper);
+  compute_activities(Arow, lp, slacks);
   for (i_t i = 0; i < lp.A.m; ++i) {
     queue_row(i, lp, settings.primal_tol);
   }
-  return run_bound_propagation(Arow, var_types, settings, lp, lower, upper);
+  return run_bound_propagation(Arow, var_types, settings, lp);
 }
 
-// Propagates from the rows containing a variable marked in bounds_changed. The activities must
-// already match [lower, upper], i.e. update_activities was called for every changed variable.
 template <typename i_t, typename f_t>
-bool bounds_strengthening_t<i_t, f_t>::propagate(
+bool domain_t<i_t, f_t>::propagate_from_variables(
   const csr_matrix_t<i_t, f_t>& Arow,
   const std::vector<variable_type_t>& var_types,
   const simplex_solver_settings_t<i_t, f_t>& settings,
-  const lp_problem_t<i_t, f_t>& lp,
-  const std::vector<bool>& bounds_changed,
-  std::vector<f_t>& lower,
-  std::vector<f_t>& upper)
+  lp_problem_t<i_t, f_t>& lp,
+  const std::vector<i_t>& vars)
 {
-  assert(bounds_changed.size() == lp.A.n);
-  for (i_t j = 0; j < lp.A.n; ++j) {
-    if (!bounds_changed[j]) { continue; }
+  compute_activities(Arow, lp, {});
+  for (i_t j : vars) {
     const i_t col_start = lp.A.col_start[j];
     const i_t col_end   = lp.A.col_start[j + 1];
     nnz_processed += col_end - col_start;
@@ -231,38 +243,76 @@ bool bounds_strengthening_t<i_t, f_t>::propagate(
       queue_row(lp.A.i[p], lp, settings.primal_tol);
     }
   }
-  return run_bound_propagation(Arow, var_types, settings, lp, lower, upper);
+  return run_bound_propagation(Arow, var_types, settings, lp);
+}
+
+// Propagates from the rows containing a variable marked in bounds_changed. The activities must
+// already match [lower, upper], i.e. update_activities was called for every changed variable.
+template <typename i_t, typename f_t>
+bool domain_t<i_t, f_t>::propagate_from_stack(const csr_matrix_t<i_t, f_t>& Arow,
+                                              const std::vector<variable_type_t>& var_types,
+                                              const simplex_solver_settings_t<i_t, f_t>& settings,
+                                              lp_problem_t<i_t, f_t>& lp,
+                                              i_t start)
+{
+  for (size_t k = start; k < bound_changes.size(); ++k) {
+    const i_t j         = bound_changes[k].var;
+    const i_t col_start = lp.A.col_start[j];
+    const i_t col_end   = lp.A.col_start[j + 1];
+    nnz_processed += col_end - col_start;
+    for (i_t p = col_start; p < col_end; ++p) {
+      queue_row(lp.A.i[p], lp, settings.primal_tol);
+    }
+  }
+
+  return run_bound_propagation(Arow, var_types, settings, lp);
 }
 
 // Propagates from the rows containing var. The activities must already match [lower, upper], i.e.
 // update_activities was called for var.
 template <typename i_t, typename f_t>
-bool bounds_strengthening_t<i_t, f_t>::propagate(
-  i_t var,
-  const csr_matrix_t<i_t, f_t>& Arow,
-  const std::vector<variable_type_t>& var_types,
-  const simplex_solver_settings_t<i_t, f_t>& settings,
-  const lp_problem_t<i_t, f_t>& lp,
-  std::vector<f_t>& lower,
-  std::vector<f_t>& upper)
+bool domain_t<i_t, f_t>::apply_and_propagate(const csr_matrix_t<i_t, f_t>& Arow,
+                                             const std::vector<variable_type_t>& var_types,
+                                             const simplex_solver_settings_t<i_t, f_t>& settings,
+                                             bound_change_t<i_t, f_t> bound_change,
+                                             lp_problem_t<i_t, f_t>& lp)
 {
-  const i_t col_start = lp.A.col_start[var];
-  const i_t col_end   = lp.A.col_start[var + 1];
+  if (!apply(lp, bound_change)) return true;
+
+  i_t j         = bound_change.var;
+  i_t col_start = lp.A.col_start[j];
+  i_t col_end   = lp.A.col_start[j + 1];
   nnz_processed += col_end - col_start;
   for (i_t p = col_start; p < col_end; ++p) {
     queue_row(lp.A.i[p], lp, settings.primal_tol);
   }
-  return run_bound_propagation(Arow, var_types, settings, lp, lower, upper);
+
+  return run_bound_propagation(Arow, var_types, settings, lp);
 }
 
 template <typename i_t, typename f_t>
-bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
-  const csr_matrix_t<i_t, f_t>& Arow,
-  const std::vector<variable_type_t>& var_types,
-  const simplex_solver_settings_t<i_t, f_t>& settings,
-  const lp_problem_t<i_t, f_t>& lp,
-  std::vector<f_t>& lower,
-  std::vector<f_t>& upper)
+void domain_t<i_t, f_t>::backtrack_to_parent(lp_problem_t<i_t, f_t>& lp)
+{
+  bool popped_branch = false;
+  while (!bound_changes.empty() && !popped_branch) {
+    bound_change_t<i_t, f_t> bound_change = bound_changes.back();
+    bound_changes.pop_back();
+    popped_branch = bound_change.origin == bound_change_origin_t::BRANCH;
+
+    lp.lower[bound_change.var] = bound_change.old_lower;
+    lp.upper[bound_change.var] = bound_change.old_upper;
+
+    std::swap(bound_change.old_lower, bound_change.new_lower);
+    std::swap(bound_change.old_upper, bound_change.new_upper);
+    update_activities(lp, bound_change);
+  }
+}
+
+template <typename i_t, typename f_t>
+bool domain_t<i_t, f_t>::run_bound_propagation(const csr_matrix_t<i_t, f_t>& Arow,
+                                               const std::vector<variable_type_t>& var_types,
+                                               const simplex_solver_settings_t<i_t, f_t>& settings,
+                                               lp_problem_t<i_t, f_t>& lp)
 {
   bool feasible = true;
   i_t iter      = 0;
@@ -271,7 +321,7 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
     row_queued[row] = false;
     ++iter;
 
-    if (row_activities[row].recompute) { compute_row_activity(row, Arow, lower, upper); }
+    if (row_activities[row].recompute) { compute_row_activity(row, Arow, lp.lower, lp.upper); }
     row_activity_t activity = row_activities[row];
     const f_t max_a         = activity.max + activity.max_err;
     const f_t min_a         = activity.min + activity.min_err;
@@ -299,15 +349,20 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
     const f_t rhs             = lp.rhs[row];
 
     // A side of the row (a x <= rhs or a x >= rhs) is propagated only if it is not redundant and
-    // either a single infinite contribution can be bounded or its slack is within the capacity
-    // threshold.
+    // either a single infinite contribution, other than the row slack, can be bounded or its slack
+    // is within the capacity threshold.
+    const i_t s              = row_slack.empty() ? -1 : row_slack[row];
+    const f_t a_s            = s >= 0 ? lp.A.x[lp.A.col_start[s]] : 0;
+    const bool slack_max_inf = s >= 0 && (a_s > 0 ? lp.upper[s] == inf : lp.lower[s] == -inf);
+    const bool slack_min_inf = s >= 0 && (a_s > 0 ? lp.lower[s] == -inf : lp.upper[s] == inf);
+
     const bool propagate_upper =
       (activity.max_inf != 0 || max_a > rhs + tol) &&
-      (activity.min_inf == 1 ||
+      ((activity.min_inf == 1 && !slack_min_inf) ||
        (activity.min_inf == 0 && rhs - min_a <= activity.capacity_threshold));
     const bool propagate_lower =
       (activity.min_inf != 0 || min_a < rhs - tol) &&
-      (activity.max_inf == 1 ||
+      ((activity.max_inf == 1 && !slack_max_inf) ||
        (activity.max_inf == 0 && max_a - rhs <= activity.capacity_threshold));
     if (!propagate_upper && !propagate_lower) { continue; }
 
@@ -323,28 +378,35 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
       const f_t a_ij = Arow.x[p];
 
       // A fixed variable cannot be tightened.
-      const f_t lb = lower[j];
-      const f_t ub = upper[j];
+      const f_t lb = lp.lower[j];
+      const f_t ub = lp.upper[j];
       if (lb == ub) { continue; }
 
       // A continuous column singleton (e.g., a slack) only has bounds implied by this row, so
       // tightening it cannot reach any other row.
-      const bool is_integer = !var_types.empty() && var_types[j] == variable_type_t::INTEGER;
-      if (!is_integer && lp.A.col_start[j + 1] - lp.A.col_start[j] == 1) { continue; }
+      if (var_types[j] != variable_type_t::INTEGER &&
+          lp.A.col_start[j + 1] - lp.A.col_start[j] == 1) {
+        continue;
+      }
 
       // Largest slack for which x_j can still receive an accepted bound.
-      const f_t range = ub - lb;
-      const f_t reduction =
-        !std::isfinite(range)
-          ? inf
-          : (is_integer
-               ? range - settings.integer_tol
-               : range - std::max(params.min_relative_improvement * range, min_improvement));
-      threshold = std::max({threshold, std::abs(a_ij) * reduction, tol});
+      if (!std::isfinite(ub) || !std::isfinite(lb)) {
+        threshold = inf;
+      } else {
+        f_t slack = ub - lb;
+
+        if (var_types[j] == variable_type_t::INTEGER) {
+          slack -= settings.integer_tol;
+        } else {
+          slack -= std::max(params.min_relative_improvement * slack, min_improvement);
+        }
+
+        threshold = std::max({threshold, std::abs(a_ij) * slack, tol});
+      }
 
       // Read the activity again for each variable, since earlier tightenings in this row have
       // already updated it, possibly marking it for recomputation.
-      if (row_activities[row].recompute) { compute_row_activity(row, Arow, lower, upper); }
+      if (row_activities[row].recompute) { compute_row_activity(row, Arow, lp.lower, lp.upper); }
       const row_activity_t<i_t, f_t>& current = row_activities[row];
 
       // Contribution of x_j to the min/max activity, flagged as infinite the same way as in
@@ -401,7 +463,7 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
       // ones must shrink the range by min_relative_improvement.
       bool tighten_lb = false;
       bool tighten_ub = false;
-      if (is_integer) {
+      if (var_types[j] == variable_type_t::INTEGER) {
         new_lb     = std::ceil(new_lb - settings.integer_tol);
         new_ub     = std::floor(new_ub + settings.integer_tol);
         tighten_lb = new_lb > lb && new_lb - lb > min_improvement * std::abs(new_lb);
@@ -442,9 +504,7 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
       }
 
       // Apply the new bounds and update the activities of every row containing x_j.
-      lower[j] = new_lb;
-      upper[j] = new_ub;
-      update_activities(j, lb, new_lb, ub, new_ub, lp, Arow);
+      apply(lp, j, new_ub, new_lb, bound_change_origin_t::BOUND_PROPAGATION);
 
       // Queue the rows containing x_j, including this one, so they are propagated with the new
       // bounds.
@@ -471,7 +531,7 @@ bool bounds_strengthening_t<i_t, f_t>::run_bound_propagation(
 }
 
 #ifdef DUAL_SIMPLEX_INSTANTIATE_DOUBLE
-template class bounds_strengthening_t<int, double>;
+template class domain_t<int, double>;
 #endif
 
 }  // namespace cuopt::mathematical_optimization::simplex
