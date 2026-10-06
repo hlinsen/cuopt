@@ -213,7 +213,7 @@ void diversity_manager_t<i_t, f_t>::generate_solution(f_t time_limit, bool rando
   sol.compute_feasibility();
   // if a feasible is found, it is added to the population
   ls.generate_solution(sol, random_start, &population, time_limit);
-  population.add_solution(std::move(sol));
+  population.add_solution(std::move(sol), "generate_solution");
 }
 
 template <typename i_t, typename f_t>
@@ -307,7 +307,7 @@ void diversity_manager_t<i_t, f_t>::add_user_given_solutions(
                       is_feasible,
                       sol.get_user_objective(),
                       sol.get_total_excess());
-      population.run_solution_callbacks(sol);
+      population.run_solution_callbacks(sol, "user_initial_solution");
       initial_sol_vector.emplace_back(std::move(sol));
     } else {
       CUOPT_LOG_ERROR(
@@ -439,13 +439,13 @@ void diversity_manager_t<i_t, f_t>::generate_quick_feasible_solution()
   // do very short LP run to get somewhere close to the optimal point
   ls.generate_fast_solution(solution, sol_timer);
   if (solution.get_feasible()) {
-    population.run_solution_callbacks(solution);
+    population.run_solution_callbacks(solution, "quick_feasible");
     initial_sol_vector.emplace_back(std::move(solution));
     problem_ptr->handle_ptr->sync_stream();
     solution_t<i_t, f_t> searched_sol(initial_sol_vector.back());
     ls_config_t<i_t, f_t> ls_config;
     run_local_search(searched_sol, population.weights, sol_timer, ls_config);
-    population.run_solution_callbacks(searched_sol);
+    population.run_solution_callbacks(searched_sol, "quick_feasible_local_search");
     initial_sol_vector.emplace_back(std::move(searched_sol));
     auto& feas_sol = initial_sol_vector.back().get_feasible()
                        ? initial_sol_vector.back()
@@ -543,7 +543,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     population.initialize_population();
     population.allocate_solutions();
     add_user_given_solutions(initial_sol_vector);
-    population.add_solutions_from_vec(std::move(initial_sol_vector));
+    population.add_solutions_from_vec(std::move(initial_sol_vector), "initial_solutions");
     if (check_b_b_preemption()) { return population.best_feasible(); }
 
     while (!check_b_b_preemption()) {
@@ -576,7 +576,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   population.initialize_population();
   population.allocate_solutions();
   add_user_given_solutions(initial_sol_vector);
-  population.add_solutions_from_vec(std::move(initial_sol_vector));
+  population.add_solutions_from_vec(std::move(initial_sol_vector), "initial_solutions");
   if (check_b_b_preemption()) { return population.best_feasible(); }
   // Run CPUFJ early to find quick initial solutions
   ls_cpufj_raii_guard_t ls_cpufj_raii_guard(ls);  // RAII to stop cpufj threads on solve stop
@@ -745,7 +745,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     lp_rounded_sol.copy_new_assignment(lp_optimal_solution);
     lp_rounded_sol.round_nearest(rng());
     lp_rounded_sol.compute_feasibility();
-    population.add_solution(std::move(lp_rounded_sol));
+    population.add_solution(std::move(lp_rounded_sol), "lp_round_nearest");
     ls.start_cpufj_lptopt_scratch_threads(population);
   }
 
@@ -799,8 +799,9 @@ void diversity_manager_t<i_t, f_t>::diversity_step(i_t max_iterations_without_im
       auto [sol1, sol2]         = population.get_two_random(tournament);
       cuopt_assert(population.test_invariant(), "");
       auto [lp_offspring, offspring]        = recombine_and_local_search(sol1, sol2);
-      auto [inserted_pos_1, best_updated_1] = population.add_solution(std::move(lp_offspring));
-      auto [inserted_pos_2, best_updated_2] = population.add_solution(std::move(offspring));
+      auto [inserted_pos_1, best_updated_1] = population.add_solution(std::move(lp_offspring), "diversity_step_lp_offspring");
+      auto [inserted_pos_2, best_updated_2] =
+        population.add_solution(std::move(offspring), "diversity_step_offspring");
       if (best_updated_1 || best_updated_2) { recombine_stats.add_best_updated(); }
       cuopt_assert(population.test_invariant(), "");
       if ((inserted_pos_1 != -1 && inserted_pos_1 <= 2) ||
@@ -842,10 +843,10 @@ void diversity_manager_t<i_t, f_t>::recombine_and_ls_with_all(solution_t<i_t, f_
         auto [offspring, lp_offspring] =
           recombine_and_local_search(curr_sol, solution, recombiner_type);
         if (!add_only_feasible || lp_offspring.get_feasible()) {
-          population.add_solution(std::move(lp_offspring));
+          population.add_solution(std::move(lp_offspring), "recombine_all_lp_offspring");
         }
         if (!add_only_feasible || offspring.get_feasible()) {
-          population.add_solution(std::move(offspring));
+          population.add_solution(std::move(offspring), "recombine_all_offspring");
         }
         if (timer.check_time_limit()) { return; }
       }
@@ -863,7 +864,7 @@ void diversity_manager_t<i_t, f_t>::recombine_and_ls_with_all(
     // add all solutions because time limit might have been consumed and we might have exited before
     for (auto& sol : solutions) {
       cuopt_func_call(sol.test_feasibility(true));
-      population.add_solution(std::move(solution_t<i_t, f_t>(sol)));
+      population.add_solution(std::move(solution_t<i_t, f_t>(sol)), "bnb_solution_import");
     }
     for (auto& sol : solutions) {
       if (timer.check_time_limit()) { return; }
