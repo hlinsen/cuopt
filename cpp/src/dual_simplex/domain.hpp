@@ -73,8 +73,9 @@ struct row_activity_t {
   bool recompute = false;
 };
 
-// Local domain of a node: the row activities over the LP bounds and the stack of bound changes
+// This object stores the row activities over the LP bounds as well as the stack of bound changes
 // that produced those bounds, in the order they were applied.
+// This is used for bound propagation and backtracking.
 template <typename i_t, typename f_t>
 class domain_t {
  public:
@@ -83,6 +84,7 @@ class domain_t {
   // Records a bound change on the stack.
   void push(const bound_change_t<i_t, f_t>& bound_change) { bound_changes.push_back(bound_change); }
 
+  // Apply the `bound_change` to `lp`, store in the stack and then update the activities.
   bool apply(lp_problem_t<i_t, f_t>& lp, bound_change_t<i_t, f_t> bound_change)
   {
     if (bound_change.var < 0) { return false; }
@@ -98,21 +100,13 @@ class domain_t {
     return true;
   }
 
-  bool apply(
-    lp_problem_t<i_t, f_t>& lp, i_t var, f_t new_upper, f_t new_lower, bound_change_origin_t origin)
-  {
-    return apply(lp,
-                 {.var = var, .new_upper = new_upper, .new_lower = new_lower, .origin = origin});
-  }
-
   const bound_change_t<i_t, f_t>& operator[](size_t k) const { return bound_changes[k]; }
-
   size_t size() const { return bound_changes.size(); }
   bool is_empty() const { return bound_changes.empty(); }
   void clear() { bound_changes.clear(); }
 
   // Applies every recorded change to [lower, upper], in order, refreshing their old bounds.
-  void apply_changes(std::vector<f_t>& lower, std::vector<f_t>& upper)
+  void apply_stack(std::vector<f_t>& lower, std::vector<f_t>& upper)
   {
     for (auto& bound_change : bound_changes) {
       bound_change.apply(lower, upper);
@@ -123,17 +117,19 @@ class domain_t {
   // reverting their activities.
   void backtrack_to_parent(lp_problem_t<i_t, f_t>& lp);
 
-  // Recomputes all activities from the bounds in lp. slacks lists the slack column of each row
-  // (in any order), or is empty if the rows have no slacks.
+  // Computes the activities of all rows from the bounds in lp and maps each row to its slack
+  // column.
   void compute_activities(const csr_matrix_t<i_t, f_t>& Arow,
                           const lp_problem_t<i_t, f_t>& lp,
                           const std::vector<i_t>& slacks);
 
+  // Incrementally updates the activities of every row containing bound_change.var after its bounds
+  // changed from [old_lower, old_upper] to [new_lower, new_upper].
   void update_activities(const lp_problem_t<i_t, f_t>& lp,
                          const bound_change_t<i_t, f_t>& bound_change);
 
-  void update_activities_from_stack(const lp_problem_t<i_t, f_t>& lp, i_t start = 0);
-
+  // Recomputes all activities from the bounds in lp and propagates every row, tightening the bounds
+  // in place.
   bool propagate_full(const csr_matrix_t<i_t, f_t>& Arow,
                       const std::vector<variable_type_t>& var_types,
                       const simplex_solver_settings_t<i_t, f_t>& settings,
@@ -147,12 +143,16 @@ class domain_t {
                                 lp_problem_t<i_t, f_t>& lp,
                                 const std::vector<i_t>& vars);
 
+  // Propagates from the rows containing the variables of the bound changes from start onwards. The
+  // activities must already include these changes, as apply does.
   bool propagate_from_stack(const csr_matrix_t<i_t, f_t>& Arow,
                             const std::vector<variable_type_t>& var_types,
                             const simplex_solver_settings_t<i_t, f_t>& settings,
                             lp_problem_t<i_t, f_t>& lp,
                             i_t start = 0);
 
+  // Applies bound_change to lp and propagates from the rows containing its variable. A change that
+  // does not move any bound is neither recorded nor propagated.
   bool apply_and_propagate(const csr_matrix_t<i_t, f_t>& Arow,
                            const std::vector<variable_type_t>& var_types,
                            const simplex_solver_settings_t<i_t, f_t>& settings,
@@ -173,13 +173,19 @@ class domain_t {
 
   size_t nnz_processed{0};
 
+  // Queues row i unless it is already queued or neither of its sides can tighten a bound. A row
+  // awaiting recomputation is always queued.
   void queue_row(i_t i, const lp_problem_t<i_t, f_t>& lp, f_t tol);
 
+  // Propagates the queued rows in FIFO order, applying each accepted bound immediately
+  // and queueing the rows it affects. Returns false if a row or a variable proves infeasibility.
   bool run_bound_propagation(const csr_matrix_t<i_t, f_t>& Arow,
                              const std::vector<variable_type_t>& var_types,
                              const simplex_solver_settings_t<i_t, f_t>& settings,
                              lp_problem_t<i_t, f_t>& lp);
 
+  // Recomputes all activities from the bounds in lp. slacks lists the slack column of each row
+  // (in any order), or is empty if the rows have no slacks.
   void compute_row_activity(i_t i,
                             const csr_matrix_t<i_t, f_t>& Arow,
                             const std::vector<f_t>& lower,

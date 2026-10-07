@@ -164,7 +164,7 @@ class branch_and_bound_worker_t {
         search_strategy != search_strategy_t::MUTATION) {
       leaf_problem.lower = original_lp.lower;
       leaf_problem.upper = original_lp.upper;
-      domain.apply_changes(leaf_problem.lower, leaf_problem.upper);
+      domain.apply_stack(leaf_problem.lower, leaf_problem.upper);
     }
 
     domain.compute_activities(Arow, leaf_problem, new_slacks);

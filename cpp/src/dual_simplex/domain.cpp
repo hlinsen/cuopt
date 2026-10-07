@@ -27,8 +27,6 @@ inline void dot2_add(f_t coeff, f_t value, f_t& sum, f_t& err)
   sum = t;
 }
 
-// Computes the min/max activity of row i over the bounds [lower, upper]. Infinite or huge
-// contributions are counted in min_inf/max_inf instead of being added to the sum.
 template <typename i_t, typename f_t>
 void domain_t<i_t, f_t>::compute_row_activity(i_t i,
                                               const csr_matrix_t<i_t, f_t>& Arow,
@@ -63,13 +61,12 @@ void domain_t<i_t, f_t>::compute_row_activity(i_t i,
   }
 
   // The peaks track the largest |activity| since the last full computation and are used by
-  // update_activities to detect cancellation.
+  // update_activities to detect numerical cancellation.
   activity.max_peak = std::abs(activity.max);
   activity.min_peak = std::abs(activity.min);
   row_activities[i] = activity;
 }
 
-// Computes the activities of all rows from scratch.
 template <typename i_t, typename f_t>
 void domain_t<i_t, f_t>::compute_activities(const csr_matrix_t<i_t, f_t>& Arow,
                                             const lp_problem_t<i_t, f_t>& lp,
@@ -90,8 +87,6 @@ void domain_t<i_t, f_t>::compute_activities(const csr_matrix_t<i_t, f_t>& Arow,
   }
 }
 
-// Incrementally updates the activities of every row in column var after its bounds changed from
-// [old_lb, old_ub] to [new_lb, new_ub].
 template <typename i_t, typename f_t>
 void domain_t<i_t, f_t>::update_activities(const lp_problem_t<i_t, f_t>& lp,
                                            const bound_change_t<i_t, f_t>& bound_change)
@@ -159,24 +154,15 @@ void domain_t<i_t, f_t>::update_activities(const lp_problem_t<i_t, f_t>& lp,
       activity.min_peak = std::max(activity.min_peak, std::abs(activity.min));
     }
 
-    // An activity much smaller than its peak has lost precision to numerical cancellations,
-    // so mark the row to be recomputed from scratch.
+    // An activity much smaller than its peak has lost precision to numerical cancellations, so mark
+    // the row to be recomputed.
     if (activity.max_peak > params.recompute_factor * std::max<f_t>(std::abs(activity.max), 1.0) ||
         activity.min_peak > params.recompute_factor * std::max<f_t>(std::abs(activity.min), 1.0)) {
       activity.recompute = true;
     }
   }
 }
-template <typename i_t, typename f_t>
-void domain_t<i_t, f_t>::update_activities_from_stack(const lp_problem_t<i_t, f_t>& lp, i_t start)
-{
-  for (size_t k = start; k < bound_changes.size(); ++k) {
-    update_activities(lp, bound_changes[k]);
-  }
-}
 
-// Queues row i unless it is already queued or neither of its sides can tighten a bound. A row
-// awaiting recomputation is always queued.
 template <typename i_t, typename f_t>
 void domain_t<i_t, f_t>::queue_row(i_t i, const lp_problem_t<i_t, f_t>& lp, f_t tol)
 {
@@ -210,8 +196,6 @@ void domain_t<i_t, f_t>::queue_row(i_t i, const lp_problem_t<i_t, f_t>& lp, f_t 
   row_queued[i] = true;
 }
 
-// Recomputes all activities from [lower, upper] and propagates every row, tightening lower and
-// upper in place.
 template <typename i_t, typename f_t>
 bool domain_t<i_t, f_t>::propagate_full(const csr_matrix_t<i_t, f_t>& Arow,
                                         const std::vector<variable_type_t>& var_types,
@@ -246,8 +230,6 @@ bool domain_t<i_t, f_t>::propagate_from_variables(
   return run_bound_propagation(Arow, var_types, settings, lp);
 }
 
-// Propagates from the rows containing a variable marked in bounds_changed. The activities must
-// already match [lower, upper], i.e. update_activities was called for every changed variable.
 template <typename i_t, typename f_t>
 bool domain_t<i_t, f_t>::propagate_from_stack(const csr_matrix_t<i_t, f_t>& Arow,
                                               const std::vector<variable_type_t>& var_types,
@@ -268,8 +250,6 @@ bool domain_t<i_t, f_t>::propagate_from_stack(const csr_matrix_t<i_t, f_t>& Arow
   return run_bound_propagation(Arow, var_types, settings, lp);
 }
 
-// Propagates from the rows containing var. The activities must already match [lower, upper], i.e.
-// update_activities was called for var.
 template <typename i_t, typename f_t>
 bool domain_t<i_t, f_t>::apply_and_propagate(const csr_matrix_t<i_t, f_t>& Arow,
                                              const std::vector<variable_type_t>& var_types,
@@ -408,7 +388,7 @@ bool domain_t<i_t, f_t>::run_bound_propagation(const csr_matrix_t<i_t, f_t>& Aro
         threshold = std::max({threshold, std::abs(a_ij) * slack, tol});
       }
 
-      // Read the activity again for each variable, since earlier tightenings in this row have
+      // Read the activity again for each variable, since earlier tightenings in this row might have
       // already updated it, possibly marking it for recomputation.
       if (row_activities[row].recompute) { compute_row_activity(row, Arow, lp.lower, lp.upper); }
       const row_activity_t<i_t, f_t>& current = row_activities[row];
@@ -508,7 +488,11 @@ bool domain_t<i_t, f_t>::run_bound_propagation(const csr_matrix_t<i_t, f_t>& Aro
       }
 
       // Apply the new bounds and update the activities of every row containing x_j.
-      apply(lp, j, new_ub, new_lb, bound_change_origin_t::BOUND_PROPAGATION);
+      apply(lp,
+            {.var       = j,
+             .new_upper = new_ub,
+             .new_lower = new_lb,
+             .origin    = bound_change_origin_t::BOUND_PROPAGATION});
 
       // Queue the rows containing x_j, including this one, so they are propagated with the new
       // bounds.
