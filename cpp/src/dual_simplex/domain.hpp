@@ -117,11 +117,8 @@ class domain_t {
   // reverting their activities.
   void backtrack_to_parent(lp_problem_t<i_t, f_t>& lp);
 
-  // Computes the activities of all rows from the bounds in lp and maps each row to its slack
-  // column.
-  void compute_activities(const csr_matrix_t<i_t, f_t>& Arow,
-                          const lp_problem_t<i_t, f_t>& lp,
-                          const std::vector<i_t>& slacks);
+  // Computes the activities of all rows from the bounds in lp.
+  void compute_activities(const csr_matrix_t<i_t, f_t>& Arow, const lp_problem_t<i_t, f_t>& lp);
 
   // Incrementally updates the activities of every row containing bound_change.var after its bounds
   // changed from [old_lower, old_upper] to [new_lower, new_upper].
@@ -133,8 +130,7 @@ class domain_t {
   bool propagate_full(const csr_matrix_t<i_t, f_t>& Arow,
                       const std::vector<variable_type_t>& var_types,
                       const simplex_solver_settings_t<i_t, f_t>& settings,
-                      lp_problem_t<i_t, f_t>& lp,
-                      const std::vector<i_t>& slacks = {});
+                      lp_problem_t<i_t, f_t>& lp);
 
   // Recomputes all activities from the bounds in lp and propagates from the rows containing vars.
   bool propagate_from_variables(const csr_matrix_t<i_t, f_t>& Arow,
@@ -165,7 +161,6 @@ class domain_t {
   domain_params params;
 
   std::vector<row_activity_t<i_t, f_t>> row_activities;
-  std::vector<i_t> row_slack;
   std::vector<uint8_t> row_queued;
   circular_deque_t<i_t> row_queue;
 
@@ -184,8 +179,7 @@ class domain_t {
                              const simplex_solver_settings_t<i_t, f_t>& settings,
                              lp_problem_t<i_t, f_t>& lp);
 
-  // Recomputes all activities from the bounds in lp. slacks lists the slack column of each row
-  // (in any order), or is empty if the rows have no slacks.
+  // Recomputes the activity of row i from the bounds in [lower, upper].
   void compute_row_activity(i_t i,
                             const csr_matrix_t<i_t, f_t>& Arow,
                             const std::vector<f_t>& lower,
@@ -196,11 +190,10 @@ template <typename i_t, typename f_t>
 bool full_bound_strengthening(const csr_matrix_t<i_t, f_t>& Arow,
                               const std::vector<variable_type_t>& var_types,
                               const simplex_solver_settings_t<i_t, f_t>& settings,
-                              lp_problem_t<i_t, f_t>& lp,
-                              const std::vector<i_t>& slacks = {})
+                              lp_problem_t<i_t, f_t>& lp)
 {
   domain_t<i_t, f_t> domain;
-  return domain.propagate_full(Arow, var_types, settings, lp, slacks);
+  return domain.propagate_full(Arow, var_types, settings, lp);
 }
 
 }  // namespace cuopt::mathematical_optimization::simplex

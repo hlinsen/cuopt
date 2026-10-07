@@ -65,7 +65,6 @@ class branch_and_bound_worker_t {
   std::vector<simplex::variable_status_t> leaf_vstatus;
   std::vector<f_t> leaf_edge_norms;
   const csr_matrix_t<i_t, f_t>& Arow;
-  const std::vector<i_t>& new_slacks;
 
   simplex::basis_update_mpf_t<i_t, f_t> basis_factors;
   std::vector<i_t> basic_list;
@@ -115,7 +114,6 @@ class branch_and_bound_worker_t {
   branch_and_bound_worker_t(i_t worker_id,
                             const simplex::lp_problem_t<i_t, f_t>& original_lp,
                             const csr_matrix_t<i_t, f_t>& Arow,
-                            const std::vector<i_t>& new_slacks,
                             const std::vector<simplex::variable_type_t>& var_type,
                             const simplex::simplex_solver_settings_t<i_t, f_t>& settings,
                             pseudo_costs_t<i_t, f_t>& pc,
@@ -130,7 +128,6 @@ class branch_and_bound_worker_t {
       leaf_solution(original_lp.num_rows, original_lp.num_cols),
       leaf_vstatus(original_lp.num_cols),
       Arow(Arow),
-      new_slacks(new_slacks),
       basis_factors(original_lp.num_rows, settings.refactor_frequency),
       basic_list(original_lp.num_rows),
       rng(settings.random_seed + pcgenerator_t::default_seed + rng_offset + worker_id,
@@ -167,7 +164,7 @@ class branch_and_bound_worker_t {
       domain.apply_stack(leaf_problem.lower, leaf_problem.upper);
     }
 
-    domain.compute_activities(Arow, leaf_problem, new_slacks);
+    domain.compute_activities(Arow, leaf_problem);
     return domain.propagate_from_stack(Arow, var_types, settings, leaf_problem);
   }
 
@@ -183,7 +180,6 @@ class bfs_worker_t : public branch_and_bound_worker_t<i_t, f_t> {
   bfs_worker_t(i_t worker_id,
                const simplex::lp_problem_t<i_t, f_t>& original_lp,
                const csr_matrix_t<i_t, f_t>& Arow,
-               const std::vector<i_t>& new_slacks,
                const std::vector<simplex::variable_type_t>& var_type,
                const simplex::simplex_solver_settings_t<i_t, f_t>& settings,
                pseudo_costs_t<i_t, f_t>& pc,
@@ -193,7 +189,6 @@ class bfs_worker_t : public branch_and_bound_worker_t<i_t, f_t> {
     : Base(worker_id,
            original_lp,
            Arow,
-           new_slacks,
            var_type,
            settings,
            pc,
@@ -273,7 +268,6 @@ class diving_worker_t : public branch_and_bound_worker_t<i_t, f_t> {
   diving_worker_t(i_t worker_id,
                   const simplex::lp_problem_t<i_t, f_t>& original_lp,
                   const csr_matrix_t<i_t, f_t>& Arow,
-                  const std::vector<i_t>& new_slacks,
                   const std::vector<simplex::variable_type_t>& var_type,
                   const simplex::simplex_solver_settings_t<i_t, f_t>& settings,
                   pseudo_costs_t<i_t, f_t>& pc,
@@ -283,7 +277,6 @@ class diving_worker_t : public branch_and_bound_worker_t<i_t, f_t> {
     : Base(worker_id,
            original_lp,
            Arow,
-           new_slacks,
            var_type,
            settings,
            pc,

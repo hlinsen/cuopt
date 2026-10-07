@@ -69,18 +69,11 @@ void domain_t<i_t, f_t>::compute_row_activity(i_t i,
 
 template <typename i_t, typename f_t>
 void domain_t<i_t, f_t>::compute_activities(const csr_matrix_t<i_t, f_t>& Arow,
-                                            const lp_problem_t<i_t, f_t>& lp,
-                                            const std::vector<i_t>& slacks)
+                                            const lp_problem_t<i_t, f_t>& lp)
 {
   row_activities.resize(Arow.m);
   row_queued.resize(Arow.m, false);
   row_queue.clear_resize(std::max(Arow.m, 1));
-
-  row_slack.assign(Arow.m, -1);
-  for (i_t s : slacks) {
-    assert(lp.A.col_start[s + 1] - lp.A.col_start[s] == 1);
-    row_slack[lp.A.i[lp.A.col_start[s]]] = s;
-  }
 
   for (i_t i = 0; i < Arow.m; ++i) {
     compute_row_activity(i, Arow, lp.lower, lp.upper);
@@ -174,20 +167,13 @@ void domain_t<i_t, f_t>::queue_row(i_t i, const lp_problem_t<i_t, f_t>& lp, f_t 
     const f_t min_a = activity.min + activity.min_err;
     const f_t rhs   = lp.rhs[i];
 
-    // The slack is never tightened, so a side whose only infinite contribution is the slack is
-    // skipped.
-    const i_t s              = row_slack.empty() ? -1 : row_slack[i];
-    const f_t a_s            = s >= 0 ? lp.A.x[lp.A.col_start[s]] : 0;
-    const bool slack_max_inf = s >= 0 && (a_s > 0 ? lp.upper[s] == inf : lp.lower[s] == -inf);
-    const bool slack_min_inf = s >= 0 && (a_s > 0 ? lp.lower[s] == -inf : lp.upper[s] == inf);
-
     const bool propagate_upper =
       (activity.max_inf != 0 || max_a > rhs + tol) &&
-      ((activity.min_inf == 1 && !slack_min_inf) ||
+      (activity.min_inf == 1 ||
        (activity.min_inf == 0 && rhs - min_a <= activity.capacity_threshold));
     const bool propagate_lower =
       (activity.min_inf != 0 || min_a < rhs - tol) &&
-      ((activity.max_inf == 1 && !slack_max_inf) ||
+      (activity.max_inf == 1 ||
        (activity.max_inf == 0 && max_a - rhs <= activity.capacity_threshold));
     if (!propagate_upper && !propagate_lower) { return; }
   }
@@ -200,10 +186,9 @@ template <typename i_t, typename f_t>
 bool domain_t<i_t, f_t>::propagate_full(const csr_matrix_t<i_t, f_t>& Arow,
                                         const std::vector<variable_type_t>& var_types,
                                         const simplex_solver_settings_t<i_t, f_t>& settings,
-                                        lp_problem_t<i_t, f_t>& lp,
-                                        const std::vector<i_t>& slacks)
+                                        lp_problem_t<i_t, f_t>& lp)
 {
-  compute_activities(Arow, lp, slacks);
+  compute_activities(Arow, lp);
   for (i_t i = 0; i < lp.A.m; ++i) {
     queue_row(i, lp, settings.primal_tol);
   }
@@ -218,7 +203,7 @@ bool domain_t<i_t, f_t>::propagate_from_variables(
   lp_problem_t<i_t, f_t>& lp,
   const std::vector<i_t>& vars)
 {
-  compute_activities(Arow, lp, {});
+  compute_activities(Arow, lp);
   for (i_t j : vars) {
     const i_t col_start = lp.A.col_start[j];
     const i_t col_end   = lp.A.col_start[j + 1];
@@ -333,20 +318,15 @@ bool domain_t<i_t, f_t>::run_bound_propagation(const csr_matrix_t<i_t, f_t>& Aro
     const f_t rhs             = lp.rhs[row];
 
     // A side of the row (a x <= rhs or a x >= rhs) is propagated only if it is not redundant and
-    // either a single infinite contribution, other than the row slack, can be bounded or its slack
-    // is within the capacity threshold.
-    const i_t s              = row_slack.empty() ? -1 : row_slack[row];
-    const f_t a_s            = s >= 0 ? lp.A.x[lp.A.col_start[s]] : 0;
-    const bool slack_max_inf = s >= 0 && (a_s > 0 ? lp.upper[s] == inf : lp.lower[s] == -inf);
-    const bool slack_min_inf = s >= 0 && (a_s > 0 ? lp.lower[s] == -inf : lp.upper[s] == inf);
-
+    // either a single infinite contribution can be bounded or its slack is within the capacity
+    // threshold.
     const bool propagate_upper =
       (activity.max_inf != 0 || max_a > rhs + tol) &&
-      ((activity.min_inf == 1 && !slack_min_inf) ||
+      (activity.min_inf == 1 ||
        (activity.min_inf == 0 && rhs - min_a <= activity.capacity_threshold));
     const bool propagate_lower =
       (activity.min_inf != 0 || min_a < rhs - tol) &&
-      ((activity.max_inf == 1 && !slack_max_inf) ||
+      (activity.max_inf == 1 ||
        (activity.max_inf == 0 && max_a - rhs <= activity.capacity_threshold));
     if (!propagate_upper && !propagate_lower) { continue; }
 
@@ -365,13 +345,6 @@ bool domain_t<i_t, f_t>::run_bound_propagation(const csr_matrix_t<i_t, f_t>& Aro
       const f_t lb = lp.lower[j];
       const f_t ub = lp.upper[j];
       if (lb == ub) { continue; }
-
-      // A continuous column singleton (e.g., a slack) only has bounds implied by this row, so
-      // tightening it cannot reach any other row.
-      if (var_types[j] != variable_type_t::INTEGER &&
-          lp.A.col_start[j + 1] - lp.A.col_start[j] == 1) {
-        continue;
-      }
 
       // Largest slack for which x_j can still receive an accepted bound.
       if (!std::isfinite(ub) || !std::isfinite(lb)) {

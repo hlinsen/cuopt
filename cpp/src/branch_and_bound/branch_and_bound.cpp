@@ -2872,7 +2872,7 @@ void branch_and_bound_t<i_t, f_t>::mutation(diving_worker_t<i_t, f_t>* worker,
   get_unfixed_integer_variables(
     lower, upper, worker->var_types, submip_settings.fixed_tol, integer_list);
   worker->rng.shuffle(integer_list);
-  worker->domain.compute_activities(worker->Arow, worker->leaf_problem, worker->new_slacks);
+  worker->domain.compute_activities(worker->Arow, worker->leaf_problem);
 
   f_t target_fixrate =
     submip_get_max_fixrate(mutation_stats_, submip_settings.submip_settings, worker->rng);
@@ -2996,7 +2996,7 @@ void branch_and_bound_t<i_t, f_t>::recursive_submip(
   std::vector<f_t>& lower       = worker->leaf_problem.lower;
   std::vector<f_t>& upper       = worker->leaf_problem.upper;
   std::vector<f_t>& current_sol = worker->leaf_solution.x;
-  worker->domain.compute_activities(worker->Arow, worker->leaf_problem, worker->new_slacks);
+  worker->domain.compute_activities(worker->Arow, worker->leaf_problem);
 
   std::vector<i_t> fractional;
   i_t num_frac = fractional_variables(settings_, current_sol, worker->var_types, fractional);
@@ -3273,7 +3273,7 @@ void branch_and_bound_t<i_t, f_t>::launch_root_heuristics(
   // Using shared_ptr here, so the lifetime of the object is tied to the related task. This allows
   // the solver to send the stop signal and immediately continue the execution.
   auto current_heuristic = root_heuristics.create_new_cut_pass_heuristic(
-    Arow_, new_slacks_, var_types_, lp_solution.x, edge_norms_, settings_);
+    Arow_, var_types_, lp_solution.x, edge_norms_, settings_);
   auto worker_count = root_heuristics.worker_count_;
 
   current_heuristic->initialize_pseudocost(
@@ -3759,8 +3759,7 @@ auto branch_and_bound_t<i_t, f_t>::do_cut_pass(
 
   f_t node_presolve_start_time = tic();
   mutex_original_lp_.lock();
-  bool feasible =
-    simplex::full_bound_strengthening(Arow_, var_types_, settings_, original_lp_, new_slacks_);
+  bool feasible = simplex::full_bound_strengthening(Arow_, var_types_, settings_, original_lp_);
   mutex_original_lp_.unlock();
   f_t node_presolve_time = toc(node_presolve_start_time);
   if (node_presolve_time > 1.0) {
@@ -4376,8 +4375,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       mutex_original_lp_.lock();
       original_lp_.lower = lower_bounds;
       original_lp_.upper = upper_bounds;
-      bool feasible =
-        simplex::full_bound_strengthening(Arow_, var_types_, settings_, original_lp_, new_slacks_);
+      bool feasible = simplex::full_bound_strengthening(Arow_, var_types_, settings_, original_lp_);
       mutex_original_lp_.unlock();
       if (!feasible) {
         settings_.log.printf("Bound strengthening failed\n");
@@ -4456,7 +4454,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       bfs_worker_pool_.init(num_bfs_workers,
                             original_lp_,
                             Arow_,
-                            new_slacks_,
                             var_types_,
                             symmetry_,
                             settings_,
@@ -4466,7 +4463,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       submip_worker_pool_.init(num_submip_workers,
                                original_lp_,
                                Arow_,
-                               new_slacks_,
                                var_types_,
                                symmetry_,
                                settings_,
@@ -4478,7 +4474,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       diving_worker_pool_.init(num_diving_workers,
                                original_lp_,
                                Arow_,
-                               new_slacks_,
                                var_types_,
                                symmetry_,
                                settings_,
@@ -4685,7 +4680,6 @@ void branch_and_bound_t<i_t, f_t>::run_deterministic_coordinator(const csr_matri
     std::make_unique<deterministic_bfs_worker_pool_t<i_t, f_t>>(num_bfs_workers,
                                                                 original_lp_,
                                                                 Arow,
-                                                                new_slacks_,
                                                                 var_types_,
                                                                 settings_,
                                                                 pc_,
@@ -4703,7 +4697,6 @@ void branch_and_bound_t<i_t, f_t>::run_deterministic_coordinator(const csr_matri
                                                                        diving_types,
                                                                        original_lp_,
                                                                        Arow,
-                                                                       new_slacks_,
                                                                        var_types_,
                                                                        settings_,
                                                                        pc_,
@@ -5636,7 +5629,7 @@ void branch_and_bound_t<i_t, f_t>::deterministic_dive(
   worker.leaf_problem.lower = std::move(entry.resolved_lower);
   worker.leaf_problem.upper = std::move(entry.resolved_upper);
   worker.domain.clear();
-  worker.domain.compute_activities(worker.Arow, worker.leaf_problem, worker.new_slacks);
+  worker.domain.compute_activities(worker.Arow, worker.leaf_problem);
 
   const i_t max_nodes_per_dive  = settings_.diving_settings.node_limit;
   const i_t max_backtrack_depth = settings_.diving_settings.backtrack_limit;
