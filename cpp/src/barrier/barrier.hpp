@@ -76,6 +76,15 @@ class barrier_solver_t {
   // Writes the step lengths to the device scalars (kStepPrimal / kStepDual); no host read.
   void compute_primal_dual_step_length(iteration_data_t<i_t, f_t>& data, f_t step_scale);
 
+  // Queues the residual kernels and reductions (no host read); finish_* syncs once and combines.
+  void queue_residual_norms_mu_and_objective(iteration_data_t<i_t, f_t>& data);
+  void finish_residual_norms_mu_and_objective(iteration_data_t<i_t, f_t>& data,
+                                              f_t& primal_residual_norm,
+                                              f_t& dual_residual_norm,
+                                              f_t& complementarity_residual_norm,
+                                              f_t& mu,
+                                              f_t& primal_objective,
+                                              f_t& dual_objective);
   void compute_residual_norms_mu_and_objective(iteration_data_t<i_t, f_t>& data,
                                                f_t& primal_residual_norm,
                                                f_t& dual_residual_norm,
@@ -103,6 +112,17 @@ class barrier_solver_t {
                                             const rmm::device_uvector<f_t>& x2,
                                             const rmm::device_uvector<f_t>& dx2,
                                             f2_t<f_t>* d_out);
+  // Phases of gpu_compute_search_direction (see barrier.cu).
+  i_t factorize_augmented_system(iteration_data_t<i_t, f_t>& data);
+  void prepare_search_direction(iteration_data_t<i_t, f_t>& data);
+  void assemble_primal_rhs(iteration_data_t<i_t, f_t>& data);
+  void assemble_augmented_rhs(iteration_data_t<i_t, f_t>& data);
+  void solve_augmented_system(iteration_data_t<i_t, f_t>& data,
+                              f_t& dual_perturb,
+                              f_t& primal_perturb,
+                              bool did_factorize);
+  void extract_augmented_solution(iteration_data_t<i_t, f_t>& data);
+  void recover_search_direction(iteration_data_t<i_t, f_t>& data);
   i_t gpu_compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                    f_t& dual_perturb,
                                    f_t& primal_perturb,
