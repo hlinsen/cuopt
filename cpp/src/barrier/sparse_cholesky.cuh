@@ -602,10 +602,14 @@ class sparse_cholesky_cudss_t : public sparse_cholesky_base_t<i_t, f_t> {
     // csr_matrix_t<i_t, f_t> Arow;
     // A_in.to_compressed_row(Arow);
 
-    auto d_nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
-    if (nnz != d_nnz) {
-      settings_.log.printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, d_nnz);
-      return -1;
+    // The sparsity pattern is fixed after analyze. Reading the device nnz blocks the host until the
+    // matrix assembly finishes, so only do it when the host-side size disagrees.
+    if (static_cast<i_t>(Arow.nz_max) != nnz) {
+      auto d_nnz = Arow.row_start.element(Arow.m, Arow.row_start.stream());
+      if (nnz != d_nnz) {
+        settings_.log.printf("Error: nnz %d != A_in.col_start[A_in.n] %d\n", nnz, d_nnz);
+        return -1;
+      }
     }
 
     CUDSS_CALL_AND_CHECK(
