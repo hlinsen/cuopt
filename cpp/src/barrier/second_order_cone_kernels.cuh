@@ -747,7 +747,8 @@ __global__ void __launch_bounds__(soc_block_size)
                                    raft::device_span<const f_t> scaled_dz_head,
                                    raft::device_span<const size_t> cone_offsets,
                                    raft::device_span<const i_t> element_cone_ids,
-                                   f_t sigma_mu)
+                                   f_t sigma_mu,
+                                   const f_t* d_sigma_mu)
 {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= shift.size()) { return; }
@@ -757,7 +758,7 @@ __global__ void __launch_bounds__(soc_block_size)
   const size_t local_idx = idx - cone_off;
 
   if (local_idx == 0) {
-    shift[idx] = full_dot[cone] - sigma_mu;
+    shift[idx] = full_dot[cone] - (d_sigma_mu != nullptr ? *d_sigma_mu : sigma_mu);
     return;
   }
 
@@ -1564,6 +1565,48 @@ f_t compute_cone_step_length(cone_data_t<i_t, f_t>& cones,
 }
 
 /**
+ * compute_cone_step_length without a host read: the step is written to `d_out`. `workspace`
+ * holds the CUB temporary storage and only grows.
+ */
+template <std::integral i_t, std::floating_point f_t>
+void compute_cone_step_length_async(cone_data_t<i_t, f_t>& cones,
+                                    raft::device_span<const f_t> dx,
+                                    raft::device_span<const f_t> dz,
+                                    f_t alpha_max,
+                                    f_t* d_out,
+                                    rmm::device_buffer& workspace,
+                                    cuda::stream_ref stream)
+{
+  auto alpha_primal = cuopt::make_span(cones.scratch.step_alpha_primal);
+  auto alpha_dual   = cuopt::make_span(cones.scratch.step_alpha_dual);
+  raft::device_span<const f_t> x(cones.x.data(), cones.x.size());
+  raft::device_span<const f_t> z(cones.z.data(), cones.z.size());
+
+  auto large_sums = cuopt::make_span(cones.scratch.step_large_tail_sums);
+  launch_cone_step_length(cones.segmented_sum, x, dx, alpha_primal, large_sums, alpha_max, stream);
+  launch_cone_step_length(cones.segmented_sum, z, dz, alpha_dual, large_sums, alpha_max, stream);
+
+  auto input    = thrust::make_zip_iterator(alpha_primal.begin(), alpha_dual.begin());
+  auto pair_min = [] HD(const thrust::tuple<f_t, f_t>& t) -> f_t {
+    return cuda::std::min(thrust::get<0>(t), thrust::get<1>(t));
+  };
+  const auto n = alpha_primal.size();
+  size_t bytes = 0;
+  RAFT_CUDA_TRY(cub::DeviceReduce::TransformReduce(
+    nullptr, bytes, input, d_out, n, thrust::minimum<f_t>{}, pair_min, alpha_max, stream.get()));
+  if (workspace.size() < bytes) { workspace.resize(bytes, stream); }
+  RAFT_CUDA_TRY(cub::DeviceReduce::TransformReduce(workspace.data(),
+                                                   bytes,
+                                                   input,
+                                                   d_out,
+                                                   n,
+                                                   thrust::minimum<f_t>{},
+                                                   pair_min,
+                                                   alpha_max,
+                                                   stream.get()));
+}
+
+/**
  * Build the SOC corrector target for the reduced KKT solve.
  *
  * Mehrotra's corrector uses affine cone directions to form
@@ -1577,6 +1620,8 @@ f_t compute_cone_step_length(cone_data_t<i_t, f_t>& cones,
  *
  * On return, `out` holds `q`. Internally, `out` is reused for `W^{-T} dz_aff` and
  * then `d`; `scratch.temp_cone` is reused for `W dx_aff`, then `-p`.
+ *
+ * When `d_sigma_mu` is non-null, sigma_mu is read from that device scalar instead.
  */
 template <std::integral i_t, std::floating_point f_t>
 void compute_combined_cone_rhs_term(raft::device_span<const f_t> dx_aff,
@@ -1584,7 +1629,8 @@ void compute_combined_cone_rhs_term(raft::device_span<const f_t> dx_aff,
                                     cone_data_t<i_t, f_t>& cones,
                                     f_t sigma_mu,
                                     raft::device_span<f_t> out,
-                                    cuda::stream_ref stream)
+                                    cuda::stream_ref stream,
+                                    const f_t* d_sigma_mu = nullptr)
 {
   auto cone_offsets     = cuopt::make_span(cones.cone_offsets);
   auto element_cone_ids = cuopt::make_span(cones.element_cone_ids);
@@ -1615,8 +1661,17 @@ void compute_combined_cone_rhs_term(raft::device_span<const f_t> dx_aff,
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 
   const size_t element_grid_dim = raft::ceildiv<size_t>(cones.n_cone_entries, soc_block_size);
-  combined_cone_shift_write_kernel<i_t, f_t><<<element_grid_dim, soc_block_size, 0, stream.get()>>>(
-    out, scaled_dx, scaled_dz, slot_0, slot_1, slot_2, cone_offsets, element_cone_ids, sigma_mu);
+  combined_cone_shift_write_kernel<i_t, f_t>
+    <<<element_grid_dim, soc_block_size, 0, stream.get()>>>(out,
+                                                            scaled_dx,
+                                                            scaled_dz,
+                                                            slot_0,
+                                                            slot_1,
+                                                            slot_2,
+                                                            cone_offsets,
+                                                            element_cone_ids,
+                                                            sigma_mu,
+                                                            d_sigma_mu);
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 
   auto shift    = raft::device_span<const f_t>(out.data(), out.size());

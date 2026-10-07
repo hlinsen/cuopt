@@ -96,6 +96,31 @@ struct transform_reduce_helper_t {
 
     return out.value(stream_view);
   }
+
+  // Same reduction, but the result stays in device memory at `d_out`; no host read.
+  template <typename InputIteratorT, typename ReductionOpT, typename TransformOpT, typename i_t>
+  void transform_reduce_async(InputIteratorT input,
+                              ReductionOpT reduce_op,
+                              TransformOpT transform_op,
+                              f_t init,
+                              i_t size,
+                              f_t* d_out,
+                              cuda::stream_ref stream_view)
+  {
+    size_t bytes = 0;
+    cub::DeviceReduce::TransformReduce(
+      nullptr, bytes, input, d_out, size, reduce_op, transform_op, init, stream_view.get());
+    if (buffer_data.size() < bytes) { buffer_data.resize(bytes, stream_view); }
+    cub::DeviceReduce::TransformReduce(buffer_data.data(),
+                                       bytes,
+                                       input,
+                                       d_out,
+                                       size,
+                                       reduce_op,
+                                       transform_op,
+                                       init,
+                                       stream_view.get());
+  }
 };
 
 template <typename f_t>
@@ -156,6 +181,31 @@ struct transform_reduce_pair_helper_t {
                                        stream_view.get());
 
     return out.value(stream_view);
+  }
+
+  // Same reduction, but the result stays in device memory at `d_out`; no host read.
+  template <typename InputIteratorT, typename TransformOpT, typename i_t>
+  void transform_reduce_async(InputIteratorT input,
+                              TransformOpT transform_op,
+                              f2_t<f_t> init,
+                              i_t size,
+                              f2_t<f_t>* d_out,
+                              cuda::stream_ref stream_view)
+  {
+    f2_min_t<f_t> reduce_op{};
+    size_t bytes = 0;
+    cub::DeviceReduce::TransformReduce(
+      nullptr, bytes, input, d_out, size, reduce_op, transform_op, init, stream_view.get());
+    if (buffer_data.size() < bytes) { buffer_data.resize(bytes, stream_view); }
+    cub::DeviceReduce::TransformReduce(buffer_data.data(),
+                                       bytes,
+                                       input,
+                                       d_out,
+                                       size,
+                                       reduce_op,
+                                       transform_op,
+                                       init,
+                                       stream_view.get());
   }
 };
 

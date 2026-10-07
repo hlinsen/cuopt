@@ -40,6 +40,9 @@ class iteration_data_t;  // Forward declare
 template <typename i_t, typename f_t>
 class device_csc_matrix_t;
 
+template <typename f_t>
+struct f2_t;
+
 // Custom deleter for device_csc_matrix_t to handle CUDA memory management.
 template <typename i_t, typename f_t>
 struct device_csc_matrix_deleter_t {
@@ -83,10 +86,8 @@ class barrier_solver_t {
   void create_Q(const simplex::lp_problem_t<i_t, f_t>& lp, csc_matrix_t<i_t, f_t>& Q);
   int initial_point(iteration_data_t<i_t, f_t>& data);
 
-  void compute_primal_dual_step_length(iteration_data_t<i_t, f_t>& data,
-                                       f_t step_scale,
-                                       f_t& step_primal,
-                                       f_t& step_dual);
+  // Writes the step lengths to the device scalars (kStepPrimal / kStepDual); no host read.
+  void compute_primal_dual_step_length(iteration_data_t<i_t, f_t>& data, f_t step_scale);
 
   void compute_residual_norms_mu_and_objective(iteration_data_t<i_t, f_t>& data,
                                                f_t& primal_residual_norm,
@@ -98,14 +99,10 @@ class barrier_solver_t {
 
   // To be able to directly pass lambdas to transform functions
  public:
-  void compute_next_iterate(iteration_data_t<i_t, f_t>& data,
-                            f_t step_scale,
-                            f_t step_primal,
-                            f_t step_dual);
+  void compute_next_iterate(iteration_data_t<i_t, f_t>& data, f_t step_scale);
   void compute_final_direction(iteration_data_t<i_t, f_t>& data);
-  void compute_cc_rhs(iteration_data_t<i_t, f_t>& data, f_t& new_mu);
-  void compute_target_mu(
-    iteration_data_t<i_t, f_t>& data, f_t mu, f_t& mu_aff, f_t& sigma, f_t& new_mu);
+  void compute_cc_rhs(iteration_data_t<i_t, f_t>& data);
+  void compute_target_mu(iteration_data_t<i_t, f_t>& data);
   void compute_affine_rhs(iteration_data_t<i_t, f_t>& data);
   void gpu_compute_residuals(rmm::device_uvector<f_t> const& d_w,
                              rmm::device_uvector<f_t> const& d_x,
@@ -113,11 +110,12 @@ class barrier_solver_t {
                              rmm::device_uvector<f_t> const& d_v,
                              rmm::device_uvector<f_t> const& d_z,
                              iteration_data_t<i_t, f_t>& data);
-  std::pair<f_t, f_t> compute_nonnegative_step_length_pair(iteration_data_t<i_t, f_t>& data,
-                                                           const rmm::device_uvector<f_t>& x1,
-                                                           const rmm::device_uvector<f_t>& dx1,
-                                                           const rmm::device_uvector<f_t>& x2,
-                                                           const rmm::device_uvector<f_t>& dx2);
+  void compute_nonnegative_step_length_pair(iteration_data_t<i_t, f_t>& data,
+                                            const rmm::device_uvector<f_t>& x1,
+                                            const rmm::device_uvector<f_t>& dx1,
+                                            const rmm::device_uvector<f_t>& x2,
+                                            const rmm::device_uvector<f_t>& dx2,
+                                            f2_t<f_t>* d_out);
   i_t gpu_compute_search_direction(iteration_data_t<i_t, f_t>& data,
                                    f_t& dual_perturb,
                                    f_t& primal_perturb,
