@@ -202,8 +202,13 @@ HD f2_t<f_t>* barrier_scalar_pair(f_t* scalars, barrier_scalar_slot slot)
 
 // Combines the orthant (and cone) maximum steps into the primal/dual step lengths.
 template <typename f_t>
-__global__ void finalize_step_lengths_kernel(
-  f_t* scalars, f_t step_scale, bool has_soc, bool equal_steps, int primal_slot, int dual_slot)
+__global__ void finalize_step_lengths_kernel(f_t* scalars,
+                                             f_t step_scale,
+                                             bool has_soc,
+                                             bool equal_steps,
+                                             int primal_slot,
+                                             int dual_slot,
+                                             f_t* readback = nullptr)
 {
   const auto wv = *barrier_scalar_pair(scalars, kPairWv);
   const auto xz = *barrier_scalar_pair(scalars, kPairXz);
@@ -218,6 +223,11 @@ __global__ void finalize_step_lengths_kernel(
   if (equal_steps) { primal = dual = cuda::std::min(primal, dual); }
   scalars[primal_slot] = primal;
   scalars[dual_slot]   = dual;
+  // Also stage them in the residual-readback buffer so the host gets them with that one copy.
+  if (readback != nullptr) {
+    readback[0] = primal;
+    readback[1] = dual;
+  }
 }
 
 // Mehrotra centering: sigma = clamp((mu_aff / mu)^3, 0, 1), new_mu = sigma * mu_aff.
@@ -446,6 +456,13 @@ class barrier_reduce_helper_t {
   f_t bTy() const { return h_results_[kBTy]; }
   f_t uTv() const { return h_results_[kUTv]; }
   f_t xTQx() const { return h_results_[kXTQx]; }
+  // min(step_primal, step_dual) staged by finalize_step_lengths_kernel before sync().
+  f_t step_length() const
+  {
+    return std::min(h_results_[kStepLengthPrimal], h_results_[kStepLengthDual]);
+  }
+  // Two consecutive device slots {step_primal, step_dual}.
+  f_t* step_lengths_device() { return d_results_.data() + kStepLengthPrimal; }
 
  private:
   enum Slot : i_t {
@@ -461,6 +478,8 @@ class barrier_reduce_helper_t {
     kBTy,
     kUTv,
     kXTQx,
+    kStepLengthPrimal,
+    kStepLengthDual,
     kCount
   };
 
@@ -2588,8 +2607,6 @@ class iteration_data_t {
   // Device-resident step lengths and centering target, indexed by barrier_scalar_slot.
   rmm::device_uvector<f_t> d_barrier_scalars_;
   rmm::device_buffer d_cone_step_workspace_;
-  // Host copy of {step_primal, step_dual}, read after the end-of-iteration sync (auto refinement).
-  pinned_dense_vector_t<i_t, f_t> h_step_lengths_ = pinned_dense_vector_t<i_t, f_t>(2);
 
   bool cone_combined_step_;
 
@@ -4263,8 +4280,14 @@ void barrier_solver_t<i_t, f_t>::compute_primal_dual_step_length(iteration_data_
                                    data.d_cone_step_workspace_,
                                    stream_view_);
   }
-  finalize_step_lengths_kernel<f_t><<<1, 1, 0, stream_view_.get()>>>(
-    scalars, step_scale, has_soc, data.Q.n > 0 || has_soc, kStepPrimal, kStepDual);
+  finalize_step_lengths_kernel<f_t>
+    <<<1, 1, 0, stream_view_.get()>>>(scalars,
+                                      step_scale,
+                                      has_soc,
+                                      data.Q.n > 0 || has_soc,
+                                      kStepPrimal,
+                                      kStepDual,
+                                      data.reduce_helper_.step_lengths_device());
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 }
 
@@ -4935,9 +4958,6 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
 
       compute_next_iterate(data, settings.barrier_step_scale);
 
-      // Queue the step lengths for auto refinement; compute_iterate_metrics syncs the stream.
-      raft::copy(
-        data.h_step_lengths_.data(), data.d_barrier_scalars_.data() + kStepPrimal, 2, stream_view_);
       compute_iterate_metrics();
 
       if (data.has_cones() && !data.use_high_accuracy_ir && relative_primal_residual < 1e-6 &&
@@ -5057,7 +5077,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::barrier_advanced_solve(f_t start_time,
             retry_with_refinement("Insufficient progress")) {
           continue;
         }
-        update_auto_ir(std::min(data.h_step_lengths_[0], data.h_step_lengths_[1]));
+        update_auto_ir(data.reduce_helper_.step_length());
       }
 
       // Check if the solution is getting worse
