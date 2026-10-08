@@ -320,109 +320,156 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
   auto stream      = handle_ptr->get_stream();
   solution_t<i_t, f_t> sol(in_sol);
   const f_t obj0       = sol.get_user_objective();
+  f_t best_obj         = obj0;
+  bool improved        = false;
   const double t_start = timer.elapsed_time();
   auto [fixed_problem, fixed_assignment, variable_map] =
     sol.fix_variables(problem_ptr->integer_indices);
   fixed_problem.check_problem_representation(true);
-  rmm::device_uvector<f_t> feasible_start(fixed_assignment, stream);
+  auto publish_polished = [&](solution_t<i_t, f_t>& s, const char* origin) {
+    if (fpc_external_publish) {
+      population.add_external_solution(
+        s.get_host_assignment(), s.get_objective(), solution_origin_t::POLISH);
+    } else {
+      population.add_solution(solution_t<i_t, f_t>(s), origin);
+    }
+  };
 
-  // stage 1: cost-aware fixed LP (same solver path as the root LP)
-  auto snapshot = make_root_lp_snapshot(fixed_problem);
-  pdlp_solver_settings_t<i_t, f_t> lp_settings{};
-  lp_settings.time_limit = ptimer.remaining_time() * 0.7;
-  lp_settings.method     = context.settings.method;
-  std::atomic<int> local_halt{0};
-  lp_settings.concurrent_halt = &local_halt;
-  lp_settings.inside_mip      = false;
-  lp_settings.num_gpus        = context.settings.num_gpus;
-  CUOPT_LOG_INFO("Polish start: obj=%g vars=%d cstrs=%d budget=%.1fs lp_budget=%.1fs elapsed=%.2f",
-                 obj0,
-                 fixed_problem.n_variables,
-                 fixed_problem.n_constraints,
-                 budget,
-                 lp_settings.time_limit,
-                 timer.elapsed_time());
-  auto lp_result = solve_lp(snapshot, lp_settings);
-  const auto& lp_info = lp_result.get_additional_termination_information();
-  CUOPT_LOG_INFO(
-    "Polish LP: status=%s method=%s lp_obj=%g iters=%d l2_primal_res=%g time=%.2fs elapsed=%.2f",
-    lp_result.get_termination_status_string().c_str(),
-    method_to_string(lp_info.solved_by).c_str(),
-    (double)lp_result.get_objective_value(),
-    lp_info.number_of_steps_taken,
-    lp_info.l2_primal_residual,
-    timer.elapsed_time() - t_start,
-    timer.elapsed_time());
-  if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables) {
-    CUOPT_LOG_INFO("Polish LP returned no usable primal");
-    return false;
+  // staged cost-aware fixed LP: a quick 1e-4 solve (publish early), then a tighter solve whose
+  // smaller residual means the objective-free repair moves the point less
+  struct stage_t {
+    double tol;
+    double budget_frac;
+  };
+  const stage_t stages[]   = {{1e-4, 0.35}, {1e-7, 1.0}};
+  constexpr size_t n_stages = 2;
+  std::vector<optimization_problem_t<i_t, f_t>> snapshots;
+  for (size_t k = 0; k < n_stages; ++k) {
+    snapshots.emplace_back(make_root_lp_snapshot(fixed_problem));
   }
-  raft::copy(fixed_assignment.data(),
-             lp_result.get_primal_solution().data(),
-             fixed_assignment.size(),
-             stream);
-  clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
-  rmm::device_uvector<f_t> cost_aware(fixed_assignment, stream);
-  sol.unfix_variables(fixed_assignment, variable_map);
-  bool feas  = sol.get_feasible();
-  f_t obj_lp = sol.get_user_objective();
-  CUOPT_LOG_INFO("Polish LP point: feasible=%d obj=%g max_cstr_viol=%g excess=%g elapsed=%.2f",
-                 (int)feas,
-                 obj_lp,
-                 sol.compute_max_constraint_violation(),
-                 sol.get_total_excess(),
-                 timer.elapsed_time());
-  if (feas && obj_lp < obj0) {
-    population.add_solution(std::move(sol), "polish_lp");
-    return true;
-  }
-
-  // stage 2: objective-free repair warm-started from the cost-aware point
+  // objective-free repair problem (fixed_problem itself)
   thrust::fill(handle_ptr->get_thrust_policy(),
                fixed_problem.objective_coefficients.begin(),
                fixed_problem.objective_coefficients.end(),
                f_t(0));
   fixed_problem.presolve_data.objective_offset = 0;
-  auto& lp_state = fixed_problem.lp_state;
-  lp_state.resize(fixed_problem, stream);
-  thrust::fill(handle_ptr->get_thrust_policy(), lp_state.prev_dual.begin(), lp_state.prev_dual.end(), f_t(0));
-  raft::copy(fixed_assignment.data(), cost_aware.data(), cost_aware.size(), stream);
-  relaxed_lp_settings_t r_settings;
-  r_settings.tolerance               = problem_ptr->tolerances.absolute_tolerance;
-  r_settings.return_first_feasible   = true;
-  r_settings.save_state              = true;
-  r_settings.check_infeasibility     = false;
-  r_settings.per_constraint_residual = true;
-  r_settings.has_initial_primal      = true;
-  int chunk_id = 0;
-  while (!ptimer.check_time_limit() && !timer.check_time_limit()) {
-    if (check_b_b_preemption()) { return false; }
-    r_settings.time_limit = std::min<double>(20., ptimer.remaining_time());
-    if (r_settings.time_limit < 1.) { break; }
-    auto resp = get_relaxed_lp_solution(fixed_problem, fixed_assignment, lp_state, r_settings);
-    const auto& info = resp.get_additional_termination_information();
-    sol.unfix_variables(fixed_assignment, variable_map);
-    feas    = sol.get_feasible();
-    f_t obj = sol.get_user_objective();
+
+  for (size_t k = 0; k < n_stages; ++k) {
+    if (ptimer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption()) {
+      break;
+    }
+    pdlp_solver_settings_t<i_t, f_t> lp_settings{};
+    lp_settings.set_optimality_tolerance(stages[k].tol);
+    lp_settings.time_limit = std::max<double>(
+      1., ptimer.remaining_time() * stages[k].budget_frac * (k + 1 == n_stages ? 0.8 : 1.));
+    lp_settings.method = context.settings.method;
+    std::atomic<int> local_halt{0};
+    lp_settings.concurrent_halt = &local_halt;
+    lp_settings.inside_mip      = false;
+    lp_settings.num_gpus        = context.settings.num_gpus;
     CUOPT_LOG_INFO(
-      "Polish repair chunk %d: status=%s iters=%d feasible=%d obj=%g max_cstr_viol=%g elapsed=%.2f",
-      chunk_id,
-      resp.get_termination_status_string().c_str(),
-      info.number_of_steps_taken,
-      (int)feas,
-      obj,
-      sol.compute_max_constraint_violation(),
+      "Polish stage %d start: obj=%g tol=%g vars=%d cstrs=%d budget=%.1fs lp_budget=%.1fs "
+      "elapsed=%.2f",
+      (int)k,
+      best_obj,
+      stages[k].tol,
+      fixed_problem.n_variables,
+      fixed_problem.n_constraints,
+      budget,
+      lp_settings.time_limit,
       timer.elapsed_time());
-    chunk_id++;
+    const double t_lp   = timer.elapsed_time();
+    auto lp_result      = solve_lp(snapshots[k], lp_settings);
+    const auto& lp_info = lp_result.get_additional_termination_information();
+    CUOPT_LOG_INFO(
+      "Polish stage %d LP: status=%s method=%s lp_obj=%g iters=%d l2_primal_res=%g time=%.2fs "
+      "elapsed=%.2f",
+      (int)k,
+      lp_result.get_termination_status_string().c_str(),
+      method_to_string(lp_info.solved_by).c_str(),
+      (double)lp_result.get_objective_value(),
+      lp_info.number_of_steps_taken,
+      lp_info.l2_primal_residual,
+      timer.elapsed_time() - t_lp,
+      timer.elapsed_time());
+    if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables) {
+      CUOPT_LOG_INFO("Polish stage %d LP returned no usable primal", (int)k);
+      continue;
+    }
+    raft::copy(fixed_assignment.data(),
+               lp_result.get_primal_solution().data(),
+               fixed_assignment.size(),
+               stream);
+    clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
+    sol.unfix_variables(fixed_assignment, variable_map);
+    bool feas  = sol.get_feasible();
+    f_t obj_lp = sol.get_user_objective();
+    CUOPT_LOG_INFO(
+      "Polish stage %d LP point: feasible=%d obj=%g max_cstr_viol=%g excess=%g elapsed=%.2f",
+      (int)k,
+      (int)feas,
+      obj_lp,
+      sol.compute_max_constraint_violation(),
+      sol.get_total_excess(),
+      timer.elapsed_time());
     if (feas) {
-      if (obj < obj0) {
-        population.add_solution(std::move(sol), "polish_repair");
-        return true;
+      if (obj_lp < best_obj) {
+        best_obj = obj_lp;
+        improved = true;
+        publish_polished(sol, "polish_lp");
       }
-      return false;
+      continue;
+    }
+    // objective-free repair warm-started from the cost-aware point
+    auto& lp_state = fixed_problem.lp_state;
+    lp_state.resize(fixed_problem, stream);
+    thrust::fill(
+      handle_ptr->get_thrust_policy(), lp_state.prev_dual.begin(), lp_state.prev_dual.end(), f_t(0));
+    relaxed_lp_settings_t r_settings;
+    r_settings.tolerance               = problem_ptr->tolerances.absolute_tolerance;
+    r_settings.return_first_feasible   = true;
+    r_settings.save_state              = true;
+    r_settings.check_infeasibility     = false;
+    r_settings.per_constraint_residual = true;
+    r_settings.has_initial_primal      = true;
+    for (int chunk_id = 0; chunk_id < 3; ++chunk_id) {
+      if (ptimer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption()) {
+        break;
+      }
+      r_settings.time_limit = std::min<double>(20., ptimer.remaining_time());
+      if (r_settings.time_limit < 1.) { break; }
+      auto resp        = get_relaxed_lp_solution(fixed_problem, fixed_assignment, lp_state, r_settings);
+      const auto& info = resp.get_additional_termination_information();
+      sol.unfix_variables(fixed_assignment, variable_map);
+      feas    = sol.get_feasible();
+      f_t obj = sol.get_user_objective();
+      CUOPT_LOG_INFO(
+        "Polish stage %d repair chunk %d: status=%s iters=%d feasible=%d obj=%g max_cstr_viol=%g "
+        "elapsed=%.2f",
+        (int)k,
+        chunk_id,
+        resp.get_termination_status_string().c_str(),
+        info.number_of_steps_taken,
+        (int)feas,
+        obj,
+        sol.compute_max_constraint_violation(),
+        timer.elapsed_time());
+      if (feas) {
+        if (obj < best_obj) {
+          best_obj = obj;
+          improved = true;
+          publish_polished(sol, "polish_repair");
+        }
+        break;
+      }
     }
   }
-  return false;
+  CUOPT_LOG_INFO("Polish end: obj0=%g best=%g time=%.2fs elapsed=%.2f",
+                 obj0,
+                 best_obj,
+                 timer.elapsed_time() - t_start,
+                 timer.elapsed_time());
+  return improved;
 }
 
 template <typename i_t, typename f_t>
@@ -508,7 +555,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
   // with the LP: nearest / up-biased / down-biased; without: upper bounds / lower bounds
   const int n_attempts = use_lp ? 3 : 2;
   bool any_found       = false;
-  for (int attempt = 0; attempt < n_attempts; ++attempt) {
+  // LP-guided order: up-biased first (its polished fixed-LP optimum was the cheapest on CCBJI)
+  const int lp_attempt_order[3] = {1, 0, 2};
+  for (int attempt_idx = 0; attempt_idx < n_attempts; ++attempt_idx) {
+    const int attempt = use_lp ? lp_attempt_order[attempt_idx] : attempt_idx;
     if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption()) {
       break;
     }
@@ -975,6 +1025,15 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       !check_b_b_preemption()) {
     run_fix_propagate_complete(false, 25.);
     population.add_external_solutions_to_population();
+    if (check_b_b_preemption()) { return population.best_feasible(); }
+  }
+  // cost-aware polish of the LP-free incumbent before the root LP
+  if (!fj_only_run && !simplex_solution_exists.load() && !check_b_b_preemption()) {
+    population.add_external_solutions_to_population();
+    if (population.is_feasible()) {
+      auto early_best = population.best_feasible();
+      polish_continuous(early_best, 40.);
+    }
     if (check_b_b_preemption()) { return population.best_feasible(); }
   }
   lp_state_t<i_t, f_t>& lp_state = problem_ptr->lp_state;
