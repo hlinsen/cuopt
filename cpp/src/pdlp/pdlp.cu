@@ -6,7 +6,6 @@
 /* clang-format on */
 
 #include <cuopt/error.hpp>
-#include <cuopt/mathematical_optimization/optimization_problem_utils.hpp>
 #include <cuopt/mathematical_optimization/pdlp/pdlp_hyper_params.cuh>
 #include <cuopt/mathematical_optimization/pdlp/pdlp_warm_start_data.hpp>
 #include <cuopt/mathematical_optimization/solver_settings.hpp>
@@ -51,7 +50,6 @@
 #include <cctype>
 #include <cmath>
 #include <optional>
-#include <span>
 #include <tuple>
 #include <type_traits>
 #include <unordered_set>
@@ -420,19 +418,8 @@ pdlp_solver_t<i_t, f_t>::pdlp_solver_t(
     return;
   }
   // ----- 1. Read problem shape and bulk data directly from mps (host) -----
-  // Models built from a sense + single RHS (e.g. cuOptCreateProblem) carry no
-  // ranged constraint bounds: expand them here rather than copying the model.
-  std::vector<f_t> h_expanded_cstr_lower;
-  std::vector<f_t> h_expanded_cstr_upper;
-  expand_rhs(mps, h_expanded_cstr_lower, h_expanded_cstr_upper);
-  const bool cstr_bounds_expanded = !h_expanded_cstr_lower.empty();
-  const std::span<const f_t> cstr_lower =
-    cstr_bounds_expanded ? h_expanded_cstr_lower : mps.get_constraint_lower_bounds();
-  const std::span<const f_t> cstr_upper =
-    cstr_bounds_expanded ? h_expanded_cstr_upper : mps.get_constraint_upper_bounds();
-
   const i_t n_vars = static_cast<i_t>(mps.get_objective_coefficients().size());
-  const i_t n_cstr = static_cast<i_t>(cstr_lower.size());
+  const i_t n_cstr = static_cast<i_t>(mps.get_constraint_lower_bounds().size());
   const i_t nnz    = static_cast<i_t>(mps.get_constraint_matrix_values().size());
   cuopt_expects(n_vars > 0,
                 error_type_t::ValidationError,
@@ -447,7 +434,7 @@ pdlp_solver_t<i_t, f_t>::pdlp_solver_t(
     static_cast<i_t>(mps.get_constraint_matrix_indices().size()) == nnz,
     error_type_t::ValidationError,
     "mps constraint_matrix_indices size must equal nnz (constraint_matrix_values size)");
-  cuopt_expects(static_cast<i_t>(cstr_upper.size()) == n_cstr,
+  cuopt_expects(static_cast<i_t>(mps.get_constraint_upper_bounds().size()) == n_cstr,
                 error_type_t::ValidationError,
                 "mps constraint_upper_bounds size must equal n_constraints");
   cuopt_expects(static_cast<i_t>(mps.get_variable_lower_bounds().size()) == n_vars,
@@ -551,8 +538,7 @@ pdlp_solver_t<i_t, f_t>::pdlp_solver_t(
   sub_pdlp_settings.hyper_params.do_pock_chambolle_scaling = false;
 
   // ----- 6. Construct the engine: NCCL comms + per-shard pdlp_solver_t -----
-  multi_gpu_engine.emplace(
-    std::move(sub_pdlp_rank_data), mps, cstr_lower, cstr_upper, sub_pdlp_settings);
+  multi_gpu_engine.emplace(std::move(sub_pdlp_rank_data), mps, sub_pdlp_settings);
 
   // Non-owning back-pointer so engine helpers (e.g. allreduce_sum_inplace_to_master)
   // can apply a single pdlp_solver_t-shaped accessor lambda to master too.

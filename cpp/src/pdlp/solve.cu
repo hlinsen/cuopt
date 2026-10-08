@@ -2676,11 +2676,8 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_distributed_from_mps(
     print_version_info(visible_device_count);
     init_handler(handle_ptr);
 
-    // A model built from a sense + single RHS (e.g. cuOptCreateProblem) has no ranged
-    // constraint bounds. Presolve and the distributed solver both expand them on their
-    // own (expand_rhs), so the model is not copied here.
     const i_t n_vars = static_cast<i_t>(mps_data_model.get_objective_coefficients().size());
-    const i_t n_cstr = mps_data_model.get_n_constraints();
+    const i_t n_cstr = static_cast<i_t>(mps_data_model.get_constraint_lower_bounds().size());
     const i_t nnz    = static_cast<i_t>(mps_data_model.get_constraint_matrix_values().size());
     CUOPT_LOG_INFO(
       "Solving a problem with %d constraints, %d variables (%d integers), and %d "
@@ -2945,6 +2942,15 @@ std::unique_ptr<lp_solution_interface_t<i_t, f_t>> solve_lp(
       (lp_settings.num_gpus == -1 || lp_settings.num_gpus > 1)) {
     cuopt::mathematical_optimization::io::mps_data_model_t<i_t, f_t> mps =
       op_problem_to_mps_data_model(*gpu_prob);
+    // Problems built from a sense + single RHS (e.g. cuOptCreateProblem) carry no ranged
+    // constraint bounds, which distributed PDLP reads. Expand them on this local model.
+    std::vector<f_t> constr_lb;
+    std::vector<f_t> constr_ub;
+    expand_rhs(mps, constr_lb, constr_ub);
+    if (!constr_lb.empty()) {
+      mps.set_constraint_lower_bounds(constr_lb);
+      mps.set_constraint_upper_bounds(constr_ub);
+    }
     auto gpu_solution = solve_lp(
       gpu_prob->get_handle_ptr(), mps, lp_settings, problem_checking, use_pdlp_solver_mode);
     return std::make_unique<gpu_lp_solution_t<i_t, f_t>>(std::move(gpu_solution));

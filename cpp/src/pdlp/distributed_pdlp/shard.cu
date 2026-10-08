@@ -27,8 +27,6 @@ pdlp_shard_t<i_t, f_t>::pdlp_shard_t(int device_id,
                                      rank_data_t<i_t, f_t>&& rd,
                                      nccl_comm_unique_ptr_t&& comm,
                                      io::mps_data_model_t<i_t, f_t> const& mps,
-                                     std::span<const f_t> g_cstr_lower,
-                                     std::span<const f_t> g_cstr_upper,
                                      pdlp_solver_settings_t<i_t, f_t> const& settings)
   : device_id(device_id),
     stream(),
@@ -54,7 +52,8 @@ pdlp_shard_t<i_t, f_t>::pdlp_shard_t(int device_id,
   const std::vector<f_t>& g_obj        = mps.get_objective_coefficients();
   const std::vector<f_t>& g_var_lower  = mps.get_variable_lower_bounds();
   const std::vector<f_t>& g_var_upper  = mps.get_variable_upper_bounds();
-  // g_cstr_lower / g_cstr_upper are passed in: mps may only carry a sense + RHS.
+  const std::vector<f_t>& g_cstr_lower = mps.get_constraint_lower_bounds();
+  const std::vector<f_t>& g_cstr_upper = mps.get_constraint_upper_bounds();
 
   // ---- 1. Gather per-shard host slices using rank_data's index maps. ----
   // All vectors are sized to TOTAL (owned + halo). Owned slots get real
