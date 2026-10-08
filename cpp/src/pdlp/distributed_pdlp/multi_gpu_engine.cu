@@ -24,6 +24,8 @@ template <typename i_t, typename f_t>
 multi_gpu_engine_t<i_t, f_t>::multi_gpu_engine_t(
   std::vector<rank_data_t<i_t, f_t>>&& rank_data,
   io::mps_data_model_t<i_t, f_t> const& mps,
+  std::span<const f_t> cstr_lower,
+  std::span<const f_t> cstr_upper,
   pdlp_solver_settings_t<i_t, f_t> const& sub_solver_settings)
   : stream()
 {
@@ -54,7 +56,13 @@ multi_gpu_engine_t<i_t, f_t>::multi_gpu_engine_t(
   for (int r = 0; r < nb_parts; ++r) {
     raft::device_setter guard(devices[r]);  // shard ctor needs device set
     shards.emplace_back(std::make_unique<pdlp_shard_t<i_t, f_t>>(
-      devices[r], std::move(rank_data[r]), std::move(comms[r]), mps, sub_solver_settings));
+      devices[r],
+      std::move(rank_data[r]),
+      std::move(comms[r]),
+      mps,
+      cstr_lower,
+      cstr_upper,
+      sub_solver_settings));
   }
 
   // Two different events

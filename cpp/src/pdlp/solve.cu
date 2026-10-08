@@ -2676,25 +2676,12 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_distributed_from_mps(
     print_version_info(visible_device_count);
     init_handler(handle_ptr);
 
-    // cuOptCreateProblem stores a sense and one RHS. Distributed PDLP sizes the
-    // problem from the ranged constraint bounds, so materialise those first.
-    std::optional<cuopt::mathematical_optimization::io::mps_data_model_t<i_t, f_t>> ranged_mps;
-    if (mps_data_model.get_constraint_lower_bounds().empty() &&
-        mps_data_model.get_constraint_upper_bounds().empty()) {
-      ranged_mps = mps_data_model;
-      std::vector<f_t> constr_lb;
-      std::vector<f_t> constr_ub;
-      expand_rhs(*ranged_mps, constr_lb, constr_ub);
-      if (!constr_lb.empty()) {
-        ranged_mps->set_constraint_lower_bounds(constr_lb);
-        ranged_mps->set_constraint_upper_bounds(constr_ub);
-      }
-    }
-    const auto& model = ranged_mps ? *ranged_mps : mps_data_model;
-
-    const i_t n_vars = static_cast<i_t>(model.get_objective_coefficients().size());
-    const i_t n_cstr = static_cast<i_t>(model.get_constraint_lower_bounds().size());
-    const i_t nnz    = static_cast<i_t>(model.get_constraint_matrix_values().size());
+    // A model built from a sense + single RHS (e.g. cuOptCreateProblem) has no ranged
+    // constraint bounds. Presolve and the distributed solver both expand them on their
+    // own (expand_rhs), so the model is not copied here.
+    const i_t n_vars = static_cast<i_t>(mps_data_model.get_objective_coefficients().size());
+    const i_t n_cstr = mps_data_model.get_n_constraints();
+    const i_t nnz    = static_cast<i_t>(mps_data_model.get_constraint_matrix_values().size());
     CUOPT_LOG_INFO(
       "Solving a problem with %d constraints, %d variables (%d integers), and %d "
       "nonzeros",
@@ -2722,7 +2709,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_distributed_from_mps(
 
       presolver_ptr = std::make_unique<mip::third_party_presolve_t<i_t, f_t>>();
       host_res      = presolver_ptr->apply_presolve_from_mps_data(
-        model,
+        mps_data_model,
         cuopt::mathematical_optimization::problem_category_t::LP,
         settings_resolved.presolver,
         settings_resolved.dual_postsolve,
@@ -2764,9 +2751,9 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_distributed_from_mps(
           rc_uv,
           host_res->reduced_problem.get_objective_offset(),
           presolve_time,
-          model.get_objective_name(),
-          model.get_variable_names(),
-          model.get_row_names());
+          mps_data_model.get_objective_name(),
+          mps_data_model.get_variable_names(),
+          mps_data_model.get_row_names());
       }
 
       presolve_time = lp_timer.elapsed_time();
@@ -2778,7 +2765,7 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_distributed_from_mps(
     // mps_for_solver is what the distributed solver actually sees.
     // the reduced
     // problem when we ran presolve, the original otherwise. No data transits through device
-    const auto& mps_for_solver = run_presolve ? host_res->reduced_problem : model;
+    const auto& mps_for_solver = run_presolve ? host_res->reduced_problem : mps_data_model;
 
     // -------------------------- DISTRIBUTED SOLVE --------------------------
     // Shape-0 placeholder: needed to build an empty pdlp_solver
@@ -2835,9 +2822,9 @@ optimization_problem_solution_t<i_t, f_t> solve_lp_distributed_from_mps(
                                                       dual_uv,
                                                       rc_uv,
                                                       std::move(sol.get_pdlp_warm_start_data()),
-                                                      model.get_objective_name(),
-                                                      model.get_variable_names(),
-                                                      model.get_row_names(),
+                                                      mps_data_model.get_objective_name(),
+                                                      mps_data_model.get_variable_names(),
+                                                      mps_data_model.get_row_names(),
                                                       std::move(term_vec),
                                                       std::move(status_vec));
     }

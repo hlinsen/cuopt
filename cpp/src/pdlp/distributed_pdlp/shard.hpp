@@ -22,6 +22,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace cuopt::mathematical_optimization::pdlp {
@@ -56,6 +57,8 @@ struct pdlp_shard_t {
                rank_data_t<i_t, f_t>&& rd,
                nccl_comm_unique_ptr_t&& comm,
                io::mps_data_model_t<i_t, f_t> const& mps,
+               std::span<const f_t> cstr_lower,
+               std::span<const f_t> cstr_upper,
                pdlp_solver_settings_t<i_t, f_t> const& settings);
 
   pdlp_shard_t(const pdlp_shard_t&)            = delete;

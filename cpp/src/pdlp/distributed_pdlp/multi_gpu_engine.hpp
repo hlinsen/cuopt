@@ -40,6 +40,7 @@
 #include <cmath>
 #include <cstddef>
 #include <memory>
+#include <span>
 #include <tuple>
 #include <type_traits>
 #include <vector>
@@ -88,8 +89,12 @@ template <typename i_t, typename f_t>
 struct multi_gpu_engine_t {
   // Constructs shards from rank_data. The global (unpartitioned) problem is
   // read straight from `mps`; each shard slices out the entries it owns.
+  // Constraint bounds are passed separately since `mps` may only carry a
+  // sense + RHS (see expand_rhs).
   multi_gpu_engine_t(std::vector<rank_data_t<i_t, f_t>>&& rank_data,
                      io::mps_data_model_t<i_t, f_t> const& mps,
+                     std::span<const f_t> cstr_lower,
+                     std::span<const f_t> cstr_upper,
                      pdlp_solver_settings_t<i_t, f_t> const& sub_solver_settings);
 
   multi_gpu_engine_t(const multi_gpu_engine_t&)            = delete;
