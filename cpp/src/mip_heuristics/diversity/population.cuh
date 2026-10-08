@@ -25,7 +25,7 @@ namespace cuopt::mathematical_optimization::mip {
 template <typename i_t, typename f_t>
 class diversity_manager_t;
 
-enum class solution_origin_t { BRANCH_AND_BOUND, CPUFJ, EXTERNAL, FIX_PROPAGATE };
+enum class solution_origin_t { BRANCH_AND_BOUND, CPUFJ, EXTERNAL, FIX_PROPAGATE, POLISH };
 
 constexpr const char* solution_origin_to_string(solution_origin_t origin)
 {
@@ -34,6 +34,7 @@ constexpr const char* solution_origin_to_string(solution_origin_t origin)
     case solution_origin_t::CPUFJ: return "CPUFJ";
     case solution_origin_t::EXTERNAL: return "injected";
     case solution_origin_t::FIX_PROPAGATE: return "fix_propagate_complete_early";
+    case solution_origin_t::POLISH: return "polish_early";
     default: return "unknown";
   }
 }
