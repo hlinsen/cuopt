@@ -296,7 +296,17 @@ bool diversity_manager_t<i_t, f_t>::fpc_complete_continuous(solution_t<i_t, f_t>
       sol.get_user_objective(),
       timer.elapsed_time());
     chunk_id++;
-    if (feas) { return true; }
+    if (feas) {
+      f_t max_excess = 0;
+      if (strict_point_ok(sol.get_host_assignment(), max_excess)) { return true; }
+      // keep a margin over the external validator: tighten and continue from this point
+      lp_settings.tolerance *= 0.1;
+      CUOPT_LOG_INFO("FPC attempt %d completion: strict check failed excess=%g, tol -> %g",
+                     attempt,
+                     max_excess,
+                     lp_settings.tolerance);
+      continue;
+    }
     if (status == pdlp_termination_status_t::PrimalInfeasible ||
         status == pdlp_termination_status_t::DualInfeasible ||
         status == pdlp_termination_status_t::NumericalError) {
@@ -307,7 +317,9 @@ bool diversity_manager_t<i_t, f_t>::fpc_complete_continuous(solution_t<i_t, f_t>
 }
 
 template <typename i_t, typename f_t>
-bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_sol, f_t budget)
+bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_sol,
+                                                      f_t budget,
+                                                      flip_lp_state_t* out_state)
 {
   raft::common::nvtx::range fun_scope("polish_continuous");
   if (!in_sol.get_feasible() || problem_ptr->n_integer_vars == problem_ptr->n_variables) {
@@ -396,6 +408,14 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
       CUOPT_LOG_INFO("Polish stage %d LP returned no usable primal", (int)k);
       continue;
     }
+    if (out_state != nullptr &&
+        lp_result.get_dual_solution().size() == (size_t)fixed_problem.n_constraints) {
+      if (!out_state->valid) { out_state->assignment = in_sol.get_host_assignment(); }
+      out_state->primal = cuopt::host_copy(lp_result.get_primal_solution(), stream);
+      out_state->dual   = cuopt::host_copy(lp_result.get_dual_solution(), stream);
+      out_state->lp_obj = lp_result.get_objective_value();
+      out_state->valid  = true;
+    }
     raft::copy(fixed_assignment.data(),
                lp_result.get_primal_solution().data(),
                fixed_assignment.size(),
@@ -413,6 +433,13 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
       sol.get_total_excess(),
       timer.elapsed_time());
     if (feas) {
+      f_t max_excess = 0;
+      if (!strict_point_ok(sol.get_host_assignment(), max_excess)) {
+        CUOPT_LOG_INFO("Polish stage %d LP point: strict check failed excess=%g", (int)k, max_excess);
+        feas = false;
+      }
+    }
+    if (feas) {
       if (obj_lp < best_obj) {
         best_obj = obj_lp;
         improved = true;
@@ -426,7 +453,7 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
     thrust::fill(
       handle_ptr->get_thrust_policy(), lp_state.prev_dual.begin(), lp_state.prev_dual.end(), f_t(0));
     relaxed_lp_settings_t r_settings;
-    r_settings.tolerance               = problem_ptr->tolerances.absolute_tolerance;
+    r_settings.tolerance               = 0.5 * problem_ptr->tolerances.absolute_tolerance;
     r_settings.return_first_feasible   = true;
     r_settings.save_state              = true;
     r_settings.check_infeasibility     = false;
@@ -441,8 +468,17 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
       auto resp        = get_relaxed_lp_solution(fixed_problem, fixed_assignment, lp_state, r_settings);
       const auto& info = resp.get_additional_termination_information();
       sol.unfix_variables(fixed_assignment, variable_map);
-      feas    = sol.get_feasible();
-      f_t obj = sol.get_user_objective();
+      feas           = sol.get_feasible();
+      f_t obj        = sol.get_user_objective();
+      f_t max_excess = 0;
+      if (feas && !strict_point_ok(sol.get_host_assignment(), max_excess)) {
+        CUOPT_LOG_INFO("Polish stage %d repair chunk %d: strict check failed excess=%g",
+                       (int)k,
+                       chunk_id,
+                       max_excess);
+        feas = false;
+        r_settings.tolerance *= 0.1;
+      }
       CUOPT_LOG_INFO(
         "Polish stage %d repair chunk %d: status=%s iters=%d feasible=%d obj=%g max_cstr_viol=%g "
         "elapsed=%.2f",
@@ -471,6 +507,437 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
                  timer.elapsed_time());
   return improved;
 }
+
+template <typename i_t, typename f_t>
+bool diversity_manager_t<i_t, f_t>::strict_point_ok(const std::vector<f_t>& x, f_t& max_excess)
+{
+  auto* handle_ptr    = problem_ptr->handle_ptr;
+  auto stream         = handle_ptr->get_stream();
+  const i_t n_vars    = problem_ptr->n_variables;
+  const i_t n_cstrs   = problem_ptr->n_constraints;
+  const f_t abs_tol   = problem_ptr->tolerances.absolute_tolerance;
+  auto h_offsets      = cuopt::host_copy(problem_ptr->offsets, stream);
+  auto h_cols         = cuopt::host_copy(problem_ptr->variables, stream);
+  auto h_vals         = cuopt::host_copy(problem_ptr->coefficients, stream);
+  auto h_clb          = cuopt::host_copy(problem_ptr->constraint_lower_bounds, stream);
+  auto h_cub          = cuopt::host_copy(problem_ptr->constraint_upper_bounds, stream);
+  auto [h_vlb, h_vub] = cuopt::extract_host_bounds<f_t>(problem_ptr->variable_bounds, handle_ptr);
+  max_excess          = 0;
+  if ((i_t)x.size() != n_vars) {
+    max_excess = std::numeric_limits<f_t>::infinity();
+    return false;
+  }
+  for (i_t j = 0; j < n_vars; ++j) {
+    if (!std::isfinite(x[j])) {
+      max_excess = std::numeric_limits<f_t>::infinity();
+      return false;
+    }
+    f_t ex = std::max(h_vlb[j] - x[j], x[j] - h_vub[j]);
+    if (ex > max_excess) max_excess = ex;
+  }
+  for (i_t r = 0; r < n_cstrs; ++r) {
+    // Neumaier-compensated sum of products (fma error term folded in)
+    double sum = 0, comp = 0;
+    for (i_t k = h_offsets[r]; k < h_offsets[r + 1]; ++k) {
+      const double p   = (double)h_vals[k] * (double)x[h_cols[k]];
+      const double err = std::fma((double)h_vals[k], (double)x[h_cols[k]], -p);
+      const double t   = sum + p;
+      comp += std::abs(sum) >= std::abs(p) ? (sum - t) + p : (p - t) + sum;
+      comp += err;
+      sum = t;
+    }
+    const f_t a  = (f_t)(sum + comp);
+    const f_t lo = h_clb[r], hi = h_cub[r];
+    if (std::isfinite(lo)) {
+      f_t tol    = 1e-12 * std::max<f_t>(1., std::max(std::abs(a), std::abs(lo)));
+      max_excess = std::max(max_excess, lo - a - tol);
+    }
+    if (std::isfinite(hi)) {
+      f_t tol    = 1e-12 * std::max<f_t>(1., std::max(std::abs(a), std::abs(hi)));
+      max_excess = std::max(max_excess, a - hi - tol);
+    }
+  }
+  return max_excess <= 0.5 * abs_tol;
+}
+
+template <typename i_t, typename f_t>
+void diversity_manager_t<i_t, f_t>::dual_flip_loop()
+{
+  raft::common::nvtx::range fun_scope("dual_flip_loop");
+  if (!flip_state.valid || problem_ptr->n_integer_vars == 0 ||
+      problem_ptr->n_integer_vars == problem_ptr->n_variables) {
+    return;
+  }
+  auto* handle_ptr     = problem_ptr->handle_ptr;
+  auto stream          = handle_ptr->get_stream();
+  const i_t n_vars     = problem_ptr->n_variables;
+  const i_t n_cstrs    = problem_ptr->n_constraints;
+  const double t_start = timer.elapsed_time();
+  if ((i_t)flip_state.assignment.size() != n_vars || (i_t)flip_state.dual.size() != n_cstrs) {
+    return;
+  }
+  // host model
+  auto h_offsets      = cuopt::host_copy(problem_ptr->offsets, stream);
+  auto h_cols         = cuopt::host_copy(problem_ptr->variables, stream);
+  auto h_vals         = cuopt::host_copy(problem_ptr->coefficients, stream);
+  auto h_clb          = cuopt::host_copy(problem_ptr->constraint_lower_bounds, stream);
+  auto h_cub          = cuopt::host_copy(problem_ptr->constraint_upper_bounds, stream);
+  auto h_int          = cuopt::host_copy(problem_ptr->integer_indices, stream);
+  auto h_obj          = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
+  auto [h_vlb, h_vub] = cuopt::extract_host_bounds<f_t>(problem_ptr->variable_bounds, handle_ptr);
+  host_fix_propagate_t<i_t, f_t> fp_host;
+  fp_host.abs_tol = problem_ptr->tolerances.absolute_tolerance;
+  fp_host.build(n_vars, n_cstrs, h_offsets, h_cols, h_vals, h_clb, h_cub, h_vlb, h_vub, h_int);
+  std::vector<char> is_bin(n_vars, 0);
+  std::vector<i_t> bins;
+  for (auto v : h_int) {
+    if (h_vlb[v] == 0 && h_vub[v] == 1) {
+      is_bin[v] = 1;
+      bins.push_back(v);
+    }
+  }
+  if (bins.empty()) { return; }
+
+  const f_t abs_tol = problem_ptr->tolerances.absolute_tolerance;
+
+  std::vector<f_t> cur_assign = flip_state.assignment;
+  std::vector<f_t> cur_primal = flip_state.primal;
+  std::vector<f_t> cur_dual   = flip_state.dual;
+  f_t best_pub                = population.is_feasible()
+                                  ? population.best_feasible().get_user_objective()
+                                  : std::numeric_limits<f_t>::infinity();
+
+  struct eval_result_t {
+    bool usable{false};
+    bool optimal{false};
+    f_t lp_obj{0};
+    f_t repaired_obj{std::numeric_limits<f_t>::infinity()};
+    bool published{false};
+    int iters{0};
+    double time{0};
+    std::vector<f_t> primal, dual;
+  };
+  // solve the fixed LP of a pattern (real objective, PDLP warm-started from the current
+  // primal/dual), optionally repair the point to strict feasibility and publish it
+  auto evaluate = [&](const std::vector<f_t>& assign, f_t tol, f_t tlimit, bool repair) {
+    eval_result_t res;
+    const double t0 = timer.elapsed_time();
+    solution_t<i_t, f_t> sol(*problem_ptr);
+    sol.copy_new_assignment(assign);
+    auto [fixed_problem, fixed_assignment, variable_map] =
+      sol.fix_variables(problem_ptr->integer_indices);
+    fixed_problem.check_problem_representation(true);
+    if ((size_t)fixed_problem.n_variables != cur_primal.size() ||
+        fixed_problem.n_constraints != n_cstrs) {
+      return res;
+    }
+    {
+      auto snapshot = make_root_lp_snapshot(fixed_problem);
+      pdlp_solver_settings_t<i_t, f_t> lp_settings{};
+      lp_settings.set_optimality_tolerance(tol);
+      lp_settings.time_limit = std::max<double>(1., tlimit);
+      lp_settings.method     = method_t::PDLP;
+      lp_settings.presolver  = presolver_t::None;
+      std::atomic<int> local_halt{0};
+      lp_settings.concurrent_halt = &local_halt;
+      lp_settings.inside_mip      = false;
+      lp_settings.num_gpus        = context.settings.num_gpus;
+      // the snapshot carries no variable types; the initial-solution check reads them
+      std::vector<var_t> h_types(fixed_problem.n_variables, var_t::CONTINUOUS);
+      snapshot.set_variable_types(h_types.data(), fixed_problem.n_variables);
+      // warm-start primal must lie within the variable bounds
+      raft::copy(fixed_assignment.data(), cur_primal.data(), cur_primal.size(), stream);
+      clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
+      handle_ptr->sync_stream();
+      lp_settings.set_initial_primal_solution(
+        fixed_assignment.data(), (i_t)fixed_assignment.size(), stream);
+      lp_settings.set_initial_dual_solution(cur_dual.data(), (i_t)cur_dual.size(), stream);
+      auto lp_result      = solve_lp(snapshot, lp_settings);
+      const auto& lp_info = lp_result.get_additional_termination_information();
+      res.iters           = lp_info.number_of_steps_taken;
+      res.optimal = lp_result.get_termination_status() == pdlp_termination_status_t::Optimal;
+      // the fixed problem's objective excludes the fixed integers' cost; add it back so that
+      // patterns are compared on their full objective
+      f_t int_cost = 0;
+      for (auto v : h_int) {
+        int_cost += h_obj[v] * assign[v];
+      }
+      res.lp_obj = lp_result.get_objective_value() +
+                   problem_ptr->presolve_data.objective_scaling_factor * int_cost;
+      if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables ||
+          lp_result.get_dual_solution().size() != (size_t)n_cstrs) {
+        res.time = timer.elapsed_time() - t0;
+        return res;
+      }
+      res.usable = std::isfinite(res.lp_obj);
+      res.primal = cuopt::host_copy(lp_result.get_primal_solution(), stream);
+      res.dual   = cuopt::host_copy(lp_result.get_dual_solution(), stream);
+      raft::copy(fixed_assignment.data(),
+                 lp_result.get_primal_solution().data(),
+                 fixed_assignment.size(),
+                 stream);
+    }
+    if (repair && res.usable) {
+      clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
+      sol.unfix_variables(fixed_assignment, variable_map);
+      bool feas = sol.get_feasible();
+      if (feas) {
+        f_t max_excess = 0;
+        feas           = strict_point_ok(sol.get_host_assignment(), max_excess);
+      }
+      if (!feas) {
+        thrust::fill(handle_ptr->get_thrust_policy(),
+                     fixed_problem.objective_coefficients.begin(),
+                     fixed_problem.objective_coefficients.end(),
+                     f_t(0));
+        fixed_problem.presolve_data.objective_offset = 0;
+        auto& lp_state                               = fixed_problem.lp_state;
+        lp_state.resize(fixed_problem, stream);
+        thrust::fill(handle_ptr->get_thrust_policy(),
+                     lp_state.prev_dual.begin(),
+                     lp_state.prev_dual.end(),
+                     f_t(0));
+        relaxed_lp_settings_t r_settings;
+        r_settings.tolerance               = 0.2 * abs_tol;
+        r_settings.return_first_feasible   = true;
+        r_settings.save_state              = true;
+        r_settings.check_infeasibility     = false;
+        r_settings.per_constraint_residual = true;
+        r_settings.has_initial_primal      = true;
+        for (int chunk_id = 0; chunk_id < 3 && !feas; ++chunk_id) {
+          if (timer.check_time_limit() || check_b_b_preemption()) { break; }
+          r_settings.time_limit = std::min<double>(15., timer.remaining_time() - 1.);
+          if (r_settings.time_limit < 1.) { break; }
+          get_relaxed_lp_solution(fixed_problem, fixed_assignment, lp_state, r_settings);
+          sol.unfix_variables(fixed_assignment, variable_map);
+          feas = sol.get_feasible();
+          if (feas) {
+            f_t max_excess = 0;
+            if (!strict_point_ok(sol.get_host_assignment(), max_excess)) {
+              CUOPT_LOG_INFO("Dual flip repair: strict check failed excess=%g", max_excess);
+              feas = false;
+              r_settings.tolerance *= 0.1;
+            }
+          }
+        }
+      }
+      if (feas) {
+        res.repaired_obj = sol.get_user_objective();
+        if (res.repaired_obj < best_pub) {
+          auto h_x       = sol.get_host_assignment();
+          f_t max_excess = 0;
+          if (strict_point_ok(h_x, max_excess)) {
+            best_pub      = res.repaired_obj;
+            res.published = true;
+            population.add_solution(solution_t<i_t, f_t>(sol), "dual_flip");
+          } else {
+            CUOPT_LOG_INFO("Dual flip: repaired point rejected by strict check excess=%g",
+                           max_excess);
+          }
+        }
+      }
+    }
+    res.time = timer.elapsed_time() - t0;
+    return res;
+  };
+
+  // consistent baseline: the current pattern at the screening tolerance
+  constexpr f_t screen_tol = 1e-4;
+  if (timer.remaining_time() < 10. || check_b_b_preemption()) { return; }
+  auto base = evaluate(cur_assign, screen_tol, std::min<f_t>(20., timer.remaining_time() - 6.), false);
+  if (!base.usable) {
+    CUOPT_LOG_INFO("Dual flip: baseline evaluation failed elapsed=%.2f", timer.elapsed_time());
+    return;
+  }
+  f_t cur_lp = base.lp_obj;
+  cur_primal = std::move(base.primal);
+  cur_dual   = std::move(base.dual);
+  f_t last_tight_lp      = cur_lp;
+  double last_tight_time = timer.elapsed_time();
+  CUOPT_LOG_INFO(
+    "Dual flip start: bins=%zu tight_lp=%g screen_lp=%g (iters=%d %.2fs) best_pub=%g elapsed=%.2f",
+    bins.size(),
+    flip_state.lp_obj,
+    cur_lp,
+    base.iters,
+    base.time,
+    best_pub,
+    timer.elapsed_time());
+
+  std::vector<f_t> red(n_vars, 0);
+  std::vector<int> tabu_until(n_vars, 0);
+  std::vector<f_t> pref(n_vars, 0);
+  int k        = 8;
+  int n_iter   = 0;
+  int n_accept = 0;
+  constexpr int tabu_len  = 40;
+  constexpr int k_max     = 1024;
+  constexpr double margin = 6.;
+  auto run_tight = [&]() {
+    const f_t tb = std::min<f_t>(90., timer.remaining_time() - margin - 5.);
+    auto tight   = evaluate(cur_assign, 1e-7, tb, true);
+    CUOPT_LOG_INFO(
+      "Dual flip tight: lp=%g (screen %g) optimal=%d iters=%d repaired=%g published=%d "
+      "time=%.2fs best_pub=%g elapsed=%.2f",
+      tight.lp_obj,
+      cur_lp,
+      (int)tight.optimal,
+      tight.iters,
+      tight.repaired_obj,
+      (int)tight.published,
+      tight.time,
+      best_pub,
+      timer.elapsed_time());
+    last_tight_time = timer.elapsed_time();
+    last_tight_lp   = cur_lp;
+    if (tight.usable && tight.lp_obj <= cur_lp * (1. + 1e-3)) {
+      cur_primal = std::move(tight.primal);
+      cur_dual   = std::move(tight.dual);
+    }
+  };
+  // leave room for a final tight solve of a pending improvement
+  constexpr double final_reserve = 100.;
+  while (!timer.check_time_limit() && !check_b_b_preemption() &&
+         timer.remaining_time() > margin + 2.) {
+    if (cur_lp < last_tight_lp * (1. - 1e-4) && timer.remaining_time() < final_reserve) { break; }
+    ++n_iter;
+    // price the binaries: reduced cost c_j - A_j^T y on the fixed LP's duals
+    i_t n_open_cand = 0, n_close_cand = 0;
+    std::vector<std::pair<f_t, i_t>> cands;
+    for (auto v : bins) {
+      f_t aty = 0;
+      for (i_t kk = fp_host.int_offsets[v]; kk < fp_host.int_offsets[v + 1]; ++kk) {
+        aty += fp_host.int_vals[kk] * cur_dual[fp_host.row_orig[fp_host.int_rows[kk]]];
+      }
+      red[v]       = h_obj[v] - aty;
+      const bool on = cur_assign[v] > 0.5;
+      const f_t gain = on ? red[v] : -red[v];
+      if (gain > 0) {
+        on ? n_close_cand++ : n_open_cand++;
+        if (tabu_until[v] <= n_iter) { cands.push_back({gain, v}); }
+      }
+    }
+    if (cands.empty()) {
+      CUOPT_LOG_INFO("Dual flip iter %d: no candidates (open=%d close=%d) elapsed=%.2f",
+                     n_iter,
+                     n_open_cand,
+                     n_close_cand,
+                     timer.elapsed_time());
+      break;
+    }
+    std::sort(cands.begin(), cands.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    const int kb = std::min<int>(k, (int)cands.size());
+    std::vector<char> in_batch(n_vars, 0);
+    std::vector<i_t> order;
+    order.reserve(h_int.size());
+    f_t pred_gain = 0;
+    for (int b = 0; b < kb; ++b) {
+      i_t v       = cands[b].second;
+      in_batch[v] = 1;
+      order.push_back(v);
+      pred_gain += cands[b].first;
+    }
+    // the rest keeps its values, most strongly supported by the duals first (the least
+    // supported ones are the first to be pushed out by propagation)
+    std::vector<std::pair<f_t, i_t>> rest;
+    rest.reserve(h_int.size());
+    for (auto v : h_int) {
+      if (in_batch[v]) continue;
+      f_t keep = 0;
+      if (is_bin[v]) { keep = cur_assign[v] > 0.5 ? -red[v] : red[v]; }
+      rest.push_back({keep, v});
+    }
+    std::stable_sort(rest.begin(), rest.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    for (auto& p : rest) {
+      order.push_back(p.second);
+    }
+    for (auto v : h_int) {
+      pref[v] = in_batch[v] ? 1. - std::round(cur_assign[v]) : std::round(cur_assign[v]);
+    }
+    i_t n_flipped = 0, n_implied = 0;
+    const double t_dive = timer.elapsed_time();
+    i_t n_conflicts     = fp_host.dive(order, pref, n_flipped, n_implied);
+    i_t n_open = 0, n_close = 0, n_batch_done = 0;
+    std::vector<f_t> cand_assign = cur_assign;
+    for (auto v : h_int) {
+      f_t nv = fp_host.col_lb[v];
+      if (std::abs(nv - cur_assign[v]) > 0.5) {
+        nv > cur_assign[v] ? n_open++ : n_close++;
+        n_batch_done += in_batch[v];
+      }
+      cand_assign[v] = nv;
+    }
+    if (n_conflicts > 0 || n_open + n_close == 0) {
+      for (int b = 0; b < kb; ++b) {
+        tabu_until[cands[b].second] = n_iter + tabu_len;
+      }
+      CUOPT_LOG_INFO(
+        "Dual flip iter %d: k=%d dive rejected conflicts=%d changes=%d dive=%.3fs elapsed=%.2f",
+        n_iter,
+        kb,
+        n_conflicts,
+        n_open + n_close,
+        timer.elapsed_time() - t_dive,
+        timer.elapsed_time());
+      k = std::max(1, k / 2);
+      continue;
+    }
+    const f_t tlimit = std::min<f_t>(25., timer.remaining_time() - margin);
+    if (tlimit < 2.) { break; }
+    auto ev = evaluate(cand_assign, screen_tol, tlimit, false);
+    const bool accept = ev.usable && ev.optimal && ev.lp_obj < cur_lp - 1e-6 * std::abs(cur_lp);
+    CUOPT_LOG_INFO(
+      "Dual flip iter %d: k=%d cands=%zu (open=%d close=%d) pred_gain=%g changes open=%d close=%d "
+      "batch_done=%d lp=%g (cur %g, %+.4f%%) optimal=%d iters=%d eval=%.2fs accept=%d "
+      "elapsed=%.2f",
+      n_iter,
+      kb,
+      cands.size(),
+      n_open_cand,
+      n_close_cand,
+      pred_gain,
+      n_open,
+      n_close,
+      n_batch_done,
+      ev.lp_obj,
+      cur_lp,
+      100. * (ev.lp_obj - cur_lp) / std::abs(cur_lp),
+      (int)ev.optimal,
+      ev.iters,
+      ev.time,
+      (int)accept,
+      timer.elapsed_time());
+    if (!accept) {
+      for (int b = 0; b < kb; ++b) {
+        tabu_until[cands[b].second] = n_iter + tabu_len;
+      }
+      k = std::max(1, k / 2);
+      continue;
+    }
+    n_accept++;
+    cur_assign = std::move(cand_assign);
+    cur_primal = std::move(ev.primal);
+    cur_dual   = std::move(ev.dual);
+    cur_lp     = ev.lp_obj;
+    k          = std::min(k_max, 2 * k);
+    // tight solve + repair + publish once the screened LP gain is worth it
+    const bool worth = cur_lp < last_tight_lp * (1. - 0.01) &&
+                       timer.elapsed_time() - last_tight_time > 30.;
+    if (worth && timer.remaining_time() > margin + 10.) { run_tight(); }
+  }
+  if (cur_lp < last_tight_lp * (1. - 1e-4) && !timer.check_time_limit() &&
+      !check_b_b_preemption() && timer.remaining_time() > margin + 10.) {
+    run_tight();
+  }
+  CUOPT_LOG_INFO("Dual flip end: iters=%d accepted=%d cur_lp=%g best_pub=%g time=%.2fs elapsed=%.2f",
+                 n_iter,
+                 n_accept,
+                 cur_lp,
+                 best_pub,
+                 timer.elapsed_time() - t_start,
+                 timer.elapsed_time());
+}
+
 
 template <typename i_t, typename f_t>
 void diversity_manager_t<i_t, f_t>::run_early_fix_propagate()
@@ -632,9 +1099,11 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         if (use_lp) {
           // every LP-guided rounding gets a cost-aware polish; keep going through the remaining
           // value preferences since the fixed-LP optimum depends on the binary pattern
-          polish_continuous(to_polish, 300.);
-          any_found = true;
-          continue;
+          // the first LP-guided rounding (up-biased) is polished and handed to the dual-guided
+          // flip loop, which gets the remaining time instead of the other value preferences
+          flip_state = flip_lp_state_t{};
+          polish_continuous(to_polish, 300., &flip_state);
+          return true;
         }
       }
       return true;
@@ -1218,6 +1687,10 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   if (ls.lp_optimal_exists && !check_b_b_preemption() && !timer.check_time_limit()) {
     run_fix_propagate_complete(true, 700.);
     population.add_external_solutions_to_population();
+    if (!timer.check_time_limit() && !check_b_b_preemption()) {
+      dual_flip_loop();
+      population.add_external_solutions_to_population();
+    }
     if (timer.check_time_limit() || check_b_b_preemption()) { return population.best_feasible(); }
   }
 

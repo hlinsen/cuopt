@@ -56,7 +56,27 @@ class diversity_manager_t {
   // Cost-aware continuous polish: fix the integers of a feasible solution, solve the fixed LP
   // with the real objective, repair the result to strict feasibility (objective-free PDLP warm
   // started from the cost-aware point) and publish it when it improves the objective.
-  bool polish_continuous(solution_t<i_t, f_t>& sol, f_t budget);
+  // fixed-binary LP state of a polished pattern: full host assignment (integers = pattern),
+  // fixed-problem LP primal, row duals and LP objective; seeds the dual-guided flip loop
+  struct flip_lp_state_t {
+    bool valid{false};
+    std::vector<f_t> assignment;
+    std::vector<f_t> primal;
+    std::vector<f_t> dual;
+    f_t lp_obj{0};
+  };
+  bool polish_continuous(solution_t<i_t, f_t>& sol,
+                         f_t budget,
+                         flip_lp_state_t* out_state = nullptr);
+  // Dual-guided binary improvement loop: price every binary with the fixed LP's row duals
+  // (c_j - A_j^T y), flip batches of the most profitable binaries (repair with propagation),
+  // re-solve the fixed LP warm-started from the previous primal/dual and accept improvements.
+  void dual_flip_loop();
+  // strict host-side feasibility check of a full assignment against the model rows and bounds
+  // (compensated activities, validator-style relative term, half the absolute tolerance) so
+  // that published LP-derived points keep a margin over the external validator
+  bool strict_point_ok(const std::vector<f_t>& x, f_t& max_excess);
+  flip_lp_state_t flip_state;
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring
