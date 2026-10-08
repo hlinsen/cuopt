@@ -48,13 +48,13 @@ TEST_F(domain, apply_and_propagate)
   lp.A.to_compressed_row(Arow);
   ASSERT_TRUE(local_domain.propagate_full(Arow, var_types, settings, lp));
 
-  // x0 >= 3 gives x1 <= 1 from row 0, then x0 <= 3, x1 >= 1 and s1 <= 0 from row 1, and finally
-  // s0 <= 0 from row 0.
+  // x0 >= 3 gives x1 <= 1 from row 0, then x0 <= 3 and x1 >= 1 from row 1. The slacks keep their
+  // finite bounds from the root.
   const bound_change_t<int, double> branch{
     .var = 0, .new_upper = 4.0, .new_lower = 3.0, .origin = bound_change_origin_t::BRANCH};
   ASSERT_TRUE(local_domain.apply_and_propagate(Arow, var_types, settings, branch, lp));
   EXPECT_EQ(lp.lower, (std::vector<double>{3.0, 1.0, 0.0, 0.0}));
-  EXPECT_EQ(lp.upper, (std::vector<double>{3.0, 1.0, 0.0, 0.0}));
+  EXPECT_EQ(lp.upper, (std::vector<double>{3.0, 1.0, 4.0, 6.0}));
   EXPECT_GT(local_domain.last_nnz_processed, 0u);
 }
 
@@ -78,7 +78,7 @@ TEST_F(domain, backtrack_to_parent)
   // The activities were reverted as well, so the same branching gives the same bounds.
   ASSERT_TRUE(local_domain.apply_and_propagate(Arow, var_types, settings, branch, lp));
   EXPECT_EQ(lp.lower, (std::vector<double>{3.0, 1.0, 0.0, 0.0}));
-  EXPECT_EQ(lp.upper, (std::vector<double>{3.0, 1.0, 0.0, 0.0}));
+  EXPECT_EQ(lp.upper, (std::vector<double>{3.0, 1.0, 4.0, 6.0}));
 }
 
 TEST_F(domain, propagate_from_stack)
@@ -91,7 +91,7 @@ TEST_F(domain, propagate_from_stack)
     lp, {.var = 0, .new_upper = 4.0, .new_lower = 3.0, .origin = bound_change_origin_t::BRANCH});
   ASSERT_TRUE(local_domain.propagate_from_stack(Arow, var_types, settings, lp));
   EXPECT_EQ(lp.lower, (std::vector<double>{3.0, 1.0, 0.0, 0.0}));
-  EXPECT_EQ(lp.upper, (std::vector<double>{3.0, 1.0, 0.0, 0.0}));
+  EXPECT_EQ(lp.upper, (std::vector<double>{3.0, 1.0, 4.0, 6.0}));
 }
 
 TEST_F(domain, propagate_from_variables)
@@ -102,14 +102,14 @@ TEST_F(domain, propagate_from_variables)
   lp.lower[0] = 3.0;
   ASSERT_TRUE(local_domain.propagate_from_variables(Arow, var_types, settings, lp, {0}));
   EXPECT_EQ(lp.lower, (std::vector<double>{3.0, 1.0, 0.0, 0.0}));
-  EXPECT_EQ(lp.upper, (std::vector<double>{3.0, 1.0, 0.0, 0.0}));
+  EXPECT_EQ(lp.upper, (std::vector<double>{3.0, 1.0, 4.0, 6.0}));
 }
 
 TEST_F(domain, integer_rounding_and_gauss_seidel)
 {
   // 2 x0 + x1 = 3 and x0 + x1 + s = 10 with x0 integer in [0, 10] and x1 in [0, 2]. Row 0 gives
   // x0 in [0.5, 1.5], rounded to x0 = 1, and x1 sees x0 = 1 in the same pass, giving x1 = 1. Row 1
-  // then fixes s = 8.
+  // then bounds s <= 8, but its finite lower bound is never tightened.
   lp_problem_t<int, double> integer_lp(nullptr, 2, 3, 5);
   integer_lp.A.col_start = {0, 2, 4, 5};
   integer_lp.A.i         = {0, 1, 0, 1, 1};
@@ -121,7 +121,7 @@ TEST_F(domain, integer_rounding_and_gauss_seidel)
   integer_lp.A.to_compressed_row(Arow);
 
   ASSERT_TRUE(local_domain.propagate_full(Arow, var_types, settings, integer_lp));
-  EXPECT_EQ(integer_lp.lower, (std::vector<double>{1.0, 1.0, 8.0}));
+  EXPECT_EQ(integer_lp.lower, (std::vector<double>{1.0, 1.0, 0.0}));
   EXPECT_EQ(integer_lp.upper, (std::vector<double>{1.0, 1.0, 8.0}));
 }
 
