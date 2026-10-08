@@ -457,19 +457,13 @@ void launch_nt_scaling(cone_data_t<i_t, f_t>& cones, cuda::stream_ref stream)
 
   auto x_tail_sq_terms = thrust::make_transform_iterator(
     thrust::make_counting_iterator<size_t>(0),
-    [span_x, cone_offsets, element_cone_ids] HD(size_t idx) -> f_t {
-      const i_t cone = element_cone_ids[idx];
-      return idx == cone_offsets[cone] ? 0 : span_x[idx] * span_x[idx];
-    });
-  cones.segmented_sum(x_tail_sq_terms, x_scale, stream);
+    [span_x] HD(size_t idx) -> f_t { return span_x[idx] * span_x[idx]; });
+  cones.segmented_sum.tail_sum(x_tail_sq_terms, x_scale, stream);
 
   auto z_tail_sq_terms = thrust::make_transform_iterator(
     thrust::make_counting_iterator<size_t>(0),
-    [span_z, cone_offsets, element_cone_ids] HD(size_t idx) -> f_t {
-      const i_t cone = element_cone_ids[idx];
-      return idx == cone_offsets[cone] ? 0 : span_z[idx] * span_z[idx];
-    });
-  cones.segmented_sum(z_tail_sq_terms, z_scale, stream);
+    [span_z] HD(size_t idx) -> f_t { return span_z[idx] * span_z[idx]; });
+  cones.segmented_sum.tail_sum(z_tail_sq_terms, z_scale, stream);
 
   const size_t cone_grid_dim =
     raft::ceildiv<size_t>(static_cast<size_t>(cones.n_cones), soc_block_size);
@@ -486,11 +480,8 @@ void launch_nt_scaling(cone_data_t<i_t, f_t>& cones, cuda::stream_ref stream)
 
   auto unnormalized_tail_sq_terms =
     thrust::make_transform_iterator(thrust::make_counting_iterator<size_t>(0),
-                                    [cone_offsets, element_cone_ids, w] HD(size_t idx) -> f_t {
-                                      const i_t cone = element_cone_ids[idx];
-                                      return idx == cone_offsets[cone] ? 0 : w[idx] * w[idx];
-                                    });
-  cones.segmented_sum(unnormalized_tail_sq_terms, w_scale, stream);
+                                    [w] HD(size_t idx) -> f_t { return w[idx] * w[idx]; });
+  cones.segmented_sum.tail_sum(unnormalized_tail_sq_terms, w_scale, stream);
 
   nt_finalize_w_scale_kernel<i_t, f_t><<<cone_grid_dim, soc_block_size, 0, stream.get()>>>(
     w, w_scale, w_scale, cone_offsets, cones.n_cones);
@@ -515,11 +506,8 @@ void launch_nt_scaling(cone_data_t<i_t, f_t>& cones, cuda::stream_ref stream)
   // w_scale is overwritten from here
   auto normalized_tail_terms =
     thrust::make_transform_iterator(thrust::make_counting_iterator<size_t>(0),
-                                    [cone_offsets, element_cone_ids, w] HD(size_t idx) -> f_t {
-                                      const i_t cone = element_cone_ids[idx];
-                                      return idx == cone_offsets[cone] ? 0 : w[idx] * w[idx];
-                                    });
-  cones.segmented_sum(normalized_tail_terms, w_scale, stream);
+                                    [w] HD(size_t idx) -> f_t { return w[idx] * w[idx]; });
+  cones.segmented_sum.tail_sum(normalized_tail_terms, w_scale, stream);
 
   nt_finalize_head_kernel<i_t, f_t><<<cone_grid_dim, soc_block_size, 0, stream.get()>>>(
     cuopt::make_span(cones.w), w_scale, cone_offsets, cones.n_cones);
@@ -841,11 +829,8 @@ void apply_w_inv(raft::device_span<const f_t> v,
 
   auto tail_terms =
     thrust::make_transform_iterator(thrust::make_counting_iterator<size_t>(0),
-                                    [v, w, cone_offsets, element_cone_ids] HD(size_t idx) -> f_t {
-                                      const i_t cone = element_cone_ids[idx];
-                                      return idx == cone_offsets[cone] ? 0 : w[idx] * v[idx];
-                                    });
-  cones.segmented_sum(tail_terms, tail_dot, stream);
+                                    [v, w] HD(size_t idx) -> f_t { return w[idx] * v[idx]; });
+  cones.segmented_sum.tail_sum(tail_terms, tail_dot, stream);
 
   const size_t grid_dim = raft::ceildiv<size_t>(out.size(), soc_block_size);
   apply_w_inv_write_kernel<i_t, f_t><<<grid_dim, soc_block_size, 0, stream.get()>>>(
@@ -877,11 +862,8 @@ void apply_w(raft::device_span<const f_t> v,
 
   auto tail_terms =
     thrust::make_transform_iterator(thrust::make_counting_iterator<size_t>(0),
-                                    [v, w, cone_offsets, element_cone_ids] HD(size_t idx) -> f_t {
-                                      const i_t cone = element_cone_ids[idx];
-                                      return idx == cone_offsets[cone] ? 0 : w[idx] * v[idx];
-                                    });
-  cones.segmented_sum(tail_terms, tail_dot, stream);
+                                    [v, w] HD(size_t idx) -> f_t { return w[idx] * v[idx]; });
+  cones.segmented_sum.tail_sum(tail_terms, tail_dot, stream);
 
   const size_t grid_dim = raft::ceildiv<size_t>(out.size(), soc_block_size);
   apply_w_write_kernel<i_t, f_t><<<grid_dim, soc_block_size, 0, stream.get()>>>(
@@ -1676,19 +1658,13 @@ void compute_combined_cone_rhs_term(raft::device_span<const f_t> dx_aff,
   // compute W *(-(\lambda inv_circ shift))
   auto lambda_tail_dot_terms = thrust::make_transform_iterator(
     thrust::make_counting_iterator<size_t>(0),
-    [shift, nt_point, cone_offsets, element_cone_ids] HD(size_t idx) -> f_t {
-      const i_t cone = element_cone_ids[idx];
-      return idx == cone_offsets[cone] ? 0 : nt_point[idx] * shift[idx];
-    });
-  cones.segmented_sum(lambda_tail_dot_terms, slot_0, stream);
+    [shift, nt_point] HD(size_t idx) -> f_t { return nt_point[idx] * shift[idx]; });
+  cones.segmented_sum.tail_sum(lambda_tail_dot_terms, slot_0, stream);
 
   auto lambda_tail_sq_terms = thrust::make_transform_iterator(
     thrust::make_counting_iterator<size_t>(0),
-    [nt_point, cone_offsets, element_cone_ids] HD(size_t idx) -> f_t {
-      const i_t cone = element_cone_ids[idx];
-      return idx == cone_offsets[cone] ? 0 : nt_point[idx] * nt_point[idx];
-    });
-  cones.segmented_sum(lambda_tail_sq_terms, slot_1, stream);
+    [nt_point] HD(size_t idx) -> f_t { return nt_point[idx] * nt_point[idx]; });
+  cones.segmented_sum.tail_sum(lambda_tail_sq_terms, slot_1, stream);
 
   jordan_divide_by_lambda_scalar_kernel<i_t, f_t>
     <<<cone_grid_dim, soc_block_size, 0, stream.get()>>>(

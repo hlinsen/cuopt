@@ -37,6 +37,7 @@ namespace cuopt::mathematical_optimization::barrier {
 template <std::integral i_t,
           typename value_t,
           int warps_per_cta,
+          bool skip_head,
           typename InputIt,
           typename OutputIt>
 __global__ void __launch_bounds__(warps_per_cta* raft::WarpSize)
@@ -46,7 +47,12 @@ __global__ void __launch_bounds__(warps_per_cta* raft::WarpSize)
                               OutputIt output,
                               value_t init);
 
-template <std::integral i_t, typename value_t, int block_dim, typename InputIt, typename OutputIt>
+template <std::integral i_t,
+          typename value_t,
+          int block_dim,
+          bool skip_head,
+          typename InputIt,
+          typename OutputIt>
 __global__ void __launch_bounds__(block_dim)
   block_per_cone_reduce_kernel(InputIt input,
                                raft::device_span<const i_t> medium_cone_ids,
@@ -113,8 +119,26 @@ struct segmented_sum_t {
     (prepare_workspace_for_type<rest_t>(stream), ...);
   }
 
+  // Per-cone sums of input over every cone entry; tail_sum below leaves out each cone's head
+  // (its first entry), so callers need not mask it in the input iterator.
   template <typename value_t, typename InputIt, typename OutputIt, int warps_per_cta = 8>
   void operator()(InputIt input, OutputIt output, value_t init, cuda::stream_ref stream)
+  {
+    reduce<false, value_t, InputIt, OutputIt, warps_per_cta>(input, output, init, stream);
+  }
+
+  template <std::floating_point f_t, typename InputIt>
+  void tail_sum(InputIt input, raft::device_span<f_t> output, cuda::stream_ref stream)
+  {
+    reduce<true, f_t>(input, output.data(), f_t{0}, stream);
+  }
+
+  template <bool skip_head,
+            typename value_t,
+            typename InputIt,
+            typename OutputIt,
+            int warps_per_cta = 8>
+  void reduce(InputIt input, OutputIt output, value_t init, cuda::stream_ref stream)
   {
     if (!small_cone_ids.is_empty()) {
       // Each warp reduces one small cone. `warps_per_cta` only controls how
@@ -122,7 +146,7 @@ struct segmented_sum_t {
       // of 8 gives a conventional 256-thread block.
       const auto n_small = small_cone_ids.size();
       const auto grid    = (n_small + warps_per_cta - 1) / warps_per_cta;
-      warp_per_cone_reduce_kernel<i_t, value_t, warps_per_cta>
+      warp_per_cone_reduce_kernel<i_t, value_t, warps_per_cta, skip_head>
         <<<grid, warps_per_cta * raft::WarpSize, 0, stream.get()>>>(
           input, cuopt::make_span(small_cone_ids), cone_offsets, output, init);
       RAFT_CUDA_TRY(cudaPeekAtLastError());
@@ -131,7 +155,7 @@ struct segmented_sum_t {
     if (!medium_cone_ids.is_empty()) {
       constexpr int medium_block_dim = 256;
       const auto n_medium            = medium_cone_ids.size();
-      block_per_cone_reduce_kernel<i_t, value_t, medium_block_dim>
+      block_per_cone_reduce_kernel<i_t, value_t, medium_block_dim, skip_head>
         <<<n_medium, medium_block_dim, 0, stream.get()>>>(
           input, cuopt::make_span(medium_cone_ids), cone_offsets, output, init);
       RAFT_CUDA_TRY(cudaPeekAtLastError());
@@ -143,11 +167,12 @@ struct segmented_sum_t {
 
       for (std::size_t i = 0; i < large_cone_ids.size(); ++i) {
         std::size_t temp_storage_bytes = cub_workspace_bytes;
+        const std::size_t skip         = skip_head ? 1 : 0;
         RAFT_CUDA_TRY(cub::DeviceReduce::Sum(cub_workspace.data(),
                                              temp_storage_bytes,
-                                             input + large_cone_offsets[i],
+                                             input + large_cone_offsets[i] + skip,
                                              output + large_cone_ids[i],
-                                             large_cone_dimensions[i],
+                                             large_cone_dimensions[i] - skip,
                                              stream.get()));
       }
     }
@@ -207,6 +232,7 @@ struct segmented_sum_t {
 template <std::integral i_t,
           typename value_t,
           int warps_per_cta,
+          bool skip_head,
           typename InputIt,
           typename OutputIt>
 __global__ void __launch_bounds__(warps_per_cta* raft::WarpSize)
@@ -233,14 +259,19 @@ __global__ void __launch_bounds__(warps_per_cta* raft::WarpSize)
 
   auto sum = init;
   for (std::size_t i = lane_id; i < dim; i += raft::WarpSize) {
-    sum = sum + input[off + i];
+    if (!(skip_head && i == 0)) { sum = sum + input[off + i]; }
   }
 
   sum = warp_reduce_t(temp_storage[warp_idx]).Sum(sum);
   if (lane_id == 0) { output[cone] = sum; }
 }
 
-template <std::integral i_t, typename value_t, int block_dim, typename InputIt, typename OutputIt>
+template <std::integral i_t,
+          typename value_t,
+          int block_dim,
+          bool skip_head,
+          typename InputIt,
+          typename OutputIt>
 __global__ void __launch_bounds__(block_dim)
   block_per_cone_reduce_kernel(InputIt input,
                                raft::device_span<const i_t> medium_cone_ids,
@@ -277,7 +308,7 @@ __global__ void __launch_bounds__(block_dim)
 #pragma unroll
     for (int k = 0; k < items_per_thread; ++k) {
       const std::size_t idx = tile_start + threadIdx.x + static_cast<std::size_t>(k) * block_dim;
-      if (idx < dim) { acc[k] = acc[k] + input[off + idx]; }
+      if (idx < dim && !(skip_head && idx == 0)) { acc[k] = acc[k] + input[off + idx]; }
     }
   }
 
