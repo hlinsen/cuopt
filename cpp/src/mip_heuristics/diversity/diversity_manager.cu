@@ -507,6 +507,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
 
   // with the LP: nearest / up-biased / down-biased; without: upper bounds / lower bounds
   const int n_attempts = use_lp ? 3 : 2;
+  bool any_found       = false;
   for (int attempt = 0; attempt < n_attempts; ++attempt) {
     if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption()) {
       break;
@@ -578,11 +579,18 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         solution_t<i_t, f_t> to_polish(sol);
         population.add_solution(std::move(sol),
                                 use_lp ? "fix_propagate_complete" : "fix_propagate_complete_nolp");
-        if (use_lp) { polish_continuous(to_polish, 300.); }
+        if (use_lp) {
+          // every LP-guided rounding gets a cost-aware polish; keep going through the remaining
+          // value preferences since the fixed-LP optimum depends on the binary pattern
+          polish_continuous(to_polish, 300.);
+          any_found = true;
+          continue;
+        }
       }
       return true;
     }
   }
+  if (any_found) { return true; }
   CUOPT_LOG_INFO("FPC end without feasible solution elapsed=%.2f", timer.elapsed_time());
   return false;
 }
