@@ -307,6 +307,125 @@ bool diversity_manager_t<i_t, f_t>::fpc_complete_continuous(solution_t<i_t, f_t>
 }
 
 template <typename i_t, typename f_t>
+bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_sol, f_t budget)
+{
+  raft::common::nvtx::range fun_scope("polish_continuous");
+  if (!in_sol.get_feasible() || problem_ptr->n_integer_vars == problem_ptr->n_variables) {
+    return false;
+  }
+  budget = std::min<f_t>(budget, timer.remaining_time() * 0.8);
+  if (budget < 5.) { return false; }
+  timer_t ptimer(budget);
+  auto* handle_ptr = problem_ptr->handle_ptr;
+  auto stream      = handle_ptr->get_stream();
+  solution_t<i_t, f_t> sol(in_sol);
+  const f_t obj0       = sol.get_user_objective();
+  const double t_start = timer.elapsed_time();
+  auto [fixed_problem, fixed_assignment, variable_map] =
+    sol.fix_variables(problem_ptr->integer_indices);
+  fixed_problem.check_problem_representation(true);
+  rmm::device_uvector<f_t> feasible_start(fixed_assignment, stream);
+
+  // stage 1: cost-aware fixed LP (same solver path as the root LP)
+  auto snapshot = make_root_lp_snapshot(fixed_problem);
+  pdlp_solver_settings_t<i_t, f_t> lp_settings{};
+  lp_settings.time_limit = ptimer.remaining_time() * 0.7;
+  lp_settings.method     = context.settings.method;
+  std::atomic<int> local_halt{0};
+  lp_settings.concurrent_halt = &local_halt;
+  lp_settings.inside_mip      = false;
+  lp_settings.num_gpus        = context.settings.num_gpus;
+  CUOPT_LOG_INFO("Polish start: obj=%g vars=%d cstrs=%d budget=%.1fs lp_budget=%.1fs elapsed=%.2f",
+                 obj0,
+                 fixed_problem.n_variables,
+                 fixed_problem.n_constraints,
+                 budget,
+                 lp_settings.time_limit,
+                 timer.elapsed_time());
+  auto lp_result = solve_lp(snapshot, lp_settings);
+  const auto& lp_info = lp_result.get_additional_termination_information();
+  CUOPT_LOG_INFO(
+    "Polish LP: status=%s method=%s lp_obj=%g iters=%d l2_primal_res=%g time=%.2fs elapsed=%.2f",
+    lp_result.get_termination_status_string().c_str(),
+    method_to_string(lp_info.solved_by).c_str(),
+    (double)lp_result.get_objective_value(),
+    lp_info.number_of_steps_taken,
+    lp_info.l2_primal_residual,
+    timer.elapsed_time() - t_start,
+    timer.elapsed_time());
+  if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables) {
+    CUOPT_LOG_INFO("Polish LP returned no usable primal");
+    return false;
+  }
+  raft::copy(fixed_assignment.data(),
+             lp_result.get_primal_solution().data(),
+             fixed_assignment.size(),
+             stream);
+  clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
+  rmm::device_uvector<f_t> cost_aware(fixed_assignment, stream);
+  sol.unfix_variables(fixed_assignment, variable_map);
+  bool feas  = sol.get_feasible();
+  f_t obj_lp = sol.get_user_objective();
+  CUOPT_LOG_INFO("Polish LP point: feasible=%d obj=%g max_cstr_viol=%g excess=%g elapsed=%.2f",
+                 (int)feas,
+                 obj_lp,
+                 sol.compute_max_constraint_violation(),
+                 sol.get_total_excess(),
+                 timer.elapsed_time());
+  if (feas && obj_lp < obj0) {
+    population.add_solution(std::move(sol), "polish_lp");
+    return true;
+  }
+
+  // stage 2: objective-free repair warm-started from the cost-aware point
+  thrust::fill(handle_ptr->get_thrust_policy(),
+               fixed_problem.objective_coefficients.begin(),
+               fixed_problem.objective_coefficients.end(),
+               f_t(0));
+  fixed_problem.presolve_data.objective_offset = 0;
+  auto& lp_state = fixed_problem.lp_state;
+  lp_state.resize(fixed_problem, stream);
+  thrust::fill(handle_ptr->get_thrust_policy(), lp_state.prev_dual.begin(), lp_state.prev_dual.end(), f_t(0));
+  raft::copy(fixed_assignment.data(), cost_aware.data(), cost_aware.size(), stream);
+  relaxed_lp_settings_t r_settings;
+  r_settings.tolerance               = problem_ptr->tolerances.absolute_tolerance;
+  r_settings.return_first_feasible   = true;
+  r_settings.save_state              = true;
+  r_settings.check_infeasibility     = false;
+  r_settings.per_constraint_residual = true;
+  r_settings.has_initial_primal      = true;
+  int chunk_id = 0;
+  while (!ptimer.check_time_limit() && !timer.check_time_limit()) {
+    if (check_b_b_preemption()) { return false; }
+    r_settings.time_limit = std::min<double>(20., ptimer.remaining_time());
+    if (r_settings.time_limit < 1.) { break; }
+    auto resp = get_relaxed_lp_solution(fixed_problem, fixed_assignment, lp_state, r_settings);
+    const auto& info = resp.get_additional_termination_information();
+    sol.unfix_variables(fixed_assignment, variable_map);
+    feas    = sol.get_feasible();
+    f_t obj = sol.get_user_objective();
+    CUOPT_LOG_INFO(
+      "Polish repair chunk %d: status=%s iters=%d feasible=%d obj=%g max_cstr_viol=%g elapsed=%.2f",
+      chunk_id,
+      resp.get_termination_status_string().c_str(),
+      info.number_of_steps_taken,
+      (int)feas,
+      obj,
+      sol.compute_max_constraint_violation(),
+      timer.elapsed_time());
+    chunk_id++;
+    if (feas) {
+      if (obj < obj0) {
+        population.add_solution(std::move(sol), "polish_repair");
+        return true;
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+template <typename i_t, typename f_t>
 void diversity_manager_t<i_t, f_t>::run_early_fix_propagate()
 {
   if (early_fpc_done || problem_ptr->n_integer_vars == 0 ||
@@ -456,8 +575,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         population.add_external_solution(
           sol.get_host_assignment(), sol.get_objective(), solution_origin_t::FIX_PROPAGATE);
       } else {
+        solution_t<i_t, f_t> to_polish(sol);
         population.add_solution(std::move(sol),
                                 use_lp ? "fix_propagate_complete" : "fix_propagate_complete_nolp");
+        if (use_lp) { polish_continuous(to_polish, 300.); }
       }
       return true;
     }
