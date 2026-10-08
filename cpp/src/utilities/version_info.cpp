@@ -23,6 +23,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
 
 namespace cuopt {
 
@@ -258,6 +260,58 @@ static host_memory_info_t get_host_memory_info()
   return {total_kb / kb_per_gib, available_kb / kb_per_gib};
 }
 
+namespace {
+
+// Facts that cannot change during a process, gathered once: cudaGetDeviceProperties alone takes
+// several milliseconds, which every solve would otherwise pay again.
+struct static_host_info_t {
+  char cpu_model[256];
+  int physical_cores;
+  int allowed_count;
+};
+
+const static_host_info_t& static_host_info()
+{
+  static const static_host_info_t info = [] {
+    static_host_info_t i{};
+    int allowed_cpus[CPU_SETSIZE];
+    i.allowed_count = get_allowed_cpus(allowed_cpus, CPU_SETSIZE);
+    get_cpu_model(i.cpu_model, sizeof(i.cpu_model));
+    i.physical_cores = get_physical_cores(allowed_cpus, i.allowed_count);
+    return i;
+  }();
+  return info;
+}
+
+struct static_device_info_t {
+  bool valid;
+  char name[256];
+  size_t total_global_mem;
+  cudaUUID_t uuid;
+};
+
+const static_device_info_t& static_device_info(int device_id)
+{
+  static std::mutex mutex;
+  static std::map<int, static_device_info_t> cache;
+  std::lock_guard<std::mutex> lock(mutex);
+  auto it = cache.find(device_id);
+  if (it == cache.end()) {
+    static_device_info_t info{};
+    cudaDeviceProp device_prop{};
+    info.valid = cudaGetDeviceProperties(&device_prop, device_id) == cudaSuccess;
+    if (info.valid) {
+      std::snprintf(info.name, sizeof(info.name), "%s", device_prop.name);
+      info.total_global_mem = device_prop.totalGlobalMem;
+      info.uuid             = device_prop.uuid;
+    }
+    it = cache.emplace(device_id, info).first;
+  }
+  return it->second;
+}
+
+}  // namespace
+
 void print_version_info(int num_devices)
 {
   int version = 0;
@@ -277,26 +331,23 @@ void print_version_info(int num_devices)
                  CUOPT_CUDA_ARCHITECTURES);
 
   const auto memory = get_host_memory_info();
-  int allowed_cpus[CPU_SETSIZE];
-  const int allowed_count = get_allowed_cpus(allowed_cpus, CPU_SETSIZE);
-  char cpu_model[256];
-  get_cpu_model(cpu_model, sizeof(cpu_model));
+  const auto& host  = static_host_info();
   CUOPT_LOG_INFO("CPU: %s, threads: %dC/%dT, RAM usage: %.2f/%.2fGiB",
-                 cpu_model,
-                 get_physical_cores(allowed_cpus, allowed_count),
-                 allowed_count,
+                 host.cpu_model,
+                 host.physical_cores,
+                 host.allowed_count,
                  std::max(0.0, memory.total_gb - memory.available_gb),
                  memory.total_gb);
   CUOPT_LOG_INFO("CPU SIMD target: %s", get_simd_target());
 
   for (int device_id = 0; device_id < num_devices; ++device_id) {
-    cudaDeviceProp device_prop{};
-    if (cudaGetDeviceProperties(&device_prop, device_id) != cudaSuccess) {
+    const auto& device = static_device_info(device_id);
+    if (!device.valid) {
       CUOPT_LOG_WARN("Failed to query CUDA device properties for device ID %d", device_id);
       continue;
     }
 
-    const cudaUUID_t uuid = device_prop.uuid;
+    const cudaUUID_t uuid = device.uuid;
     char uuid_str[37]     = {0};
     snprintf(uuid_str,
              sizeof(uuid_str),
@@ -321,9 +372,9 @@ void print_version_info(int num_devices)
     CUOPT_LOG_INFO("CUDA %d.%d, device: %s (ID %d), VRAM: %.2f GiB",
                    major,
                    minor,
-                   device_prop.name,
+                   device.name,
                    device_id,
-                   (double)device_prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+                   (double)device.total_global_mem / (1024.0 * 1024.0 * 1024.0));
     CUOPT_LOG_INFO("CUDA device UUID: %s", uuid_str);
   }
 }

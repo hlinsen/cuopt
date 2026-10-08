@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -281,7 +282,12 @@ inline void apply_logger_config(const std::string& log_file, bool log_to_console
     }
   }
   if (!log_file.empty()) {
-    if (truncate) { std::ofstream(log_file, std::ios::trunc); }
+    // Opening a file costs milliseconds on network filesystems; a file that does not exist yet
+    // has nothing to truncate, and the sink below creates it.
+    std::error_code exists_error;
+    if (truncate && (std::filesystem::exists(log_file, exists_error) || exists_error)) {
+      std::ofstream(log_file, std::ios::trunc);
+    }
     cuopt::default_logger().sinks().push_back(
       std::make_shared<rapids_logger::basic_file_sink_mt>(log_file, /*truncate=*/false));
     cuopt::default_logger().flush_on(rapids_logger::level_enum::debug);
