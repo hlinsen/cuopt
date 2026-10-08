@@ -53,6 +53,10 @@ class diversity_manager_t {
                                cuopt::timer_t& fpc_timer,
                                int attempt,
                                bool detect_infeasibility);
+  // Cost-aware continuous polish: fix the integers of a feasible solution, solve the fixed LP
+  // with the real objective, repair the result to strict feasibility (objective-free PDLP warm
+  // started from the cost-aware point) and publish it when it improves the objective.
+  bool polish_continuous(solution_t<i_t, f_t>& sol, f_t budget);
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring
