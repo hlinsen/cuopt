@@ -67,8 +67,12 @@ class diversity_manager_t {
   };
   bool polish_continuous(solution_t<i_t, f_t>& sol,
                          f_t budget,
-                         flip_lp_state_t* out_state = nullptr,
-                         int first_stage            = 0);
+                         flip_lp_state_t* out_state         = nullptr,
+                         int first_stage                    = 0,
+                         const std::vector<f_t>* init_primal = nullptr,
+                         const std::vector<f_t>* init_dual   = nullptr,
+                         int last_stage                     = -1,
+                         double stage0_cap                  = 0.);
   // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
   // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
   // full objective of the LP point, optional objective-free repair + strict-checked publish
@@ -81,8 +85,11 @@ class diversity_manager_t {
     bool published{false};
     int iters{0};
     double time{0};
-    std::vector<f_t> primal, dual;
+    std::vector<f_t> primal, dual;  // phase-A (PID) fixed-LP primal/dual
     std::vector<f_t> repaired_assignment;
+    f_t pushed_lp_obj{std::numeric_limits<f_t>::infinity()};
+    f_t pushed_l2_primal_res{-1};
+    double push_time{0};
   };
   pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
                                     f_t tol,

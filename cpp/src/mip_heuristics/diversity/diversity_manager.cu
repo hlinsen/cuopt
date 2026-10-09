@@ -322,7 +322,11 @@ template <typename i_t, typename f_t>
 bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_sol,
                                                       f_t budget,
                                                       flip_lp_state_t* out_state,
-                                                      int first_stage)
+                                                      int first_stage,
+                                                      const std::vector<f_t>* init_primal,
+                                                      const std::vector<f_t>* init_dual,
+                                                      int last_stage,
+                                                      double stage0_cap)
 {
   raft::common::nvtx::range fun_scope("polish_continuous");
   if (!in_sol.get_feasible() || problem_ptr->n_integer_vars == problem_ptr->n_variables) {
@@ -350,17 +354,33 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
     }
   };
 
-  // staged cost-aware fixed LP: a quick 1e-4 solve (publish early), then a tighter solve whose
-  // smaller residual means the objective-free repair moves the point less
+  // two-phase cost-aware fixed LP: stage 0 = Stable3 PID at 1e-4 (settles the objective; its
+  // primal weight drifts low and the l2 primal residual stalls ~100, so repair costs +2-5%),
+  // then warm-started PDLP pushes (no presolve) with a frozen large primal weight that drive
+  // the residual to ~1e-3 at nearly unchanged objective, so the repair moves the point little.
   struct stage_t {
     double tol;
     double budget_frac;
+    double lp_cap;         // seconds; 0 = none
+    double primal_weight;  // 0 = solver default (PID-controlled)
   };
-  const stage_t stages[]   = {{1e-4, 0.35}, {1e-7, 1.0}};
-  constexpr size_t n_stages = 2;
+  const stage_t stages[]    = {{1e-4, 0.35, 0., 0.}, {1e-7, 0.6, 15., 1e4}, {1e-7, 1.0, 10., 1e5}};
+  constexpr size_t n_stages = 3;
+  const size_t k_end =
+    last_stage < 0 ? n_stages : std::min(n_stages, (size_t)last_stage + 1);
   std::vector<optimization_problem_t<i_t, f_t>> snapshots;
   for (size_t k = 0; k < n_stages; ++k) {
     snapshots.emplace_back(make_root_lp_snapshot(fixed_problem));
+  }
+  // stage k > 0 (or stage 0 given an initial primal/dual) continues PDLP from the previous
+  // primal/dual (no presolve, so the iterate maps 1:1 onto the fixed problem)
+  rmm::device_uvector<f_t> warm_primal(0, stream);
+  rmm::device_uvector<f_t> warm_dual(0, stream);
+  if (init_primal != nullptr && init_dual != nullptr &&
+      init_primal->size() == (size_t)fixed_problem.n_variables &&
+      init_dual->size() == (size_t)fixed_problem.n_constraints) {
+    warm_primal = cuopt::device_copy(*init_primal, stream);
+    warm_dual   = cuopt::device_copy(*init_dual, stream);
   }
   // objective-free repair problem (fixed_problem itself)
   thrust::fill(handle_ptr->get_thrust_policy(),
@@ -369,22 +389,49 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
                f_t(0));
   fixed_problem.presolve_data.objective_offset = 0;
 
-  for (size_t k = (size_t)std::max(0, first_stage); k < n_stages; ++k) {
+  for (size_t k = (size_t)std::max(0, first_stage); k < k_end; ++k) {
     if (ptimer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption()) {
       break;
     }
     pdlp_solver_settings_t<i_t, f_t> lp_settings{};
     lp_settings.set_optimality_tolerance(stages[k].tol);
     lp_settings.time_limit = std::max<double>(
-      1., ptimer.remaining_time() * stages[k].budget_frac * (k + 1 == n_stages ? 0.8 : 1.));
+      1., ptimer.remaining_time() * stages[k].budget_frac * (k + 1 == k_end ? 0.8 : 1.));
+    if (k == 0 && stage0_cap > 0.) {
+      lp_settings.time_limit = std::min<double>(lp_settings.time_limit, stage0_cap);
+    }
+    if (stages[k].lp_cap > 0.) {
+      lp_settings.time_limit = std::min<double>(lp_settings.time_limit, stages[k].lp_cap);
+    }
     lp_settings.method = context.settings.method;
     std::atomic<int> local_halt{0};
     lp_settings.concurrent_halt = &local_halt;
     lp_settings.inside_mip      = false;
     lp_settings.num_gpus        = context.settings.num_gpus;
+    const bool warm = warm_primal.size() == (size_t)fixed_problem.n_variables &&
+                      warm_dual.size() == (size_t)fixed_problem.n_constraints;
+    if (warm) {
+      lp_settings.method    = method_t::PDLP;
+      lp_settings.presolver = presolver_t::None;
+      // the snapshot carries no variable types; the initial-solution check reads them
+      std::vector<var_t> h_types(fixed_problem.n_variables, var_t::CONTINUOUS);
+      snapshots[k].set_variable_types(h_types.data(), fixed_problem.n_variables);
+      raft::copy(fixed_assignment.data(), warm_primal.data(), warm_primal.size(), stream);
+      clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
+      handle_ptr->sync_stream();
+      lp_settings.set_initial_primal_solution(
+        fixed_assignment.data(), (i_t)fixed_assignment.size(), stream);
+      lp_settings.set_initial_dual_solution(warm_dual.data(), (i_t)warm_dual.size(), stream);
+      if (stages[k].primal_weight > 0.) {
+        lp_settings.set_initial_primal_weight(stages[k].primal_weight);
+        lp_settings.hyper_params.restart_k_p = 0.;
+        lp_settings.hyper_params.restart_k_i = 0.;
+        lp_settings.hyper_params.restart_k_d = 0.;
+      }
+    }
     CUOPT_LOG_INFO(
       "Polish stage %d start: obj=%g tol=%g vars=%d cstrs=%d budget=%.1fs lp_budget=%.1fs "
-      "elapsed=%.2f",
+      "warm=%d primal_weight=%g elapsed=%.2f",
       (int)k,
       best_obj,
       stages[k].tol,
@@ -392,6 +439,8 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
       fixed_problem.n_constraints,
       budget,
       lp_settings.time_limit,
+      (int)warm,
+      warm ? stages[k].primal_weight : 0.,
       timer.elapsed_time());
     const double t_lp   = timer.elapsed_time();
     auto lp_result      = solve_lp(snapshots[k], lp_settings);
@@ -410,6 +459,16 @@ bool diversity_manager_t<i_t, f_t>::polish_continuous(solution_t<i_t, f_t>& in_s
     if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables) {
       CUOPT_LOG_INFO("Polish stage %d LP returned no usable primal", (int)k);
       continue;
+    }
+    if (lp_result.get_dual_solution().size() == (size_t)fixed_problem.n_constraints) {
+      warm_primal.resize(lp_result.get_primal_solution().size(), stream);
+      raft::copy(warm_primal.data(),
+                 lp_result.get_primal_solution().data(),
+                 warm_primal.size(),
+                 stream);
+      warm_dual.resize(lp_result.get_dual_solution().size(), stream);
+      raft::copy(
+        warm_dual.data(), lp_result.get_dual_solution().data(), warm_dual.size(), stream);
     }
     if (out_state != nullptr &&
         lp_result.get_dual_solution().size() == (size_t)fixed_problem.n_constraints) {
@@ -583,6 +642,62 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   res.lp_obj = sol.get_user_objective();
   res.usable = std::isfinite(res.lp_obj);
   if (repair && res.usable && res.lp_obj < repair_below) {
+    // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
+    // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
+    // (the ranking objective above stays the phase-A one)
+    const double t_push = timer.elapsed_time();
+    struct push_t {
+      double weight;
+      double cap;
+    };
+    const push_t pushes[] = {{1e4, 6.}, {1e5, 5.}};
+    auto cur_p            = cuopt::device_copy(res.primal, stream);
+    auto cur_d            = cuopt::device_copy(res.dual, stream);
+    bool pushed           = false;
+    for (const auto& ps : pushes) {
+      if (timer.check_time_limit() || check_b_b_preemption() || timer.remaining_time() < 30.) {
+        break;
+      }
+      auto snapshot = make_root_lp_snapshot(fixed_problem);
+      pdlp_solver_settings_t<i_t, f_t> lp_settings{};
+      lp_settings.set_optimality_tolerance(1e-7);
+      lp_settings.time_limit = ps.cap;
+      lp_settings.method     = method_t::PDLP;
+      lp_settings.presolver  = presolver_t::None;
+      std::atomic<int> local_halt{0};
+      lp_settings.concurrent_halt = &local_halt;
+      lp_settings.inside_mip      = false;
+      lp_settings.num_gpus        = context.settings.num_gpus;
+      std::vector<var_t> h_types(fixed_problem.n_variables, var_t::CONTINUOUS);
+      snapshot.set_variable_types(h_types.data(), fixed_problem.n_variables);
+      raft::copy(fixed_assignment.data(), cur_p.data(), cur_p.size(), stream);
+      clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
+      handle_ptr->sync_stream();
+      lp_settings.set_initial_primal_solution(
+        fixed_assignment.data(), (i_t)fixed_assignment.size(), stream);
+      lp_settings.set_initial_dual_solution(cur_d.data(), (i_t)cur_d.size(), stream);
+      lp_settings.set_initial_primal_weight(ps.weight);
+      lp_settings.hyper_params.restart_k_p = 0.;
+      lp_settings.hyper_params.restart_k_i = 0.;
+      lp_settings.hyper_params.restart_k_d = 0.;
+      auto lp_result = solve_lp(snapshot, lp_settings);
+      if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables ||
+          lp_result.get_dual_solution().size() != (size_t)n_cstrs) {
+        break;
+      }
+      res.pushed_l2_primal_res =
+        lp_result.get_additional_termination_information().l2_primal_residual;
+      raft::copy(cur_p.data(), lp_result.get_primal_solution().data(), cur_p.size(), stream);
+      raft::copy(cur_d.data(), lp_result.get_dual_solution().data(), cur_d.size(), stream);
+      pushed = true;
+    }
+    if (pushed) {
+      raft::copy(fixed_assignment.data(), cur_p.data(), cur_p.size(), stream);
+      clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
+      sol.unfix_variables(fixed_assignment, variable_map);
+      res.pushed_lp_obj = sol.get_user_objective();
+    }
+    res.push_time = timer.elapsed_time() - t_push;
     bool feas = sol.get_feasible();
     if (feas) {
       f_t max_excess = 0;
@@ -1196,6 +1311,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     int n_eval      = 0;
     std::string best_name;
     std::vector<f_t> best_repaired;
+    std::vector<f_t> best_primal, best_dual;  // phase-A fixed-LP iterate of the best pattern
     constexpr f_t rank_tol    = 1e-4;
     constexpr f_t rank_tlimit = 8.;
     const std::vector<f_t>& vub_ref = h_vub;
@@ -1269,7 +1385,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       const bool better = ev.usable && ev.lp_obj < best_lp;
       CUOPT_LOG_INFO(
         "Pattern rank %s: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g time=%.2fs "
-        "better=%d repaired=%g published=%d elapsed=%.2f",
+        "better=%d pushed_lp_obj=%g pushed_res=%g push_time=%.2fs repaired=%g published=%d "
+        "elapsed=%.2f",
         c.name.c_str(),
         n_ones,
         ev.lp_obj,
@@ -1278,6 +1395,9 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         ev.l2_primal_res,
         ev.time,
         (int)better,
+        ev.pushed_lp_obj,
+        ev.pushed_l2_primal_res,
+        ev.push_time,
         ev.repaired_obj,
         (int)ev.published,
         timer.elapsed_time());
@@ -1285,6 +1405,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         best_lp       = ev.lp_obj;
         best_name     = c.name;
         best_repaired = std::move(ev.repaired_assignment);
+        best_primal   = std::move(ev.primal);
+        best_dual     = std::move(ev.dual);
       }
     };
     // phase 1: the cheapest known family first so it publishes early, then its neighbours
@@ -1370,12 +1492,13 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
                    best_lp,
                    n_eval,
                    timer.elapsed_time());
-    // tight polish of the best pattern (stage 1 only; the ranking LP was the 1e-4 stage)
+    // polish of the best pattern: continue its ranking LP (PID, warm, no presolve) so the
+    // objective settles further, then frozen-weight pushes + repair
     solution_t<i_t, f_t> to_polish(*problem_ptr);
     to_polish.copy_new_assignment(best_repaired);
     to_polish.compute_feasibility();
     flip_state = flip_lp_state_t{};
-    polish_continuous(to_polish, 200., &flip_state, 1);
+    polish_continuous(to_polish, 120., &flip_state, 0, &best_primal, &best_dual, -1, 30.);
     return true;
   }
 
@@ -1861,7 +1984,8 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     population.add_external_solutions_to_population();
     if (population.is_feasible()) {
       auto early_best = population.best_feasible();
-      polish_continuous(early_best, 40.);
+      // stage 0 only, short cap: the root LP (and the LP-guided patterns) start sooner
+      polish_continuous(early_best, 40., nullptr, 0, nullptr, nullptr, 0, 10.);
     }
     if (check_b_b_preemption()) { return population.best_feasible(); }
   }
