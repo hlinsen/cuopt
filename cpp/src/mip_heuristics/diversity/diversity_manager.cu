@@ -623,7 +623,12 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
   };
   // solve the fixed LP of a pattern (real objective, PDLP warm-started from the current
   // primal/dual), optionally repair the point to strict feasibility and publish it
-  auto evaluate = [&](const std::vector<f_t>& assign, f_t tol, f_t tlimit, bool repair) {
+  // run_lp=false skips the LP and repairs/publishes the current fixed-LP primal (cur_primal)
+  auto evaluate = [&](const std::vector<f_t>& assign,
+                      f_t tol,
+                      f_t tlimit,
+                      bool repair,
+                      bool run_lp = true) {
     eval_result_t res;
     const double t0 = timer.elapsed_time();
     solution_t<i_t, f_t> sol(*problem_ptr);
@@ -636,7 +641,10 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
       return res;
     }
     if (h_vmap.empty()) { h_vmap = cuopt::host_copy(variable_map, stream); }
-    {
+    if (!run_lp) {
+      raft::copy(fixed_assignment.data(), cur_primal.data(), cur_primal.size(), stream);
+      res.usable = true;
+    } else {
       auto snapshot = make_root_lp_snapshot(fixed_problem);
       pdlp_solver_settings_t<i_t, f_t> lp_settings{};
       lp_settings.set_optimality_tolerance(tol);
@@ -746,16 +754,16 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
     return res;
   };
 
-  // reference: the current pattern solved tighter than the screening tolerance, so that the
-  // pricing duals and the acceptance reference are not a lucky low screening draw
+  // reference: the current pattern at the screening tolerance (moves are judged on %-scale
+  // changes; a 1e-6 reference cost 30 s here)
   constexpr f_t screen_tol = 1e-4;
-  constexpr f_t base_tol   = 1e-6;
+  constexpr f_t base_tol   = 1e-4;
   // screened LP values of the same pattern scatter by ~3e-4 relative on this class of models;
   // only gains beyond that are accepted
   constexpr f_t accept_eps = 2e-4;
   if (timer.remaining_time() < 10. || check_b_b_preemption()) { return; }
   auto base =
-    evaluate(cur_assign, base_tol, std::min<f_t>(40., timer.remaining_time() - 6.), false);
+    evaluate(cur_assign, base_tol, std::min<f_t>(20., timer.remaining_time() - 6.), false);
   if (!base.usable) {
     CUOPT_LOG_INFO("Dual flip: baseline evaluation failed elapsed=%.2f", timer.elapsed_time());
     return;
@@ -892,7 +900,9 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
   constexpr i_t min_block = 400;
   i_t n_blocks            = 1;
   i_t block_id            = 0;
-  constexpr f_t up_eps    = 0.01;
+  // ceil rounding of the block in LP-value order (the LP-desc "up" rounding that gave the best
+  // root-LP patterns); binaries the LP leaves at ~0 are closed, since opening is not free here
+  constexpr f_t up_eps    = 1e-3;
   constexpr double final_reserve = 70.;
   while (!timer.check_time_limit() && !check_b_b_preemption() &&
          timer.remaining_time() > margin + 2.) {
@@ -948,7 +958,7 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
       timer.elapsed_time());
     if (!potential) { continue; }
     // re-round: block binaries the LP wants (value-descending, up), then the fixed rest at its
-    // current values, then the block's remaining binaries up where the rest still allows it
+    // current values, then the block's remaining binaries closed
     std::vector<std::pair<f_t, i_t>> hi, lo;
     for (auto v : block) {
       (yv[v] > up_eps ? hi : lo).push_back({yv[v] + 1e-3 * cur_assign[v], v});
@@ -964,7 +974,7 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
     }
     for (auto& p : lo) {
       in_block[p.second] = 1;
-      pref[p.second]     = 1.;
+      pref[p.second]     = 0.;
     }
     for (auto v : h_int) {
       if (!in_block[v]) {
@@ -1025,6 +1035,17 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
     cur_primal = std::move(ev.primal);
     cur_dual   = std::move(ev.dual);
     cur_lp     = ev.lp_obj;
+    // publish right away: repair the screened LP point itself (a few seconds; the tight solve
+    // below takes ~60 s here)
+    if (cur_lp < best_pub && timer.remaining_time() > margin + 10.) {
+      auto quick = evaluate(cur_assign, screen_tol, 0., true, false);
+      CUOPT_LOG_INFO("Dual flip quick repair: lp=%g repaired=%g published=%d time=%.2fs elapsed=%.2f",
+                     cur_lp,
+                     quick.repaired_obj,
+                     (int)quick.published,
+                     quick.time,
+                     timer.elapsed_time());
+    }
     // tight solve + repair + publish on a modest screened gain (the old 1% gate held the best
     // pattern back for most of the run)
     const bool worth = cur_lp < last_tight_lp * (1. - 0.003) &&
