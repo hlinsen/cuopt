@@ -67,7 +67,32 @@ class diversity_manager_t {
   };
   bool polish_continuous(solution_t<i_t, f_t>& sol,
                          f_t budget,
-                         flip_lp_state_t* out_state = nullptr);
+                         flip_lp_state_t* out_state = nullptr,
+                         int first_stage            = 0);
+  // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
+  // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
+  // full objective of the LP point, optional objective-free repair + strict-checked publish
+  struct pattern_eval_t {
+    bool usable{false};
+    bool optimal{false};
+    f_t lp_obj{std::numeric_limits<f_t>::infinity()};
+    f_t l2_primal_res{0};
+    f_t repaired_obj{std::numeric_limits<f_t>::infinity()};
+    bool published{false};
+    int iters{0};
+    double time{0};
+    std::vector<f_t> primal, dual;
+    std::vector<f_t> repaired_assignment;
+  };
+  pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
+                                    f_t tol,
+                                    f_t tlimit,
+                                    const std::vector<f_t>* warm_primal,
+                                    const std::vector<f_t>* warm_dual,
+                                    bool repair,
+                                    f_t repair_tlimit,
+                                    const char* origin,
+                                    f_t repair_below = std::numeric_limits<f_t>::infinity());
   // Dual-guided binary improvement loop: price every binary with the fixed LP's row duals
   // (c_j - A_j^T y), flip batches of the most profitable binaries (repair with propagation),
   // re-solve the fixed LP warm-started from the previous primal/dual and accept improvements.
