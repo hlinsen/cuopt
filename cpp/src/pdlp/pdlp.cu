@@ -898,6 +898,12 @@ void pdlp_solver_t<i_t, f_t>::print_termination_criteria(const timer_t& timer, b
     } else {
       current_termination_strategy_.print_termination_criteria(total_pdlp_iterations_, elapsed);
     }
+    if (!batch_mode_ && !is_distributed_master() && total_pdlp_iterations_ % 2000 == 0) {
+      CUOPT_LOG_INFO("PDLP state: iter=%d primal_weight=%g step_size=%g",
+                     (int)total_pdlp_iterations_,
+                     (double)get_primal_weight_h(0),
+                     (double)get_step_size_h(0));
+    }
   }
 }
 
