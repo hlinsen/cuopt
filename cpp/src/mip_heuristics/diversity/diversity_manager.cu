@@ -32,6 +32,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -607,6 +609,8 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
                                   ? population.best_feasible().get_user_objective()
                                   : std::numeric_limits<f_t>::infinity();
 
+  // fixed-problem column -> original column (identical for every pattern: same integer set)
+  std::vector<i_t> h_vmap;
   struct eval_result_t {
     bool usable{false};
     bool optimal{false};
@@ -631,6 +635,7 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
         fixed_problem.n_constraints != n_cstrs) {
       return res;
     }
+    if (h_vmap.empty()) { h_vmap = cuopt::host_copy(variable_map, stream); }
     {
       auto snapshot = make_root_lp_snapshot(fixed_problem);
       pdlp_solver_settings_t<i_t, f_t> lp_settings{};
@@ -741,10 +746,19 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
     return res;
   };
 
-  // consistent baseline: the current pattern at the screening tolerance
+  // reference: the current pattern solved tighter than the screening tolerance, so that the
+  // pricing duals and the acceptance reference are not a lucky low screening draw
   constexpr f_t screen_tol = 1e-4;
+  constexpr f_t base_tol   = 1e-6;
+  // screened LP values of the same pattern scatter by ~3e-4 relative on this class of models;
+  // only gains beyond that are accepted
+  constexpr f_t accept_eps = 2e-4;
+  // a row dual is trusted for pricing only when complementary slackness holds at the current
+  // LP point (the row is tight); slack rows' duals are PDLP noise
+  constexpr f_t cs_rel = 1e-5;
   if (timer.remaining_time() < 10. || check_b_b_preemption()) { return; }
-  auto base = evaluate(cur_assign, screen_tol, std::min<f_t>(20., timer.remaining_time() - 6.), false);
+  auto base =
+    evaluate(cur_assign, base_tol, std::min<f_t>(40., timer.remaining_time() - 6.), false);
   if (!base.usable) {
     CUOPT_LOG_INFO("Dual flip: baseline evaluation failed elapsed=%.2f", timer.elapsed_time());
     return;
@@ -755,26 +769,132 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
   f_t last_tight_lp      = cur_lp;
   double last_tight_time = timer.elapsed_time();
   CUOPT_LOG_INFO(
-    "Dual flip start: bins=%zu tight_lp=%g screen_lp=%g (iters=%d %.2fs) best_pub=%g elapsed=%.2f",
+    "Dual flip start: bins=%zu tight_lp=%g base_lp=%g (tol=%g optimal=%d iters=%d %.2fs) "
+    "best_pub=%g elapsed=%.2f",
     bins.size(),
     flip_state.lp_obj,
     cur_lp,
+    (double)base_tol,
+    (int)base.optimal,
     base.iters,
     base.time,
     best_pub,
     timer.elapsed_time());
 
-  std::vector<f_t> red(n_vars, 0);
+  // rows of the propagation structure: mixed (integer + continuous) vs integer-only
+  const i_t n_frows = fp_host.n_rows();
+  std::vector<char> frow_mixed(n_frows, 0);
+  for (i_t i = 0; i < n_frows; ++i) {
+    for (i_t kk = fp_host.row_offsets[i]; kk < fp_host.row_offsets[i + 1]; ++kk) {
+      if (!fp_host.is_int[fp_host.row_cols[kk]]) {
+        frow_mixed[i] = 1;
+        break;
+      }
+    }
+  }
+  std::vector<f_t> xfull(n_vars, 0);
+  std::vector<f_t> red(n_vars, 0), red_raw(n_vars, 0);
+  std::vector<f_t> y_f(n_frows, 0), slack_hi(n_frows, 0), slack_lo(n_frows, 0);
+  struct price_stats_t {
+    i_t nz{0}, tight{0}, cs_bad{0}, pos_tight_hi{0}, neg_tight_hi{0}, io_nz{0};
+    f_t io_absmax{0}, bad_absmax{0};
+  };
+  auto price = [&]() {
+    price_stats_t st;
+    for (size_t j = 0; j < h_vmap.size() && j < cur_primal.size(); ++j) {
+      xfull[h_vmap[j]] = cur_primal[j];
+    }
+    for (auto v : h_int) {
+      xfull[v] = cur_assign[v];
+    }
+    for (i_t i = 0; i < n_frows; ++i) {
+      const f_t y = cur_dual[fp_host.row_orig[i]];
+      double act = 0, aabs = 0;
+      for (i_t kk = fp_host.row_offsets[i]; kk < fp_host.row_offsets[i + 1]; ++kk) {
+        const double p = (double)fp_host.row_vals[kk] * (double)xfull[fp_host.row_cols[kk]];
+        act += p;
+        aabs += std::abs(p);
+      }
+      const f_t lo = fp_host.row_lb[i], hi = fp_host.row_ub[i];
+      slack_hi[i]  = std::isfinite(hi) ? (f_t)(hi - act) : std::numeric_limits<f_t>::infinity();
+      slack_lo[i]  = std::isfinite(lo) ? (f_t)(act - lo) : std::numeric_limits<f_t>::infinity();
+      y_f[i]       = 0;
+      if (!frow_mixed[i]) {
+        // integer-only rows are empty in the fixed LP: their duals carry no LP information
+        if (y != 0) {
+          st.io_nz++;
+          st.io_absmax = std::max<f_t>(st.io_absmax, std::abs(y));
+        }
+        continue;
+      }
+      if (y == 0) { continue; }
+      st.nz++;
+      const f_t tau_hi = cs_rel * (1. + std::max<f_t>(std::abs(hi), aabs));
+      const f_t tau_lo = cs_rel * (1. + std::max<f_t>(std::abs(lo), aabs));
+      const bool t_hi  = slack_hi[i] <= tau_hi;
+      const bool t_lo  = slack_lo[i] <= tau_lo;
+      if (t_hi) { y > 0 ? st.pos_tight_hi++ : st.neg_tight_hi++; }
+      if (t_hi || t_lo) {
+        st.tight++;
+        y_f[i] = y;
+      } else {
+        st.cs_bad++;
+        st.bad_absmax = std::max<f_t>(st.bad_absmax, std::abs(y));
+      }
+    }
+    for (auto v : bins) {
+      f_t aty = 0, aty_raw = 0;
+      for (i_t kk = fp_host.int_offsets[v]; kk < fp_host.int_offsets[v + 1]; ++kk) {
+        const i_t i = fp_host.int_rows[kk];
+        aty += fp_host.int_vals[kk] * y_f[i];
+        aty_raw += fp_host.int_vals[kk] * cur_dual[fp_host.row_orig[i]];
+      }
+      red[v]     = h_obj[v] - aty;
+      red_raw[v] = h_obj[v] - aty_raw;
+    }
+    return st;
+  };
+  auto log_cand = [&](const char* tag, i_t v, f_t gain) {
+    char buf[1024];
+    int len = std::snprintf(buf,
+                            sizeof(buf),
+                            "Dual flip cand %s: var=%d x=%g c=%g red_raw=%g red_f=%g gain=%g rows:",
+                            tag,
+                            (int)v,
+                            (double)cur_assign[v],
+                            (double)h_obj[v],
+                            (double)red_raw[v],
+                            (double)red[v],
+                            (double)gain);
+    int nr = 0;
+    for (i_t kk = fp_host.int_offsets[v]; kk < fp_host.int_offsets[v + 1] && nr < 5; ++kk, ++nr) {
+      const i_t i = fp_host.int_rows[kk];
+      if (len >= (int)sizeof(buf) - 120) break;
+      len += std::snprintf(buf + len,
+                           sizeof(buf) - len,
+                           " [r=%d mixed=%d len=%d a=%g y=%g s_hi=%g s_lo=%g]",
+                           (int)fp_host.row_orig[i],
+                           (int)frow_mixed[i],
+                           (int)(fp_host.row_offsets[i + 1] - fp_host.row_offsets[i]),
+                           (double)fp_host.int_vals[kk],
+                           (double)cur_dual[fp_host.row_orig[i]],
+                           (double)slack_hi[i],
+                           (double)slack_lo[i]);
+    }
+    CUOPT_LOG_INFO("%s", buf);
+  };
+
   std::vector<int> tabu_until(n_vars, 0);
   std::vector<f_t> pref(n_vars, 0);
   int k        = 8;
   int n_iter   = 0;
   int n_accept = 0;
   constexpr int tabu_len  = 40;
+  constexpr int k_min     = 8;
   constexpr int k_max     = 1024;
   constexpr double margin = 6.;
   auto run_tight = [&]() {
-    const f_t tb = std::min<f_t>(90., timer.remaining_time() - margin - 5.);
+    const f_t tb = std::min<f_t>(60., timer.remaining_time() - margin - 5.);
     auto tight   = evaluate(cur_assign, 1e-7, tb, true);
     CUOPT_LOG_INFO(
       "Dual flip tight: lp=%g (screen %g) optimal=%d iters=%d repaired=%g published=%d "
@@ -789,32 +909,56 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
       best_pub,
       timer.elapsed_time());
     last_tight_time = timer.elapsed_time();
-    last_tight_lp   = cur_lp;
     if (tight.usable && tight.lp_obj <= cur_lp * (1. + 1e-3)) {
+      // the tight value is the honest reference for later screening comparisons
+      cur_lp     = std::max<f_t>(cur_lp, tight.lp_obj);
       cur_primal = std::move(tight.primal);
       cur_dual   = std::move(tight.dual);
     }
+    last_tight_lp = cur_lp;
   };
   // leave room for a final tight solve of a pending improvement
-  constexpr double final_reserve = 100.;
+  constexpr double final_reserve = 70.;
   while (!timer.check_time_limit() && !check_b_b_preemption() &&
          timer.remaining_time() > margin + 2.) {
     if (cur_lp < last_tight_lp * (1. - 1e-4) && timer.remaining_time() < final_reserve) { break; }
     ++n_iter;
-    // price the binaries: reduced cost c_j - A_j^T y on the fixed LP's duals
+    // price the binaries: reduced cost c_j - A_j^T y on the fixed LP's trusted row duals
+    const auto st  = price();
     i_t n_open_cand = 0, n_close_cand = 0;
     std::vector<std::pair<f_t, i_t>> cands;
     for (auto v : bins) {
-      f_t aty = 0;
-      for (i_t kk = fp_host.int_offsets[v]; kk < fp_host.int_offsets[v + 1]; ++kk) {
-        aty += fp_host.int_vals[kk] * cur_dual[fp_host.row_orig[fp_host.int_rows[kk]]];
-      }
-      red[v]       = h_obj[v] - aty;
-      const bool on = cur_assign[v] > 0.5;
+      const bool on  = cur_assign[v] > 0.5;
       const f_t gain = on ? red[v] : -red[v];
       if (gain > 0) {
         on ? n_close_cand++ : n_open_cand++;
         if (tabu_until[v] <= n_iter) { cands.push_back({gain, v}); }
+      }
+    }
+    if (n_iter <= 2 || n_iter % 10 == 0) {
+      CUOPT_LOG_INFO(
+        "Dual flip price %d: mixed_nz=%d tight=%d cs_bad=%d (max|y| %g) tight_hi y>0=%d y<0=%d "
+        "intonly_nz=%d (max|y| %g)",
+        n_iter,
+        st.nz,
+        st.tight,
+        st.cs_bad,
+        (double)st.bad_absmax,
+        st.pos_tight_hi,
+        st.neg_tight_hi,
+        st.io_nz,
+        (double)st.io_absmax);
+      std::vector<std::pair<f_t, i_t>> raw;
+      for (auto v : bins) {
+        const f_t g = cur_assign[v] > 0.5 ? red_raw[v] : -red_raw[v];
+        if (g > 0) raw.push_back({g, v});
+      }
+      const size_t nr = std::min<size_t>(3, raw.size());
+      std::partial_sort(raw.begin(), raw.begin() + nr, raw.end(), [](auto& a, auto& b) {
+        return a.first > b.first;
+      });
+      for (size_t q = 0; q < nr; ++q) {
+        log_cand("raw", raw[q].second, raw[q].first);
       }
     }
     if (cands.empty()) {
@@ -826,16 +970,22 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
       break;
     }
     std::sort(cands.begin(), cands.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    if (n_iter <= 2 || n_iter % 10 == 0) {
+      for (size_t q = 0; q < std::min<size_t>(3, cands.size()); ++q) {
+        log_cand("trusted", cands[q].second, cands[q].first);
+      }
+    }
     const int kb = std::min<int>(k, (int)cands.size());
     std::vector<char> in_batch(n_vars, 0);
     std::vector<i_t> order;
     order.reserve(h_int.size());
-    f_t pred_gain = 0;
+    f_t pred_gain = 0, pred_raw = 0;
     for (int b = 0; b < kb; ++b) {
       i_t v       = cands[b].second;
       in_batch[v] = 1;
       order.push_back(v);
       pred_gain += cands[b].first;
+      pred_raw += cur_assign[v] > 0.5 ? red_raw[v] : -red_raw[v];
     }
     // the rest keeps its values, most strongly supported by the duals first (the least
     // supported ones are the first to be pushed out by propagation)
@@ -858,12 +1008,15 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
     const double t_dive = timer.elapsed_time();
     i_t n_conflicts     = fp_host.dive(order, pref, n_flipped, n_implied);
     i_t n_open = 0, n_close = 0, n_batch_done = 0;
+    f_t pred_done = 0;
     std::vector<f_t> cand_assign = cur_assign;
     for (auto v : h_int) {
       f_t nv = fp_host.col_lb[v];
       if (std::abs(nv - cur_assign[v]) > 0.5) {
         nv > cur_assign[v] ? n_open++ : n_close++;
         n_batch_done += in_batch[v];
+        // first-order prediction of every realised change (batch and propagation-forced)
+        if (is_bin[v]) { pred_done += cur_assign[v] > 0.5 ? red[v] : -red[v]; }
       }
       cand_assign[v] = nv;
     }
@@ -879,23 +1032,27 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
         n_open + n_close,
         timer.elapsed_time() - t_dive,
         timer.elapsed_time());
-      k = std::max(1, k / 2);
+      k = std::max(k_min, k / 2);
       continue;
     }
     const f_t tlimit = std::min<f_t>(25., timer.remaining_time() - margin);
     if (tlimit < 2.) { break; }
     auto ev = evaluate(cand_assign, screen_tol, tlimit, false);
-    const bool accept = ev.usable && ev.optimal && ev.lp_obj < cur_lp - 1e-6 * std::abs(cur_lp);
+    const bool accept =
+      ev.usable && ev.optimal && ev.lp_obj < cur_lp - accept_eps * std::abs(cur_lp);
     CUOPT_LOG_INFO(
-      "Dual flip iter %d: k=%d cands=%zu (open=%d close=%d) pred_gain=%g changes open=%d close=%d "
-      "batch_done=%d lp=%g (cur %g, %+.4f%%) optimal=%d iters=%d eval=%.2fs accept=%d "
-      "elapsed=%.2f",
+      "Dual flip iter %d: k=%d cands=%zu (open=%d close=%d) pred_gain=%g pred_raw=%g "
+      "pred_done=%g actual_gain=%g changes open=%d close=%d batch_done=%d lp=%g (cur %g, "
+      "%+.4f%%) optimal=%d iters=%d eval=%.2fs accept=%d elapsed=%.2f",
       n_iter,
       kb,
       cands.size(),
       n_open_cand,
       n_close_cand,
       pred_gain,
+      pred_raw,
+      pred_done,
+      cur_lp - ev.lp_obj,
       n_open,
       n_close,
       n_batch_done,
@@ -911,7 +1068,7 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
       for (int b = 0; b < kb; ++b) {
         tabu_until[cands[b].second] = n_iter + tabu_len;
       }
-      k = std::max(1, k / 2);
+      k = std::max(k_min, k / 2);
       continue;
     }
     n_accept++;
@@ -920,8 +1077,9 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
     cur_dual   = std::move(ev.dual);
     cur_lp     = ev.lp_obj;
     k          = std::min(k_max, 2 * k);
-    // tight solve + repair + publish once the screened LP gain is worth it
-    const bool worth = cur_lp < last_tight_lp * (1. - 0.01) &&
+    // tight solve + repair + publish on a modest screened gain (the old 1% gate held the best
+    // pattern back for most of the run)
+    const bool worth = cur_lp < last_tight_lp * (1. - 0.003) &&
                        timer.elapsed_time() - last_tight_time > 30.;
     if (worth && timer.remaining_time() > margin + 10.) { run_tight(); }
   }
