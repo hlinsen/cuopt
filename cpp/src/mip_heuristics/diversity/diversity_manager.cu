@@ -1159,101 +1159,80 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
   });
 
   if (use_lp) {
-    // LP-guided pattern search: several fix-and-propagate orders / value preferences, each
-    // pattern ranked by a short cost-aware fixed LP (its objective settles within a few
-    // thousand PDLP iterations even when the residual stalls), improvements are repaired and
-    // published right away; the best pattern then gets the tight polish and the flip loop
+    // LP-guided pattern search: fix-and-propagate dives under several orders / value
+    // preferences, each pattern ranked by a short cost-aware fixed LP (its objective settles
+    // within a few thousand PDLP iterations even when the residual stalls); improvements are
+    // repaired and published right away; the best pattern then gets the tight polish and the
+    // flip loop. On CCBJI, LP-value-descending up-rounding is by far the cheapest family.
     auto h_obj  = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
     auto h_dual = cuopt::host_copy(lp_dual_optimal_solution, stream);
     std::vector<f_t> red(n_vars, 0);
+    std::vector<i_t> uplocks(n_vars, 0);
     for (auto v : h_int) {
       f_t aty = 0;
       for (i_t kk = fp_host.int_offsets[v]; kk < fp_host.int_offsets[v + 1]; ++kk) {
-        aty += fp_host.int_vals[kk] * h_dual[fp_host.row_orig[fp_host.int_rows[kk]]];
+        const i_t r = fp_host.int_rows[kk];
+        const f_t a = fp_host.int_vals[kk];
+        aty += a * h_dual[fp_host.row_orig[r]];
+        if ((a > 0 && std::isfinite(fp_host.row_ub[r])) ||
+            (a < 0 && std::isfinite(fp_host.row_lb[r]))) {
+          uplocks[v]++;
+        }
       }
       red[v] = h_obj[v] - aty;
     }
-    auto frac_of = [&](i_t v) { return h_lp[v] - std::floor(h_lp[v] + int_tol); };
-    // orders
-    std::vector<i_t> ord_decided = order;
-    std::vector<i_t> ord_lpdesc(h_int.begin(), h_int.end());
-    std::stable_sort(ord_lpdesc.begin(), ord_lpdesc.end(), [&](i_t a, i_t b) {
-      return h_lp[a] > h_lp[b];
-    });
-    std::vector<i_t> ord_fracfirst(h_int.begin(), h_int.end());
-    std::stable_sort(ord_fracfirst.begin(), ord_fracfirst.end(), [&](i_t a, i_t b) {
-      f_t fa = std::abs(h_lp[a] - std::floor(h_lp[a]) - 0.5);
-      f_t fb = std::abs(h_lp[b] - std::floor(h_lp[b]) - 0.5);
-      return fa < fb;
-    });
-    std::vector<i_t> ord_redcost(h_int.begin(), h_int.end());
-    std::stable_sort(
-      ord_redcost.begin(), ord_redcost.end(), [&](i_t a, i_t b) { return red[a] < red[b]; });
-    std::vector<i_t> ord_degree(h_int.begin(), h_int.end());
-    std::stable_sort(ord_degree.begin(), ord_degree.end(), [&](i_t a, i_t b) {
-      return fp_host.int_offsets[a + 1] - fp_host.int_offsets[a] >
-             fp_host.int_offsets[b + 1] - fp_host.int_offsets[b];
-    });
-    // value preferences
-    auto pref_up = [&](std::vector<f_t>& p) {
-      for (auto v : h_int) {
-        f_t fl = std::floor(h_lp[v] + int_tol);
-        p[v]   = h_lp[v] - fl > int_tol ? fl + 1 : fl;
-      }
-    };
-    auto pref_nearest = [&](std::vector<f_t>& p) {
-      for (auto v : h_int) {
-        p[v] = std::round(h_lp[v]);
-      }
-    };
-    auto pref_rand = [&](std::vector<f_t>& p, unsigned seed) {
-      std::mt19937 g(seed);
-      std::uniform_real_distribution<double> U(0., 1.);
-      for (auto v : h_int) {
-        f_t fl = std::floor(h_lp[v] + int_tol);
-        f_t fr = h_lp[v] - fl;
-        p[v]   = (fr > int_tol && fr > U(g)) ? fl + 1 : fl;
-      }
-    };
+    enum order_kind_t { ORD_LPDESC, ORD_LPDESC_NOISE, ORD_REDCOST, ORD_UPLOCKS };
+    enum pref_kind_t { PREF_UP, PREF_UP_NEGRED, PREF_UP_THRESH };
     struct cand_t {
       std::string name;
-      const std::vector<i_t>* ord;
-      int pref_kind;  // 0 up, 1 nearest, 2+ random seed
+      int lp_src;  // 0 = root LP point, 1 = continued root LP point
+      order_kind_t ord;
+      pref_kind_t pref;
+      double param;
+      unsigned seed;
     };
-    std::vector<cand_t> cands = {{"lpdesc_up", &ord_lpdesc, 0},
-                                 {"decided_up", &ord_decided, 0},
-                                 {"lpdesc_nearest", &ord_lpdesc, 1},
-                                 {"fracfirst_up", &ord_fracfirst, 0},
-                                 {"redcost_up", &ord_redcost, 0},
-                                 {"degree_up", &ord_degree, 0},
-                                 {"lpdesc_rand1", &ord_lpdesc, 2},
-                                 {"lpdesc_rand2", &ord_lpdesc, 3},
-                                 {"redcost_nearest", &ord_redcost, 1},
-                                 {"decided_nearest", &ord_decided, 1}};
-    struct pattern_t {
-      std::string name;
-      std::vector<f_t> assign;
-      f_t int_cost{0};
-      i_t ones{0};
-    };
-    std::vector<pattern_t> patterns;
     std::vector<std::vector<f_t>> seen;
-    for (auto& c : cands) {
-      if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption()) {
-        break;
+    f_t best_lp     = std::numeric_limits<f_t>::infinity();
+    int n_eval      = 0;
+    std::string best_name;
+    std::vector<f_t> best_repaired;
+    constexpr f_t rank_tol    = 1e-4;
+    constexpr f_t rank_tlimit = 8.;
+    const std::vector<f_t>& vub_ref = h_vub;
+    auto run_candidate = [&](const cand_t& c, const std::vector<f_t>& x) {
+      if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption() ||
+          timer.remaining_time() < 60.) {
+        return;
       }
+      std::vector<i_t> ord(h_int.begin(), h_int.end());
+      std::vector<f_t> key(n_vars, 0);
+      std::mt19937 g(c.seed);
+      std::uniform_real_distribution<double> U(0., 1.);
+      for (auto v : h_int) {
+        switch (c.ord) {
+          case ORD_LPDESC: key[v] = x[v]; break;
+          case ORD_LPDESC_NOISE: key[v] = x[v] + c.param * U(g); break;
+          case ORD_REDCOST: key[v] = -red[v]; break;
+          case ORD_UPLOCKS: key[v] = -(f_t)uplocks[v] + 1e-3 * x[v]; break;
+        }
+      }
+      std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
       std::vector<f_t> pref(n_vars, 0.);
-      if (c.pref_kind == 0) {
-        pref_up(pref);
-      } else if (c.pref_kind == 1) {
-        pref_nearest(pref);
-      } else {
-        pref_rand(pref, 1234u + 77u * (unsigned)c.pref_kind);
+      for (auto v : h_int) {
+        f_t fl = std::floor(x[v] + int_tol);
+        f_t fr = x[v] - fl;
+        switch (c.pref) {
+          case PREF_UP: pref[v] = fr > int_tol ? fl + 1 : fl; break;
+          case PREF_UP_NEGRED:
+            pref[v] = (fr > int_tol || red[v] < -c.param) ? std::min(fl + 1, vub_ref[v]) : fl;
+            break;
+          case PREF_UP_THRESH: pref[v] = fr > c.param ? fl + 1 : fl; break;
+        }
       }
       const double t_dive = timer.elapsed_time();
       i_t n_flipped = 0, n_implied = 0;
       fp_host.work    = 0;
-      i_t n_conflicts = fp_host.dive(*c.ord, pref, n_flipped, n_implied);
+      i_t n_conflicts = fp_host.dive(ord, pref, n_flipped, n_implied);
       std::vector<f_t> pat(h_int.size());
       f_t int_cost = 0;
       i_t n_ones   = 0;
@@ -1278,70 +1257,118 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         int_cost,
         (int)dup,
         timer.elapsed_time());
-      if (dup || n_conflicts > 0) { continue; }
+      if (dup || n_conflicts > 0) { return; }
       seen.push_back(pat);
-      pattern_t pt;
-      pt.name     = c.name;
-      pt.assign   = h_lp;
-      pt.int_cost = int_cost;
-      pt.ones     = n_ones;
+      std::vector<f_t> assign = x;
       for (size_t q = 0; q < h_int.size(); ++q) {
-        pt.assign[h_int[q]] = pat[q];
+        assign[h_int[q]] = pat[q];
       }
-      patterns.push_back(std::move(pt));
-    }
-    seen.clear();
-    // rank by a short cost-aware fixed LP; repair + publish whenever a pattern beats the best
-    constexpr f_t rank_tol    = 1e-4;
-    constexpr f_t rank_tlimit = 8.;
-    f_t best_lp               = std::numeric_limits<f_t>::infinity();
-    int best_idx              = -1;
-    std::vector<f_t> best_repaired;
-    for (size_t pi = 0; pi < patterns.size(); ++pi) {
-      if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption() ||
-          timer.remaining_time() < 60.) {
-        break;
-      }
-      auto ev          = eval_fixed_pattern(patterns[pi].assign,
-                                       rank_tol,
-                                       rank_tlimit,
-                                       nullptr,
-                                       nullptr,
-                                       true,
-                                       20.,
-                                       "pattern_rank",
-                                       best_lp);
+      auto ev = eval_fixed_pattern(
+        assign, rank_tol, rank_tlimit, nullptr, nullptr, true, 20., "pattern_rank", best_lp);
+      n_eval++;
       const bool better = ev.usable && ev.lp_obj < best_lp;
-      auto& rep         = ev;
       CUOPT_LOG_INFO(
-        "Pattern rank %s: ones=%d int_cost=%g lp_obj=%g optimal=%d iters=%d l2_primal_res=%g "
-        "time=%.2fs better=%d repaired=%g published=%d repair_time=%.2fs elapsed=%.2f",
-        patterns[pi].name.c_str(),
-        patterns[pi].ones,
-        patterns[pi].int_cost,
+        "Pattern rank %s: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g time=%.2fs "
+        "better=%d repaired=%g published=%d elapsed=%.2f",
+        c.name.c_str(),
+        n_ones,
         ev.lp_obj,
         (int)ev.optimal,
         ev.iters,
         ev.l2_primal_res,
         ev.time,
         (int)better,
-        rep.repaired_obj,
-        (int)rep.published,
-        rep.time,
+        ev.repaired_obj,
+        (int)ev.published,
         timer.elapsed_time());
-      if (better && !rep.repaired_assignment.empty()) {
+      if (better && !ev.repaired_assignment.empty()) {
         best_lp       = ev.lp_obj;
-        best_idx      = (int)pi;
-        best_repaired = std::move(rep.repaired_assignment);
+        best_name     = c.name;
+        best_repaired = std::move(ev.repaired_assignment);
+      }
+    };
+    // phase 1: the cheapest known family first so it publishes early, then its neighbours
+    const std::vector<cand_t> phase1 = {
+      {"lpdesc_up", 0, ORD_LPDESC, PREF_UP, 0., 0u},
+      {"lpdesc_up_negred", 0, ORD_LPDESC, PREF_UP_NEGRED, 1e-9, 0u},
+      {"lpdesc_noise05_up", 0, ORD_LPDESC_NOISE, PREF_UP, 0.05, 11u},
+      {"lpdesc_noise20_up", 0, ORD_LPDESC_NOISE, PREF_UP, 0.2, 12u},
+      {"uplocks_up", 0, ORD_UPLOCKS, PREF_UP, 0., 0u},
+      {"lpdesc_up_t05", 0, ORD_LPDESC, PREF_UP_THRESH, 0.05, 0u},
+      {"redcost_up", 0, ORD_REDCOST, PREF_UP, 0., 0u}};
+    for (auto& c : phase1) {
+      run_candidate(c, h_lp);
+    }
+    // phase 2: continue the (time-limited) root LP warm-started, re-derive the LP-guided
+    // patterns from the more converged point
+    std::vector<f_t> h_lp2;
+    if (!fpc_timer.check_time_limit() && !timer.check_time_limit() && !check_b_b_preemption() &&
+        timer.remaining_time() > 300.) {
+      const double t_lp2 = timer.elapsed_time();
+      auto snapshot      = make_root_lp_snapshot(*problem_ptr);
+      std::vector<var_t> h_types(problem_ptr->n_variables, var_t::CONTINUOUS);
+      snapshot.set_variable_types(h_types.data(), problem_ptr->n_variables);
+      pdlp_solver_settings_t<i_t, f_t> lp_settings{};
+      lp_settings.set_optimality_tolerance(1e-4);
+      lp_settings.time_limit = 30.;
+      lp_settings.method     = method_t::PDLP;
+      lp_settings.presolver  = presolver_t::None;
+      std::atomic<int> local_halt{0};
+      lp_settings.concurrent_halt = &local_halt;
+      lp_settings.inside_mip      = false;
+      lp_settings.num_gpus        = context.settings.num_gpus;
+      rmm::device_uvector<f_t> warm_x(lp_optimal_solution, stream);
+      clamp_within_var_bounds(warm_x, problem_ptr, handle_ptr);
+      handle_ptr->sync_stream();
+      lp_settings.set_initial_primal_solution(warm_x.data(), (i_t)warm_x.size(), stream);
+      lp_settings.set_initial_dual_solution(
+        lp_dual_optimal_solution.data(), (i_t)lp_dual_optimal_solution.size(), stream);
+      auto lp2       = solve_lp(snapshot, lp_settings);
+      const auto& li = lp2.get_additional_termination_information();
+      const bool ok  = lp2.get_primal_solution().size() == (size_t)n_vars;
+      CUOPT_LOG_INFO(
+        "Pattern root LP continuation: status=%s obj=%g iters=%d l2_primal_res=%g "
+        "l2_dual_res=%g time=%.2fs usable=%d elapsed=%.2f",
+        lp2.get_termination_status_string().c_str(),
+        (double)lp2.get_objective_value(),
+        li.number_of_steps_taken,
+        li.l2_primal_residual,
+        li.l2_dual_residual,
+        timer.elapsed_time() - t_lp2,
+        (int)ok,
+        timer.elapsed_time());
+      if (ok) {
+        h_lp2 = cuopt::host_copy(lp2.get_primal_solution(), stream);
+        for (i_t j = 0; j < n_vars; ++j) {
+          h_lp2[j] = std::min(std::max(h_lp2[j], h_vlb[j]), h_vub[j]);
+        }
+        i_t n_frac2 = 0, n_changed = 0;
+        for (auto v : h_int) {
+          f_t xv = h_lp2[v];
+          if ((xv - std::floor(xv) > int_tol) && (std::ceil(xv) - xv > int_tol)) n_frac2++;
+          n_changed += (h_lp2[v] > int_tol) != (h_lp[v] > int_tol);
+        }
+        CUOPT_LOG_INFO("Pattern root LP continuation: lp_fractional=%d support_changes=%d",
+                       n_frac2,
+                       n_changed);
+        const std::vector<cand_t> phase2 = {
+          {"lp2_lpdesc_up", 1, ORD_LPDESC, PREF_UP, 0., 0u},
+          {"lp2_lpdesc_noise05_up", 1, ORD_LPDESC_NOISE, PREF_UP, 0.05, 21u}};
+        for (auto& c : phase2) {
+          run_candidate(c, h_lp2);
+        }
       }
     }
-    if (best_idx < 0) {
-      CUOPT_LOG_INFO("Pattern search: no repaired pattern elapsed=%.2f", timer.elapsed_time());
+    if (best_repaired.empty()) {
+      CUOPT_LOG_INFO("Pattern search: no repaired pattern (evaluated %d) elapsed=%.2f",
+                     n_eval,
+                     timer.elapsed_time());
       return false;
     }
-    CUOPT_LOG_INFO("Pattern search best: %s lp_obj=%g elapsed=%.2f",
-                   patterns[best_idx].name.c_str(),
+    CUOPT_LOG_INFO("Pattern search best: %s lp_obj=%g evaluated=%d elapsed=%.2f",
+                   best_name.c_str(),
                    best_lp,
+                   n_eval,
                    timer.elapsed_time());
     // tight polish of the best pattern (stage 1 only; the ranking LP was the 1e-4 stage)
     solution_t<i_t, f_t> to_polish(*problem_ptr);
