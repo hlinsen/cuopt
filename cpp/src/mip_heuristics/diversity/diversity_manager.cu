@@ -32,6 +32,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -746,6 +748,8 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
                                   ? population.best_feasible().get_user_objective()
                                   : std::numeric_limits<f_t>::infinity();
 
+  // fixed-problem column -> original column (identical for every pattern: same integer set)
+  std::vector<i_t> h_vmap;
   struct eval_result_t {
     bool usable{false};
     bool optimal{false};
@@ -758,7 +762,12 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
   };
   // solve the fixed LP of a pattern (real objective, PDLP warm-started from the current
   // primal/dual), optionally repair the point to strict feasibility and publish it
-  auto evaluate = [&](const std::vector<f_t>& assign, f_t tol, f_t tlimit, bool repair) {
+  // run_lp=false skips the LP and repairs/publishes the current fixed-LP primal (cur_primal)
+  auto evaluate = [&](const std::vector<f_t>& assign,
+                      f_t tol,
+                      f_t tlimit,
+                      bool repair,
+                      bool run_lp = true) {
     eval_result_t res;
     const double t0 = timer.elapsed_time();
     solution_t<i_t, f_t> sol(*problem_ptr);
@@ -770,7 +779,11 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
         fixed_problem.n_constraints != n_cstrs) {
       return res;
     }
-    {
+    if (h_vmap.empty()) { h_vmap = cuopt::host_copy(variable_map, stream); }
+    if (!run_lp) {
+      raft::copy(fixed_assignment.data(), cur_primal.data(), cur_primal.size(), stream);
+      res.usable = true;
+    } else {
       auto snapshot = make_root_lp_snapshot(fixed_problem);
       pdlp_solver_settings_t<i_t, f_t> lp_settings{};
       lp_settings.set_optimality_tolerance(tol);
@@ -880,10 +893,16 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
     return res;
   };
 
-  // consistent baseline: the current pattern at the screening tolerance
+  // reference: the current pattern at the screening tolerance (moves are judged on %-scale
+  // changes; a 1e-6 reference cost 30 s here)
   constexpr f_t screen_tol = 1e-4;
+  constexpr f_t base_tol   = 1e-4;
+  // screened LP values of the same pattern scatter by ~3e-4 relative on this class of models;
+  // only gains beyond that are accepted
+  constexpr f_t accept_eps = 2e-4;
   if (timer.remaining_time() < 10. || check_b_b_preemption()) { return; }
-  auto base = evaluate(cur_assign, screen_tol, std::min<f_t>(20., timer.remaining_time() - 6.), false);
+  auto base =
+    evaluate(cur_assign, base_tol, std::min<f_t>(20., timer.remaining_time() - 6.), false);
   if (!base.usable) {
     CUOPT_LOG_INFO("Dual flip: baseline evaluation failed elapsed=%.2f", timer.elapsed_time());
     return;
@@ -894,27 +913,105 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
   f_t last_tight_lp      = cur_lp;
   double last_tight_time = timer.elapsed_time();
   CUOPT_LOG_INFO(
-    "Dual flip start: bins=%zu tight_lp=%g screen_lp=%g (iters=%d %.2fs) best_pub=%g elapsed=%.2f",
+    "Dual flip start: bins=%zu tight_lp=%g base_lp=%g (tol=%g optimal=%d iters=%d %.2fs) "
+    "best_pub=%g elapsed=%.2f",
     bins.size(),
     flip_state.lp_obj,
     cur_lp,
+    (double)base_tol,
+    (int)base.optimal,
     base.iters,
     base.time,
     best_pub,
     timer.elapsed_time());
 
-  std::vector<f_t> red(n_vars, 0);
-  std::vector<int> tabu_until(n_vars, 0);
+  // Relax-and-round neighbourhoods: the fixed LP's duals extrapolate a single capacity row
+  // linearly (a ~1e11 predicted gain per binary for changes that measure at -0.02%..+0.3%), so
+  // the LP itself chooses the pattern change instead: relax a block of binaries to [0,1] (the
+  // rest stays fixed at the current pattern), solve that partial relaxation warm-started from
+  // the current fixed-LP primal/dual, re-round the block in LP-value order with propagation and
+  // evaluate the rounded pattern's fixed LP.
+  struct relax_result_t {
+    bool usable{false};
+    bool optimal{false};
+    f_t lp_obj{0};
+    int iters{0};
+    double time{0};
+  };
+  std::vector<f_t> yv(n_vars, 0);
+  std::vector<char> in_block(n_vars, 0);
   std::vector<f_t> pref(n_vars, 0);
-  int k        = 8;
+  auto relax_block = [&](const std::vector<i_t>& block, f_t tol, f_t tlimit) {
+    relax_result_t res;
+    const double t0 = timer.elapsed_time();
+    std::vector<f_t> xw(n_vars, 0);
+    for (size_t j = 0; j < h_vmap.size() && j < cur_primal.size(); ++j) {
+      xw[h_vmap[j]] = cur_primal[j];
+    }
+    for (auto v : h_int) {
+      xw[v] = cur_assign[v];
+    }
+    std::vector<i_t> to_fix;
+    to_fix.reserve(h_int.size());
+    f_t fixed_cost = 0;
+    for (auto v : h_int) {
+      if (!in_block[v]) {
+        to_fix.push_back(v);
+        fixed_cost += h_obj[v] * cur_assign[v];
+      }
+    }
+    std::sort(to_fix.begin(), to_fix.end());
+    auto d_fix = cuopt::device_copy(to_fix, stream);
+    solution_t<i_t, f_t> sol(*problem_ptr);
+    sol.copy_new_assignment(xw);
+    auto [rp, rassign, rmap] = sol.fix_variables(d_fix);
+    rp.check_problem_representation(true);
+    if (rp.n_constraints != n_cstrs) {
+      res.time = timer.elapsed_time() - t0;
+      return res;
+    }
+    auto snapshot = make_root_lp_snapshot(rp);
+    pdlp_solver_settings_t<i_t, f_t> lp_settings{};
+    lp_settings.set_optimality_tolerance(tol);
+    lp_settings.time_limit = std::max<double>(1., tlimit);
+    lp_settings.method     = method_t::PDLP;
+    lp_settings.presolver  = presolver_t::None;
+    std::atomic<int> local_halt{0};
+    lp_settings.concurrent_halt = &local_halt;
+    lp_settings.inside_mip      = false;
+    lp_settings.num_gpus        = context.settings.num_gpus;
+    std::vector<var_t> h_types(rp.n_variables, var_t::CONTINUOUS);
+    snapshot.set_variable_types(h_types.data(), rp.n_variables);
+    clamp_within_var_bounds(rassign, &rp, handle_ptr);
+    handle_ptr->sync_stream();
+    lp_settings.set_initial_primal_solution(rassign.data(), (i_t)rassign.size(), stream);
+    lp_settings.set_initial_dual_solution(cur_dual.data(), (i_t)cur_dual.size(), stream);
+    auto lp_result      = solve_lp(snapshot, lp_settings);
+    const auto& lp_info = lp_result.get_additional_termination_information();
+    res.iters           = lp_info.number_of_steps_taken;
+    res.optimal = lp_result.get_termination_status() == pdlp_termination_status_t::Optimal;
+    res.lp_obj  = lp_result.get_objective_value() +
+                 problem_ptr->presolve_data.objective_scaling_factor * fixed_cost;
+    if (lp_result.get_primal_solution().size() == (size_t)rp.n_variables) {
+      auto h_p   = cuopt::host_copy(lp_result.get_primal_solution(), stream);
+      auto h_map = cuopt::host_copy(rmap, stream);
+      for (size_t i = 0; i < h_map.size(); ++i) {
+        if (in_block[h_map[i]]) { yv[h_map[i]] = h_p[i]; }
+      }
+      res.usable = std::isfinite(res.lp_obj);
+    }
+    res.time = timer.elapsed_time() - t0;
+    return res;
+  };
+
   int n_iter   = 0;
   int n_accept = 0;
-  constexpr int tabu_len  = 40;
-  constexpr int k_max     = 1024;
+  // the seed pattern only has a screening LP point: tight-solve it unless a relaxation replaces it
+  bool pending_tight      = flip_state.needs_tight;
   constexpr double margin = 6.;
   auto run_tight = [&]() {
-    const f_t tb = std::min<f_t>(90., timer.remaining_time() - margin - 5.);
-    auto tight   = evaluate(cur_assign, 1e-7, tb, true);
+    const f_t tb = std::min<f_t>(60., timer.remaining_time() - margin - 5.);
+    auto tight   = evaluate(cur_assign, 1e-6, tb, true);
     CUOPT_LOG_INFO(
       "Dual flip tight: lp=%g (screen %g) optimal=%d iters=%d repaired=%g published=%d "
       "time=%.2fs best_pub=%g elapsed=%.2f",
@@ -928,116 +1025,152 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
       best_pub,
       timer.elapsed_time());
     last_tight_time = timer.elapsed_time();
-    last_tight_lp   = cur_lp;
     if (tight.usable && tight.lp_obj <= cur_lp * (1. + 1e-3)) {
+      // the tight value is the honest reference for later screening comparisons
+      cur_lp     = std::max<f_t>(cur_lp, tight.lp_obj);
       cur_primal = std::move(tight.primal);
       cur_dual   = std::move(tight.dual);
     }
+    last_tight_lp = cur_lp;
+    pending_tight = false;
   };
-  // leave room for a final tight solve of a pending improvement
-  constexpr double final_reserve = 100.;
+  // block schedule: the whole binary set, then halves, quarters, ... of contiguous index ranges
+  // (contiguous ids share the model's entity/period structure); wraps around after the smallest
+  std::vector<i_t> sorted_bins = bins;
+  std::sort(sorted_bins.begin(), sorted_bins.end());
+  const i_t n_bins        = (i_t)sorted_bins.size();
+  constexpr i_t min_block = 400;
+  i_t n_blocks            = 1;
+  i_t block_id            = 0;
+  // ceil rounding of the block in LP-value order (the LP-desc "up" rounding that gave the best
+  // root-LP patterns); binaries the LP leaves at ~0 are closed, since opening is not free here
+  constexpr f_t up_eps    = 1e-3;
+  constexpr double final_reserve = 70.;
   while (!timer.check_time_limit() && !check_b_b_preemption() &&
          timer.remaining_time() > margin + 2.) {
     if (cur_lp < last_tight_lp * (1. - 1e-4) && timer.remaining_time() < final_reserve) { break; }
     ++n_iter;
-    // price the binaries: reduced cost c_j - A_j^T y on the fixed LP's duals
-    i_t n_open_cand = 0, n_close_cand = 0;
-    std::vector<std::pair<f_t, i_t>> cands;
-    for (auto v : bins) {
-      f_t aty = 0;
-      for (i_t kk = fp_host.int_offsets[v]; kk < fp_host.int_offsets[v + 1]; ++kk) {
-        aty += fp_host.int_vals[kk] * cur_dual[fp_host.row_orig[fp_host.int_rows[kk]]];
-      }
-      red[v]       = h_obj[v] - aty;
-      const bool on = cur_assign[v] > 0.5;
-      const f_t gain = on ? red[v] : -red[v];
-      if (gain > 0) {
-        on ? n_close_cand++ : n_open_cand++;
-        if (tabu_until[v] <= n_iter) { cands.push_back({gain, v}); }
-      }
+    const i_t bsize = (n_bins + n_blocks - 1) / n_blocks;
+    const i_t b0    = block_id * bsize;
+    const i_t b1    = std::min(n_bins, b0 + bsize);
+    std::vector<i_t> block(sorted_bins.begin() + b0, sorted_bins.begin() + b1);
+    const bool full_block = block.size() == (size_t)n_bins;
+    // advance the schedule
+    if (++block_id >= n_blocks) {
+      block_id = 0;
+      n_blocks = (n_bins / (2 * n_blocks) >= min_block) ? 2 * n_blocks : 1;
     }
-    if (cands.empty()) {
-      CUOPT_LOG_INFO("Dual flip iter %d: no candidates (open=%d close=%d) elapsed=%.2f",
-                     n_iter,
-                     n_open_cand,
-                     n_close_cand,
-                     timer.elapsed_time());
-      break;
+    if (block.empty()) { continue; }
+    for (auto v : block) {
+      in_block[v] = 1;
+      yv[v]       = cur_assign[v];
     }
-    std::sort(cands.begin(), cands.end(), [](auto& a, auto& b) { return a.first > b.first; });
-    const int kb = std::min<int>(k, (int)cands.size());
-    std::vector<char> in_batch(n_vars, 0);
+    const f_t rlimit = std::min<f_t>(block.size() == (size_t)n_bins ? 40. : 25.,
+                                     timer.remaining_time() - margin);
+    if (rlimit < 2.) { break; }
+    auto rr = relax_block(block, screen_tol, rlimit);
+    for (auto v : block) {
+      in_block[v] = 0;
+    }
+    i_t n_frac = 0, n_up = 0, n_diff = 0;
+    for (auto v : block) {
+      const f_t y = yv[v];
+      if (y > 1e-3 && y < 1. - 1e-3) n_frac++;
+      if (y > up_eps) n_up++;
+      if (std::abs(std::round(y) - cur_assign[v]) > 0.5) n_diff++;
+    }
+    const bool potential = rr.usable && rr.lp_obj < cur_lp * (1. - accept_eps);
+    CUOPT_LOG_INFO(
+      "Dual flip relax %d: block=%d..%d (%zu of %d, blocks=%d) relaxed_lp=%g (cur %g, %+.4f%%) "
+      "optimal=%d iters=%d time=%.2fs frac=%d up=%d nearest_diff=%d elapsed=%.2f",
+      n_iter,
+      (int)b0,
+      (int)b1,
+      block.size(),
+      (int)n_bins,
+      (int)((n_bins + bsize - 1) / std::max<i_t>(1, bsize)),
+      rr.lp_obj,
+      cur_lp,
+      100. * (rr.lp_obj - cur_lp) / std::abs(cur_lp),
+      (int)rr.optimal,
+      rr.iters,
+      rr.time,
+      n_frac,
+      n_up,
+      n_diff,
+      timer.elapsed_time());
+    auto settle_pending = [&]() {
+      if (full_block && pending_tight && timer.remaining_time() > margin + 10.) { run_tight(); }
+    };
+    if (!potential) {
+      settle_pending();
+      continue;
+    }
+    // re-round: block binaries the LP wants (value-descending, up), then the fixed rest at its
+    // current values, then the block's remaining binaries closed
+    std::vector<std::pair<f_t, i_t>> hi, lo;
+    for (auto v : block) {
+      (yv[v] > up_eps ? hi : lo).push_back({yv[v] + 1e-3 * cur_assign[v], v});
+    }
+    std::sort(hi.begin(), hi.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    std::sort(lo.begin(), lo.end(), [](auto& a, auto& b) { return a.first > b.first; });
     std::vector<i_t> order;
     order.reserve(h_int.size());
-    f_t pred_gain = 0;
-    for (int b = 0; b < kb; ++b) {
-      i_t v       = cands[b].second;
-      in_batch[v] = 1;
-      order.push_back(v);
-      pred_gain += cands[b].first;
+    for (auto& p : hi) {
+      order.push_back(p.second);
+      in_block[p.second] = 1;
+      pref[p.second]     = 1.;
     }
-    // the rest keeps its values, most strongly supported by the duals first (the least
-    // supported ones are the first to be pushed out by propagation)
-    std::vector<std::pair<f_t, i_t>> rest;
-    rest.reserve(h_int.size());
+    for (auto& p : lo) {
+      in_block[p.second] = 1;
+      pref[p.second]     = 0.;
+    }
     for (auto v : h_int) {
-      if (in_batch[v]) continue;
-      f_t keep = 0;
-      if (is_bin[v]) { keep = cur_assign[v] > 0.5 ? -red[v] : red[v]; }
-      rest.push_back({keep, v});
+      if (!in_block[v]) {
+        order.push_back(v);
+        pref[v] = std::round(cur_assign[v]);
+      }
     }
-    std::stable_sort(rest.begin(), rest.end(), [](auto& a, auto& b) { return a.first > b.first; });
-    for (auto& p : rest) {
+    for (auto& p : lo) {
       order.push_back(p.second);
     }
-    for (auto v : h_int) {
-      pref[v] = in_batch[v] ? 1. - std::round(cur_assign[v]) : std::round(cur_assign[v]);
+    for (auto v : block) {
+      in_block[v] = 0;
     }
     i_t n_flipped = 0, n_implied = 0;
     const double t_dive = timer.elapsed_time();
     i_t n_conflicts     = fp_host.dive(order, pref, n_flipped, n_implied);
-    i_t n_open = 0, n_close = 0, n_batch_done = 0;
+    i_t n_open = 0, n_close = 0;
     std::vector<f_t> cand_assign = cur_assign;
     for (auto v : h_int) {
       f_t nv = fp_host.col_lb[v];
-      if (std::abs(nv - cur_assign[v]) > 0.5) {
-        nv > cur_assign[v] ? n_open++ : n_close++;
-        n_batch_done += in_batch[v];
-      }
+      if (std::abs(nv - cur_assign[v]) > 0.5) { nv > cur_assign[v] ? n_open++ : n_close++; }
       cand_assign[v] = nv;
     }
     if (n_conflicts > 0 || n_open + n_close == 0) {
-      for (int b = 0; b < kb; ++b) {
-        tabu_until[cands[b].second] = n_iter + tabu_len;
-      }
       CUOPT_LOG_INFO(
-        "Dual flip iter %d: k=%d dive rejected conflicts=%d changes=%d dive=%.3fs elapsed=%.2f",
+        "Dual flip iter %d: rounding rejected conflicts=%d changes=%d dive=%.3fs elapsed=%.2f",
         n_iter,
-        kb,
         n_conflicts,
         n_open + n_close,
         timer.elapsed_time() - t_dive,
         timer.elapsed_time());
-      k = std::max(1, k / 2);
+      settle_pending();
       continue;
     }
     const f_t tlimit = std::min<f_t>(25., timer.remaining_time() - margin);
     if (tlimit < 2.) { break; }
     auto ev = evaluate(cand_assign, screen_tol, tlimit, false);
-    const bool accept = ev.usable && ev.optimal && ev.lp_obj < cur_lp - 1e-6 * std::abs(cur_lp);
+    const bool accept =
+      ev.usable && ev.optimal && ev.lp_obj < cur_lp - accept_eps * std::abs(cur_lp);
     CUOPT_LOG_INFO(
-      "Dual flip iter %d: k=%d cands=%zu (open=%d close=%d) pred_gain=%g changes open=%d close=%d "
-      "batch_done=%d lp=%g (cur %g, %+.4f%%) optimal=%d iters=%d eval=%.2fs accept=%d "
-      "elapsed=%.2f",
+      "Dual flip iter %d: block=%zu relaxed_lp=%g changes open=%d close=%d lp=%g (cur %g, "
+      "%+.4f%%) optimal=%d iters=%d eval=%.2fs accept=%d elapsed=%.2f",
       n_iter,
-      kb,
-      cands.size(),
-      n_open_cand,
-      n_close_cand,
-      pred_gain,
+      block.size(),
+      rr.lp_obj,
       n_open,
       n_close,
-      n_batch_done,
       ev.lp_obj,
       cur_lp,
       100. * (ev.lp_obj - cur_lp) / std::abs(cur_lp),
@@ -1047,20 +1180,35 @@ void diversity_manager_t<i_t, f_t>::dual_flip_loop()
       (int)accept,
       timer.elapsed_time());
     if (!accept) {
-      for (int b = 0; b < kb; ++b) {
-        tabu_until[cands[b].second] = n_iter + tabu_len;
-      }
-      k = std::max(1, k / 2);
+      settle_pending();
       continue;
     }
     n_accept++;
+    pending_tight = false;
+    // an accepted full relaxation is repeated from the new pattern's fixed-LP point before the
+    // schedule moves on to partial blocks
+    if (full_block) {
+      n_blocks = 1;
+      block_id = 0;
+    }
     cur_assign = std::move(cand_assign);
     cur_primal = std::move(ev.primal);
     cur_dual   = std::move(ev.dual);
     cur_lp     = ev.lp_obj;
-    k          = std::min(k_max, 2 * k);
-    // tight solve + repair + publish once the screened LP gain is worth it
-    const bool worth = cur_lp < last_tight_lp * (1. - 0.01) &&
+    // publish right away: repair the screened LP point itself (a few seconds; the tight solve
+    // below takes ~60 s here)
+    if (cur_lp < best_pub && timer.remaining_time() > margin + 10.) {
+      auto quick = evaluate(cur_assign, screen_tol, 0., true, false);
+      CUOPT_LOG_INFO("Dual flip quick repair: lp=%g repaired=%g published=%d time=%.2fs elapsed=%.2f",
+                     cur_lp,
+                     quick.repaired_obj,
+                     (int)quick.published,
+                     quick.time,
+                     timer.elapsed_time());
+    }
+    // tight solve + repair + publish on a modest screened gain (the old 1% gate held the best
+    // pattern back for most of the run)
+    const bool worth = cur_lp < last_tight_lp * (1. - 0.003) &&
                        timer.elapsed_time() - last_tight_time > 30.;
     if (worth && timer.remaining_time() > margin + 10.) { run_tight(); }
   }
@@ -1196,6 +1344,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     int n_eval      = 0;
     std::string best_name;
     std::vector<f_t> best_repaired;
+    std::vector<f_t> best_primal, best_dual;  // ranking LP point of the best pattern
     constexpr f_t rank_tol    = 1e-4;
     constexpr f_t rank_tlimit = 8.;
     const std::vector<f_t>& vub_ref = h_vub;
@@ -1285,6 +1434,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         best_lp       = ev.lp_obj;
         best_name     = c.name;
         best_repaired = std::move(ev.repaired_assignment);
+        best_primal   = std::move(ev.primal);
+        best_dual     = std::move(ev.dual);
       }
     };
     // phase 1: the cheapest known family first so it publishes early, then its neighbours
@@ -1299,66 +1450,6 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     for (auto& c : phase1) {
       run_candidate(c, h_lp);
     }
-    // phase 2: continue the (time-limited) root LP warm-started, re-derive the LP-guided
-    // patterns from the more converged point
-    std::vector<f_t> h_lp2;
-    if (!fpc_timer.check_time_limit() && !timer.check_time_limit() && !check_b_b_preemption() &&
-        timer.remaining_time() > 300.) {
-      const double t_lp2 = timer.elapsed_time();
-      auto snapshot      = make_root_lp_snapshot(*problem_ptr);
-      std::vector<var_t> h_types(problem_ptr->n_variables, var_t::CONTINUOUS);
-      snapshot.set_variable_types(h_types.data(), problem_ptr->n_variables);
-      pdlp_solver_settings_t<i_t, f_t> lp_settings{};
-      lp_settings.set_optimality_tolerance(1e-4);
-      lp_settings.time_limit = 30.;
-      lp_settings.method     = method_t::PDLP;
-      lp_settings.presolver  = presolver_t::None;
-      std::atomic<int> local_halt{0};
-      lp_settings.concurrent_halt = &local_halt;
-      lp_settings.inside_mip      = false;
-      lp_settings.num_gpus        = context.settings.num_gpus;
-      rmm::device_uvector<f_t> warm_x(lp_optimal_solution, stream);
-      clamp_within_var_bounds(warm_x, problem_ptr, handle_ptr);
-      handle_ptr->sync_stream();
-      lp_settings.set_initial_primal_solution(warm_x.data(), (i_t)warm_x.size(), stream);
-      lp_settings.set_initial_dual_solution(
-        lp_dual_optimal_solution.data(), (i_t)lp_dual_optimal_solution.size(), stream);
-      auto lp2       = solve_lp(snapshot, lp_settings);
-      const auto& li = lp2.get_additional_termination_information();
-      const bool ok  = lp2.get_primal_solution().size() == (size_t)n_vars;
-      CUOPT_LOG_INFO(
-        "Pattern root LP continuation: status=%s obj=%g iters=%d l2_primal_res=%g "
-        "l2_dual_res=%g time=%.2fs usable=%d elapsed=%.2f",
-        lp2.get_termination_status_string().c_str(),
-        (double)lp2.get_objective_value(),
-        li.number_of_steps_taken,
-        li.l2_primal_residual,
-        li.l2_dual_residual,
-        timer.elapsed_time() - t_lp2,
-        (int)ok,
-        timer.elapsed_time());
-      if (ok) {
-        h_lp2 = cuopt::host_copy(lp2.get_primal_solution(), stream);
-        for (i_t j = 0; j < n_vars; ++j) {
-          h_lp2[j] = std::min(std::max(h_lp2[j], h_vlb[j]), h_vub[j]);
-        }
-        i_t n_frac2 = 0, n_changed = 0;
-        for (auto v : h_int) {
-          f_t xv = h_lp2[v];
-          if ((xv - std::floor(xv) > int_tol) && (std::ceil(xv) - xv > int_tol)) n_frac2++;
-          n_changed += (h_lp2[v] > int_tol) != (h_lp[v] > int_tol);
-        }
-        CUOPT_LOG_INFO("Pattern root LP continuation: lp_fractional=%d support_changes=%d",
-                       n_frac2,
-                       n_changed);
-        const std::vector<cand_t> phase2 = {
-          {"lp2_lpdesc_up", 1, ORD_LPDESC, PREF_UP, 0., 0u},
-          {"lp2_lpdesc_noise05_up", 1, ORD_LPDESC_NOISE, PREF_UP, 0.05, 21u}};
-        for (auto& c : phase2) {
-          run_candidate(c, h_lp2);
-        }
-      }
-    }
     if (best_repaired.empty()) {
       CUOPT_LOG_INFO("Pattern search: no repaired pattern (evaluated %d) elapsed=%.2f",
                      n_eval,
@@ -1370,12 +1461,16 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
                    best_lp,
                    n_eval,
                    timer.elapsed_time());
-    // tight polish of the best pattern (stage 1 only; the ranking LP was the 1e-4 stage)
-    solution_t<i_t, f_t> to_polish(*problem_ptr);
-    to_polish.copy_new_assignment(best_repaired);
-    to_polish.compute_feasibility();
-    flip_state = flip_lp_state_t{};
-    polish_continuous(to_polish, 200., &flip_state, 1);
+    // hand the best pattern and its ranking LP point straight to relax-and-round (dual_flip_loop)
+    // instead of a ~160 s tight polish: a full relaxation warm-started from the fixed-LP point
+    // re-rounds to far cheaper patterns, and the loop tight-solves whichever pattern it holds
+    flip_state            = flip_lp_state_t{};
+    flip_state.assignment = std::move(best_repaired);
+    flip_state.primal     = std::move(best_primal);
+    flip_state.dual       = std::move(best_dual);
+    flip_state.lp_obj     = best_lp;
+    flip_state.valid      = true;
+    flip_state.needs_tight = true;
     return true;
   }
 

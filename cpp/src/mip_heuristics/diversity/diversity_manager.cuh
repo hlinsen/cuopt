@@ -64,6 +64,8 @@ class diversity_manager_t {
     std::vector<f_t> primal;
     std::vector<f_t> dual;
     f_t lp_obj{0};
+    // the pattern has only a screening-tolerance LP point (no tight solve / polish yet)
+    bool needs_tight{false};
   };
   bool polish_continuous(solution_t<i_t, f_t>& sol,
                          f_t budget,
