@@ -88,6 +88,8 @@ class domain_t {
  public:
   domain_t() = default;
 
+  void set_params(const domain_params& p) { params = p; }
+
   // Records a bound change on the stack.
   void push(const bound_change_t<i_t, f_t>& bound_change) { bound_changes.push_back(bound_change); }
 

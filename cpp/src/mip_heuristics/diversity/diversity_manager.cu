@@ -887,6 +887,12 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
   fp_host.continuous_min_improvement =
     context.settings.heuristic_params.fix_propagate_continuous_min_improvement;
   fp_host.build(n_vars, n_cstrs, h_offsets, h_cols, h_vals, h_clb, h_cub, h_vlb, h_vub, h_int);
+  fp_host.int_tol = problem_ptr->tolerances.integrality_tolerance;
+  {
+    simplex::user_problem_t<i_t, f_t> user_problem(problem_ptr->handle_ptr);
+    problem_ptr->get_host_user_problem(user_problem);
+    fp_host.build_domain(user_problem, problem_ptr->clique_table.get());
+  }
   i_t n_frac = 0, n_at_one = 0;
   for (auto v : h_int) {
     f_t x = h_lp[v];
