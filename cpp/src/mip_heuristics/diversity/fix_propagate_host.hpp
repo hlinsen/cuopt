@@ -20,6 +20,10 @@
 //   [SRF] D. Salvagnin, R. Roberti, M. Fischetti. A fix-propagate-repair heuristic for mixed
 //         integer programming. Mathematical Programming Computation (2024),
 //         doi:10.1007/s12532-024-00269-5. ([KK] builds on its depth-first modes.)
+//   [GBHW] G. Gamrath, T. Berthold, S. Heinz, M. Winkler. Structure-driven fix-and-propagate
+//         heuristics for mixed integer programming. Mathematical Programming Computation 11
+//         (2019), doi:10.1007/s12532-019-00159-1. (LP-free fix-and-propagate before the LP, as in
+//         SCIP's locks/clique/vbounds heuristics; our LP-free start is a simpler bound-based one.)
 // Terminology follows [KK]: a variable strategy orders the integers, a value strategy picks the
 // value each integer is fixed to. Both are computed from a reference point: the root LP solution,
 // or zero clamped to the bounds when no LP is available yet.
@@ -39,21 +43,22 @@
 namespace cuopt::mathematical_optimization::mip {
 
 // Variable strategy: integers with a larger key are fixed first.
+// The integer values are the settings values (mip_hyper_heuristic_fix_propagate_*_strategy).
 enum class fp_variable_strategy_t {
-  FRACTIONALITY,        // closest to integral first; same measure as [KK] Frac
-  LP_VALUE_DESC,        // largest reference value first; not in [KK]
-  LP_VALUE_DESC_NOISE,  // reference value + param * U(0,1), largest first; not in [KK]
-  REDUCED_COST,         // most negative reduced cost first; [KK] RedCost orders by |reduced cost|
-  UPLOCKS,              // fewest up-locks first, ties by larger reference value; cf. [SRF] locks
+  FRACTIONALITY       = 0,  // closest to integral first; same measure as [KK] Frac
+  LP_VALUE_DESC       = 1,  // largest reference value first; not in [KK]
+  LP_VALUE_DESC_NOISE = 2,  // reference value + noise * U(0,1), largest first; not in [KK]
+  REDUCED_COST        = 3,  // most negative reduced cost first; [KK] RedCost orders by |red. cost|
+  UPLOCKS = 4,  // fewest up-locks first, ties by larger reference value; cf. [SRF] locks
 };
 
 // Value strategy: the value an integer is fixed to (the dive clamps it to the current domain).
 enum class fp_value_strategy_t {
-  UPPER_BOUND,               // LP-free
-  LOWER_BOUND,               // LP-free
-  ROUND_UP,                  // round any fractional reference value up
-  ROUND_UP_OR_NEG_REDCOST,   // round up if fractional or reduced cost < -param
-  ROUND_UP_ABOVE_THRESHOLD,  // round up if the fractional part is > param
+  UPPER_BOUND              = 0,  // LP-free
+  LOWER_BOUND              = 1,  // LP-free
+  ROUND_UP                 = 2,  // round any fractional reference value up
+  ROUND_UP_OR_NEG_REDCOST  = 3,  // round up if fractional or reduced cost < -param
+  ROUND_UP_ABOVE_THRESHOLD = 4,  // round up if the fractional part is > param
 };
 
 template <typename i_t, typename f_t>

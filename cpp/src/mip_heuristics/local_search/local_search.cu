@@ -732,6 +732,10 @@ bool local_search_t<i_t, f_t>::check_fj_on_lp_optimal(solution_t<i_t, f_t>& solu
                                                       timer_t timer)
 {
   raft::common::nvtx::range fun_scope("check_fj_on_lp_optimal");
+  if (!perturb && lp_optimal_exists && lp_point_fix_propagate && !lp_point_fix_propagate_done) {
+    lp_point_fix_propagate_done = true;
+    lp_point_fix_propagate();
+  }
   if (lp_optimal_exists) {
     raft::copy(solution.assignment.data(),
                lp_optimal_solution.data(),
