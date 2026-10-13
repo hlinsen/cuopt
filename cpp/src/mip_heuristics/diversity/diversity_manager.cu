@@ -581,7 +581,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                                   bool repair,
                                                   f_t repair_tlimit,
                                                   const char* origin,
-                                                  f_t repair_below)
+                                                  f_t repair_below,
+                                                  f_t max_push_time)
 {
   raft::common::nvtx::range fun_scope("eval_fixed_pattern");
   pattern_eval_t res;
@@ -651,10 +652,11 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       double weight;
       double cap;
     };
-    const push_t pushes[] = {{1e4, 6.}, {1e5, 5.}};
-    auto cur_p            = cuopt::device_copy(res.primal, stream);
-    auto cur_d            = cuopt::device_copy(res.dual, stream);
-    bool pushed           = false;
+    const double push_scale = std::clamp<double>(max_push_time / 11., 0., 1.);
+    const push_t pushes[]   = {{1e4, 6. * push_scale}, {1e5, 5. * push_scale}};
+    auto cur_p              = cuopt::device_copy(res.primal, stream);
+    auto cur_d              = cuopt::device_copy(res.dual, stream);
+    bool pushed             = false;
     for (const auto& ps : pushes) {
       if (timer.check_time_limit() || check_b_b_preemption() || timer.remaining_time() < 30.) {
         break;
@@ -824,12 +826,28 @@ void diversity_manager_t<i_t, f_t>::run_early_fix_propagate()
   }
   const char* disable_heuristics_env = std::getenv("CUOPT_DISABLE_GPU_HEURISTICS");
   if (disable_heuristics_env != nullptr && std::string(disable_heuristics_env) == "1") { return; }
+  if (context.settings.heuristic_params.lp_free_fix_propagate == 0) { return; }
   early_fpc_done       = true;
   population.timer     = timer;
   fpc_external_publish = true;
   CUOPT_LOG_INFO("Early fix-and-propagate start: elapsed=%.2f", timer.elapsed_time());
   run_fix_propagate_complete(false, 25.);
   fpc_external_publish = false;
+}
+
+template <typename i_t, typename f_t>
+void diversity_manager_t<i_t, f_t>::run_lp_guided_fix_propagate()
+{
+  if (problem_ptr->n_integer_vars == 0 || problem_ptr->n_integer_vars == problem_ptr->n_variables) {
+    return;
+  }
+  const auto& hp   = context.settings.heuristic_params;
+  const f_t budget = std::min<f_t>(hp.fix_propagate_max_time,
+                                   hp.fix_propagate_time_ratio * context.settings.time_limit);
+  if (budget <= 1.) { return; }
+  CUOPT_LOG_INFO(
+    "LP-guided fix-and-propagate start: budget=%.1fs elapsed=%.2f", budget, timer.elapsed_time());
+  run_fix_propagate_complete(true, budget);
 }
 
 template <typename i_t, typename f_t>
@@ -900,11 +918,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
   }
 
   if (use_lp) {
-    // LP-guided pattern search: fix-and-propagate dives under several variable / value
-    // strategies (see fix_propagate_host.hpp), each pattern ranked by a short cost-aware fixed LP
-    // (its objective settles within a few thousand PDLP iterations even when the residual
-    // stalls); improvements are repaired and published right away. On CCBJI, rounding up in
-    // LP-value-descending order is by far the cheapest family.
+    // LP-guided fix-and-propagate: one dive with the configured variable / value strategies
+    // (see fix_propagate_host.hpp), the pattern evaluated by a short cost-aware fixed LP (its
+    // objective settles within a few thousand PDLP iterations even when the residual stalls),
+    // then pushed, repaired and published if it improves. All steps are scaled to the budget.
     auto h_obj  = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
     auto h_dual = cuopt::host_copy(lp_dual_optimal_solution, stream);
     std::vector<f_t> red(n_vars, 0);
@@ -926,7 +943,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       std::string name;  // log name
       fp_variable_strategy_t var_strategy;
       fp_value_strategy_t value_strategy;
-      f_t order_param;  // noise amplitude for LP_VALUE_DESC_NOISE
+      f_t order_param;  // noise amplitude of LP_VALUE_DESC_NOISE
       f_t value_param;  // reduced-cost or fraction threshold of the value strategy
       unsigned seed;
     };
@@ -935,11 +952,13 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     int n_eval  = 0;
     std::string best_name;
     std::vector<f_t> best_repaired;
-    constexpr f_t rank_tol    = 1e-4;
-    constexpr f_t rank_tlimit = 8.;
-    auto run_candidate        = [&](const cand_t& c, const std::vector<f_t>& x) {
+    constexpr f_t rank_tol  = 1e-4;
+    const f_t rank_tlimit   = std::min<f_t>(8., 0.25 * budget);
+    const f_t push_tlimit   = std::min<f_t>(11., 0.3 * budget);
+    const f_t repair_tlimit = std::min<f_t>(20., 0.4 * budget);
+    auto run_candidate      = [&](const cand_t& c, const std::vector<f_t>& x) {
       if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption() ||
-          timer.remaining_time() < 60.) {
+          timer.remaining_time() < 2. * budget) {
         return;
       }
       std::vector<i_t> ord(h_int.begin(), h_int.end());
@@ -975,7 +994,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       }
       CUOPT_LOG_INFO(
         "Pattern dive %s: time=%.3fs conflicts=%d flipped=%d implied_off_pref=%d ones=%d "
-               "int_cost=%g dup=%d elapsed=%.2f",
+             "int_cost=%g dup=%d elapsed=%.2f",
         c.name.c_str(),
         timer.elapsed_time() - t_dive,
         n_conflicts,
@@ -991,14 +1010,22 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       for (size_t q = 0; q < h_int.size(); ++q) {
         assign[h_int[q]] = pat[q];
       }
-      auto ev = eval_fixed_pattern(
-        assign, rank_tol, rank_tlimit, nullptr, nullptr, true, 20., "pattern_rank", best_lp);
+      auto ev = eval_fixed_pattern(assign,
+                                   rank_tol,
+                                   rank_tlimit,
+                                   nullptr,
+                                   nullptr,
+                                   true,
+                                   repair_tlimit,
+                                   "fix_propagate",
+                                   best_lp,
+                                   push_tlimit);
       n_eval++;
       const bool better = ev.usable && ev.lp_obj < best_lp;
       CUOPT_LOG_INFO(
         "Pattern rank %s: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g time=%.2fs "
-               "better=%d pushed_lp_obj=%g pushed_res=%g push_time=%.2fs repaired=%g published=%d "
-               "elapsed=%.2f",
+             "better=%d pushed_lp_obj=%g pushed_res=%g push_time=%.2fs repaired=%g published=%d "
+             "elapsed=%.2f",
         c.name.c_str(),
         n_ones,
         ev.lp_obj,
@@ -1019,32 +1046,26 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         best_repaired = std::move(ev.repaired_assignment);
       }
     };
-    // the cheapest known family first so it publishes early, then its neighbours
-    using var_s                      = fp_variable_strategy_t;
-    using val_s                      = fp_value_strategy_t;
-    const std::vector<cand_t> phase1 = {
-      {"lpdesc_up", var_s::LP_VALUE_DESC, val_s::ROUND_UP, 0., 0., 0u},
-      {"lpdesc_up_negred", var_s::LP_VALUE_DESC, val_s::ROUND_UP_OR_NEG_REDCOST, 0., 1e-9, 0u},
-      {"lpdesc_noise05_up", var_s::LP_VALUE_DESC_NOISE, val_s::ROUND_UP, 0.05, 0., 11u},
-      {"lpdesc_noise20_up", var_s::LP_VALUE_DESC_NOISE, val_s::ROUND_UP, 0.2, 0., 12u},
-      {"uplocks_up", var_s::UPLOCKS, val_s::ROUND_UP, 0., 0., 0u},
-      {"lpdesc_up_t05", var_s::LP_VALUE_DESC, val_s::ROUND_UP_ABOVE_THRESHOLD, 0., 0.05, 0u},
-      {"redcost_up", var_s::REDUCED_COST, val_s::ROUND_UP, 0., 0., 0u}};
-    for (auto& c : phase1) {
-      run_candidate(c, h_lp);
-    }
+    const auto& hp = context.settings.heuristic_params;
+    const cand_t configured{"lp_guided",
+                            static_cast<fp_variable_strategy_t>(hp.fix_propagate_variable_strategy),
+                            static_cast<fp_value_strategy_t>(hp.fix_propagate_value_strategy),
+                            hp.fix_propagate_order_noise,
+                            hp.fix_propagate_value_param,
+                            12u};
+    run_candidate(configured, h_lp);
     if (best_repaired.empty()) {
-      CUOPT_LOG_INFO("Pattern search: no repaired pattern (evaluated %d) elapsed=%.2f",
+      CUOPT_LOG_INFO("LP-guided fix-and-propagate: no repaired pattern (evaluated %d) elapsed=%.2f",
                      n_eval,
                      timer.elapsed_time());
       return false;
     }
-    CUOPT_LOG_INFO("Pattern search best: %s lp_obj=%g evaluated=%d elapsed=%.2f",
+    CUOPT_LOG_INFO("LP-guided fix-and-propagate best: %s lp_obj=%g evaluated=%d elapsed=%.2f",
                    best_name.c_str(),
                    best_lp,
                    n_eval,
                    timer.elapsed_time());
-    // the best pattern was already pushed, repaired and published by the ranking evaluation
+    // the pattern was already pushed, repaired and published by its evaluation
     return true;
   }
 
@@ -1511,14 +1532,15 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   if (check_b_b_preemption()) { return population.best_feasible(); }
   CUOPT_LOG_INFO("Heuristics start (before root LP): elapsed=%.2f", timer.elapsed_time());
   // LP-free fix-and-propagate attempt before the root LP (bounded, objective-free completion)
-  if (!fj_only_run && !early_fpc_done && !simplex_solution_exists.load() &&
+  const bool lp_free_fp = context.settings.heuristic_params.lp_free_fix_propagate != 0;
+  if (lp_free_fp && !fj_only_run && !early_fpc_done && !simplex_solution_exists.load() &&
       !check_b_b_preemption()) {
     run_fix_propagate_complete(false, 25.);
     population.add_external_solutions_to_population();
     if (check_b_b_preemption()) { return population.best_feasible(); }
   }
   // cost-aware polish of the LP-free incumbent before the root LP
-  if (!fj_only_run && !simplex_solution_exists.load() && !check_b_b_preemption()) {
+  if (lp_free_fp && !fj_only_run && !simplex_solution_exists.load() && !check_b_b_preemption()) {
     population.add_external_solutions_to_population();
     if (population.is_feasible()) {
       auto early_best = population.best_feasible();
@@ -1706,12 +1728,12 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     return sol;
   }
 
-  if (ls.lp_optimal_exists && !check_b_b_preemption() && !timer.check_time_limit()) {
-    run_fix_propagate_complete(true, 700.);
-    population.add_external_solutions_to_population();
-    if (timer.check_time_limit() || check_b_b_preemption()) { return population.best_feasible(); }
+  if (context.settings.heuristic_params.fix_propagate != 0) {
+    ls.lp_point_fix_propagate = [this]() {
+      run_lp_guided_fix_propagate();
+      population.add_external_solutions_to_population();
+    };
   }
-
   generate_solution(timer.remaining_time(), false);
   if (timer.check_time_limit()) {
     population.add_external_solutions_to_population();

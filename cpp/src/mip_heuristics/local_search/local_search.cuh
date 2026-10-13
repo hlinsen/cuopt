@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include <mip_heuristics/diversity/population.cuh>
 #include <mip_heuristics/feasibility_jump/fj_cpu.cuh>
 #include <mip_heuristics/lns/population_feed.cuh>
@@ -71,6 +73,10 @@ class local_search_t {
                            const ls_config_t<i_t, f_t>& ls_config);
   bool run_fj_on_zero(solution_t<i_t, f_t>& solution, timer_t timer);
   bool check_fj_on_lp_optimal(solution_t<i_t, f_t>& solution, bool perturb, timer_t timer);
+  // LP-guided CPU fix-and-propagate on the root LP point, set by the diversity manager; runs once,
+  // before the GPU rounding of the same point
+  std::function<void()> lp_point_fix_propagate;
+  bool lp_point_fix_propagate_done{false};
   bool run_staged_fp(solution_t<i_t, f_t>& solution,
                      timer_t timer,
                      population_t<i_t, f_t>* population_ptr);

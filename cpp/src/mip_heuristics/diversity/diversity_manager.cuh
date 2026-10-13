@@ -44,6 +44,9 @@ class diversity_manager_t {
   // the continuous part with an objective-free fixed-integer PDLP solve. Returns true if a
   // feasible solution was added to the population.
   bool run_fix_propagate_complete(bool use_lp, f_t max_budget);
+  // LP-guided fix-and-propagate on the root LP point with the configured strategies and budget
+  // (called from local search)
+  void run_lp_guided_fix_propagate();
   // LP-free fix-and-propagate right after presolve (before B&B setup / symmetry detection);
   // results go through the thread-safe external queue since the population is not set up yet.
   void run_early_fix_propagate();
@@ -101,7 +104,8 @@ class diversity_manager_t {
                                     bool repair,
                                     f_t repair_tlimit,
                                     const char* origin,
-                                    f_t repair_below = std::numeric_limits<f_t>::infinity());
+                                    f_t repair_below  = std::numeric_limits<f_t>::infinity(),
+                                    f_t max_push_time = 11.);
   // strict host-side feasibility check of a full assignment against the model rows and bounds
   // (compensated activities, validator-style relative term, half the absolute tolerance) so
   // that published LP-derived points keep a margin over the external validator
