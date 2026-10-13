@@ -889,20 +889,24 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     timer.elapsed_time() - t_build,
     timer.elapsed_time());
 
-  // processing order: most decided (closest to integral) first
+  // LP-free order: fractionality (with the zero reference point every integer ties, so this is the
+  // index order)
   std::vector<i_t> order(h_int.begin(), h_int.end());
-  std::stable_sort(order.begin(), order.end(), [&](i_t a, i_t b) {
-    f_t fa = std::abs(h_lp[a] - std::floor(h_lp[a]) - 0.5);
-    f_t fb = std::abs(h_lp[b] - std::floor(h_lp[b]) - 0.5);
-    return fa > fb;
-  });
+  {
+    std::vector<f_t> key(n_vars, 0);
+    for (auto v : h_int) {
+      key[v] = fp_order_key<i_t, f_t>(
+        fp_variable_strategy_t::FRACTIONALITY, h_lp[v], f_t(0), i_t(0), f_t(0));
+    }
+    std::stable_sort(order.begin(), order.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
+  }
 
   if (use_lp) {
-    // LP-guided pattern search: fix-and-propagate dives under several orders / value
-    // preferences, each pattern ranked by a short cost-aware fixed LP (its objective settles
-    // within a few thousand PDLP iterations even when the residual stalls); improvements are
-    // repaired and published right away; the best pattern then gets the tight polish and the
-    // flip loop. On CCBJI, LP-value-descending up-rounding is by far the cheapest family.
+    // LP-guided pattern search: fix-and-propagate dives under several variable / value
+    // strategies (see fix_propagate_host.hpp), each pattern ranked by a short cost-aware fixed LP
+    // (its objective settles within a few thousand PDLP iterations even when the residual
+    // stalls); improvements are repaired and published right away. On CCBJI, rounding up in
+    // LP-value-descending order is by far the cheapest family.
     auto h_obj  = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
     auto h_dual = cuopt::host_copy(lp_dual_optimal_solution, stream);
     std::vector<f_t> red(n_vars, 0);
@@ -920,14 +924,12 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       }
       red[v] = h_obj[v] - aty;
     }
-    enum order_kind_t { ORD_LPDESC, ORD_LPDESC_NOISE, ORD_REDCOST, ORD_UPLOCKS };
-    enum pref_kind_t { PREF_UP, PREF_UP_NEGRED, PREF_UP_THRESH };
     struct cand_t {
-      std::string name;
-      int lp_src;  // 0 = root LP point, 1 = continued root LP point
-      order_kind_t ord;
-      pref_kind_t pref;
-      double param;
+      std::string name;  // log name
+      fp_variable_strategy_t var_strategy;
+      fp_value_strategy_t value_strategy;
+      f_t order_param;  // noise amplitude for LP_VALUE_DESC_NOISE
+      f_t value_param;  // reduced-cost or fraction threshold of the value strategy
       unsigned seed;
     };
     std::vector<std::vector<f_t>> seen;
@@ -935,10 +937,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     int n_eval      = 0;
     std::string best_name;
     std::vector<f_t> best_repaired;
-    std::vector<f_t> best_primal, best_dual;  // ranking LP point of the best pattern
     constexpr f_t rank_tol    = 1e-4;
     constexpr f_t rank_tlimit = 8.;
-    const std::vector<f_t>& vub_ref = h_vub;
     auto run_candidate = [&](const cand_t& c, const std::vector<f_t>& x) {
       if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption() ||
           timer.remaining_time() < 60.) {
@@ -948,26 +948,16 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       std::vector<f_t> key(n_vars, 0);
       std::mt19937 g(c.seed);
       std::uniform_real_distribution<double> U(0., 1.);
+      const bool noisy = c.var_strategy == fp_variable_strategy_t::LP_VALUE_DESC_NOISE;
       for (auto v : h_int) {
-        switch (c.ord) {
-          case ORD_LPDESC: key[v] = x[v]; break;
-          case ORD_LPDESC_NOISE: key[v] = x[v] + c.param * U(g); break;
-          case ORD_REDCOST: key[v] = -red[v]; break;
-          case ORD_UPLOCKS: key[v] = -(f_t)uplocks[v] + 1e-3 * x[v]; break;
-        }
+        const f_t noise = noisy ? c.order_param * U(g) : f_t(0);
+        key[v]          = fp_order_key<i_t, f_t>(c.var_strategy, x[v], red[v], uplocks[v], noise);
       }
       std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
       std::vector<f_t> pref(n_vars, 0.);
       for (auto v : h_int) {
-        f_t fl = std::floor(x[v] + int_tol);
-        f_t fr = x[v] - fl;
-        switch (c.pref) {
-          case PREF_UP: pref[v] = fr > int_tol ? fl + 1 : fl; break;
-          case PREF_UP_NEGRED:
-            pref[v] = (fr > int_tol || red[v] < -c.param) ? std::min(fl + 1, vub_ref[v]) : fl;
-            break;
-          case PREF_UP_THRESH: pref[v] = fr > c.param ? fl + 1 : fl; break;
-        }
+        pref[v] = fp_preferred_value<f_t>(
+          c.value_strategy, x[v], h_vlb[v], h_vub[v], red[v], c.value_param, int_tol);
       }
       const double t_dive = timer.elapsed_time();
       i_t n_flipped = 0, n_implied = 0;
@@ -1029,19 +1019,19 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         best_lp       = ev.lp_obj;
         best_name     = c.name;
         best_repaired = std::move(ev.repaired_assignment);
-        best_primal   = std::move(ev.primal);
-        best_dual     = std::move(ev.dual);
       }
     };
-    // phase 1: the cheapest known family first so it publishes early, then its neighbours
+    // the cheapest known family first so it publishes early, then its neighbours
+    using var_s = fp_variable_strategy_t;
+    using val_s = fp_value_strategy_t;
     const std::vector<cand_t> phase1 = {
-      {"lpdesc_up", 0, ORD_LPDESC, PREF_UP, 0., 0u},
-      {"lpdesc_up_negred", 0, ORD_LPDESC, PREF_UP_NEGRED, 1e-9, 0u},
-      {"lpdesc_noise05_up", 0, ORD_LPDESC_NOISE, PREF_UP, 0.05, 11u},
-      {"lpdesc_noise20_up", 0, ORD_LPDESC_NOISE, PREF_UP, 0.2, 12u},
-      {"uplocks_up", 0, ORD_UPLOCKS, PREF_UP, 0., 0u},
-      {"lpdesc_up_t05", 0, ORD_LPDESC, PREF_UP_THRESH, 0.05, 0u},
-      {"redcost_up", 0, ORD_REDCOST, PREF_UP, 0., 0u}};
+      {"lpdesc_up", var_s::LP_VALUE_DESC, val_s::ROUND_UP, 0., 0., 0u},
+      {"lpdesc_up_negred", var_s::LP_VALUE_DESC, val_s::ROUND_UP_OR_NEG_REDCOST, 0., 1e-9, 0u},
+      {"lpdesc_noise05_up", var_s::LP_VALUE_DESC_NOISE, val_s::ROUND_UP, 0.05, 0., 11u},
+      {"lpdesc_noise20_up", var_s::LP_VALUE_DESC_NOISE, val_s::ROUND_UP, 0.2, 0., 12u},
+      {"uplocks_up", var_s::UPLOCKS, val_s::ROUND_UP, 0., 0., 0u},
+      {"lpdesc_up_t05", var_s::LP_VALUE_DESC, val_s::ROUND_UP_ABOVE_THRESHOLD, 0., 0.05, 0u},
+      {"redcost_up", var_s::REDUCED_COST, val_s::ROUND_UP, 0., 0., 0u}};
     for (auto& c : phase1) {
       run_candidate(c, h_lp);
     }
@@ -1060,32 +1050,17 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     return true;
   }
 
-  // with the LP: nearest / up-biased / down-biased; without: upper bounds / lower bounds
-  const int n_attempts = use_lp ? 3 : 2;
-  bool any_found       = false;
-  // LP-guided order: up-biased first (its polished fixed-LP optimum was the cheapest on CCBJI)
-  const int lp_attempt_order[3] = {1, 0, 2};
-  for (int attempt_idx = 0; attempt_idx < n_attempts; ++attempt_idx) {
-    const int attempt = use_lp ? lp_attempt_order[attempt_idx] : attempt_idx;
+  // LP-free attempts: every integer at its upper bound, then at its lower bound
+  const fp_value_strategy_t lp_free_values[] = {fp_value_strategy_t::UPPER_BOUND,
+                                                fp_value_strategy_t::LOWER_BOUND};
+  for (int attempt = 0; attempt < 2; ++attempt) {
     if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption()) {
       break;
     }
-    // value preference: 0 = LP nearest, 1 = up-biased (any positive LP value -> up),
-    // 2 = down-biased (only LP values at the upper end -> up)
     std::vector<f_t> pref(n_vars, 0.);
     for (auto v : h_int) {
-      f_t x  = h_lp[v];
-      f_t fl = std::floor(x + int_tol);
-      f_t fr = x - fl;
-      if (!use_lp) {
-        pref[v] = attempt == 0 ? h_vub[v] : h_vlb[v];
-      } else if (attempt == 0) {
-        pref[v] = std::round(x);
-      } else if (attempt == 1) {
-        pref[v] = fr > int_tol ? fl + 1 : fl;
-      } else {
-        pref[v] = fr >= 1. - int_tol ? fl + 1 : fl;
-      }
+      pref[v] = fp_preferred_value<f_t>(
+        lp_free_values[attempt], h_lp[v], h_vlb[v], h_vub[v], f_t(0), f_t(0), int_tol);
     }
     const double t_dive = timer.elapsed_time();
     i_t n_flipped = 0, n_implied = 0;
@@ -1124,7 +1099,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       (int)feas,
       sol.compute_max_constraint_violation(),
       timer.elapsed_time());
-    if (!feas) { feas = fpc_complete_continuous(sol, fpc_timer, attempt, !use_lp); }
+    if (!feas) { feas = fpc_complete_continuous(sol, fpc_timer, attempt, true); }
     if (feas) {
       CUOPT_LOG_INFO("FPC attempt %d found feasible solution obj=%g elapsed=%.2f",
                      attempt,
@@ -1134,19 +1109,11 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         population.add_external_solution(
           sol.get_host_assignment(), sol.get_objective(), solution_origin_t::FIX_PROPAGATE);
       } else {
-        solution_t<i_t, f_t> to_polish(sol);
-        population.add_solution(std::move(sol),
-                                use_lp ? "fix_propagate_complete" : "fix_propagate_complete_nolp");
-        if (use_lp) {
-          // the first LP-guided rounding (up-biased) gets a cost-aware polish
-          polish_continuous(to_polish, 300.);
-          return true;
-        }
+        population.add_solution(std::move(sol), "fix_propagate_complete_nolp");
       }
       return true;
     }
   }
-  if (any_found) { return true; }
   CUOPT_LOG_INFO("FPC end without feasible solution elapsed=%.2f", timer.elapsed_time());
   return false;
 }
