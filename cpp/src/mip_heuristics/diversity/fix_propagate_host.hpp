@@ -13,6 +13,22 @@
 // only (continuous variables keep their static bounds and only contribute activity ranges).
 // A conflict triggers a one-level backtrack (try the other value); if both values conflict the
 // preferred value is kept and the violated rows are marked dead (reported as conflicts).
+//
+// References
+//   [KK]  N.-C. Kempke, T. Koch. Fix-and-Propagate Heuristics Using Low-Precision First-Order LP
+//         Solutions for Large-Scale Mixed-Integer Linear Optimization. arXiv:2503.10344.
+//   [SRF] D. Salvagnin, R. Roberti, M. Fischetti. A fix-propagate-repair heuristic for mixed
+//         integer programming. Mathematical Programming Computation (2024),
+//         doi:10.1007/s12532-024-00269-5. ([KK] builds on its depth-first modes.)
+// Terminology follows [KK]: a variable strategy orders the integers, a value strategy picks the
+// value each integer is fixed to. Both are computed from a reference point: the root LP solution,
+// or zero clamped to the bounds when no LP is available yet.
+// Not implemented here: the LP-based fixing of [KK] (round up with probability equal to the
+// fractional part), its Dual and Type variable strategies, its integer-aware three-way branching,
+// and the clique/implication propagators and repair of [SRF].
+// Restricting propagation to rows with an integer and never tightening continuous bounds is a
+// speed choice of this implementation, not taken from [KK] or [SRF]: chains that pass through
+// continuous variables are only caught by the completion LP.
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +37,54 @@
 #include <vector>
 
 namespace cuopt::mathematical_optimization::mip {
+
+// Variable strategy: integers with a larger key are fixed first.
+enum class fp_variable_strategy_t {
+  FRACTIONALITY,        // closest to integral first; same measure as [KK] Frac
+  LP_VALUE_DESC,        // largest reference value first; not in [KK]
+  LP_VALUE_DESC_NOISE,  // reference value + param * U(0,1), largest first; not in [KK]
+  REDUCED_COST,         // most negative reduced cost first; [KK] RedCost orders by |reduced cost|
+  UPLOCKS,              // fewest up-locks first, ties by larger reference value; cf. [SRF] locks
+};
+
+// Value strategy: the value an integer is fixed to (the dive clamps it to the current domain).
+enum class fp_value_strategy_t {
+  UPPER_BOUND,               // LP-free
+  LOWER_BOUND,               // LP-free
+  ROUND_UP,                  // round any fractional reference value up
+  ROUND_UP_OR_NEG_REDCOST,   // round up if fractional or reduced cost < -param
+  ROUND_UP_ABOVE_THRESHOLD,  // round up if the fractional part is > param
+};
+
+template <typename i_t, typename f_t>
+f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks, f_t noise)
+{
+  switch (s) {
+    case fp_variable_strategy_t::FRACTIONALITY: return std::abs(x - std::floor(x) - f_t(0.5));
+    case fp_variable_strategy_t::LP_VALUE_DESC: return x;
+    case fp_variable_strategy_t::LP_VALUE_DESC_NOISE: return x + noise;
+    case fp_variable_strategy_t::REDUCED_COST: return -red;
+    case fp_variable_strategy_t::UPLOCKS: return -(f_t)uplocks + f_t(1e-3) * x;
+  }
+  return x;
+}
+
+template <typename f_t>
+f_t fp_preferred_value(
+  fp_value_strategy_t s, f_t x, f_t lb, f_t ub, f_t red, f_t param, f_t int_tol)
+{
+  const f_t fl = std::floor(x + int_tol);
+  const f_t fr = x - fl;
+  switch (s) {
+    case fp_value_strategy_t::UPPER_BOUND: return ub;
+    case fp_value_strategy_t::LOWER_BOUND: return lb;
+    case fp_value_strategy_t::ROUND_UP: return fr > int_tol ? fl + 1 : fl;
+    case fp_value_strategy_t::ROUND_UP_OR_NEG_REDCOST:
+      return (fr > int_tol || red < -param) ? std::min(fl + 1, ub) : fl;
+    case fp_value_strategy_t::ROUND_UP_ABOVE_THRESHOLD: return fr > param ? fl + 1 : fl;
+  }
+  return fl;
+}
 
 template <typename i_t, typename f_t>
 struct host_fix_propagate_t {
