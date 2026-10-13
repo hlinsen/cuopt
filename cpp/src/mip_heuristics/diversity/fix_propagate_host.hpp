@@ -52,7 +52,8 @@ enum class fp_variable_strategy_t {
   UPLOCKS = 4,  // fewest up-locks first, ties by larger reference value; cf. [SRF] locks
 };
 
-// Value strategy: the value an integer is fixed to (the dive clamps it to the current domain).
+// Value strategy: the value an integer is fixed to (fix_and_propagate clamps it to the current
+// domain).
 enum class fp_value_strategy_t {
   UPPER_BOUND              = 0,  // LP-free
   LOWER_BOUND              = 1,  // LP-free
@@ -421,12 +422,12 @@ struct host_fix_propagate_t {
     }
   }
 
-  // run the dive: order = integer vars in processing order, pref = preferred value per var
-  // (indexed by var id). Returns number of forced conflicts; out values in col_lb.
-  i_t dive(const std::vector<i_t>& order,
-           const std::vector<f_t>& pref,
-           i_t& n_flipped,
-           i_t& n_implied)
+  // fix-and-propagate pass: order = integer vars in processing order, pref = preferred value per
+  // var (indexed by var id). Returns number of forced conflicts; out values in col_lb.
+  i_t fix_and_propagate(const std::vector<i_t>& order,
+                        const std::vector<f_t>& pref,
+                        i_t& n_flipped,
+                        i_t& n_implied)
   {
     reset_domains();
     // initial propagation over all rows
