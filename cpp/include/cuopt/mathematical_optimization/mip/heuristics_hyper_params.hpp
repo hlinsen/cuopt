@@ -51,6 +51,10 @@ struct mip_heuristics_hyper_params_t {
   f_t fix_propagate_value_param       = 0.0;   // reduced-cost / fraction threshold of the value
   f_t fix_propagate_time_ratio        = 0.1;   // per-call share of the time limit
   f_t fix_propagate_max_time          = 60.0;  // per-call cap in seconds
+  // also tighten continuous bounds in the CPU propagation (conflict detection only; 0 off, 1 on)
+  i_t fix_propagate_continuous = 1;
+  // minimum relative domain shrink for a continuous tightening to be kept (HiGHS uses 0.3)
+  f_t fix_propagate_continuous_min_improvement = 0.3;
 };
 
 }  // namespace cuopt::mathematical_optimization

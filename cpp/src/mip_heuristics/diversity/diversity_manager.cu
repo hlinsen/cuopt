@@ -882,7 +882,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     }
   }
   host_fix_propagate_t<i_t, f_t> fp_host;
-  fp_host.abs_tol = problem_ptr->tolerances.absolute_tolerance;
+  fp_host.abs_tol              = problem_ptr->tolerances.absolute_tolerance;
+  fp_host.propagate_continuous = context.settings.heuristic_params.fix_propagate_continuous != 0;
+  fp_host.continuous_min_improvement =
+    context.settings.heuristic_params.fix_propagate_continuous_min_improvement;
   fp_host.build(n_vars, n_cstrs, h_offsets, h_cols, h_vals, h_clb, h_cub, h_vlb, h_vub, h_int);
   i_t n_frac = 0, n_at_one = 0;
   for (auto v : h_int) {
@@ -928,9 +931,9 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     std::vector<i_t> uplocks(n_vars, 0);
     for (auto v : h_int) {
       f_t aty = 0;
-      for (i_t kk = fp_host.int_offsets[v]; kk < fp_host.int_offsets[v + 1]; ++kk) {
-        const i_t r = fp_host.int_rows[kk];
-        const f_t a = fp_host.int_vals[kk];
+      for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
+        const i_t r = fp_host.var_rows[kk];
+        const f_t a = fp_host.var_vals[kk];
         aty += a * h_dual[fp_host.row_orig[r]];
         if ((a > 0 && std::isfinite(fp_host.row_ub[r])) ||
             (a < 0 && std::isfinite(fp_host.row_lb[r]))) {
@@ -994,7 +997,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       }
       CUOPT_LOG_INFO(
         "Fix-and-propagate pass %s: time=%.3fs conflicts=%d flipped=%d implied_off_pref=%d ones=%d "
-             "int_cost=%g dup=%d elapsed=%.2f",
+             "int_cost=%g dup=%d cont_tightenings=%ld elapsed=%.2f",
         c.name.c_str(),
         timer.elapsed_time() - t_fp,
         n_conflicts,
@@ -1003,6 +1006,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         n_ones,
         int_cost,
         (int)dup,
+        (long)fp_host.n_continuous_tightenings,
         timer.elapsed_time());
       if (dup || n_conflicts > 0) { return; }
       seen.push_back(pat);
