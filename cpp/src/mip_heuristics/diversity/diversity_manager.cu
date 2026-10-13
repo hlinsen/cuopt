@@ -918,7 +918,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
   }
 
   if (use_lp) {
-    // LP-guided fix-and-propagate: one dive with the configured variable / value strategies
+    // LP-guided fix-and-propagate: one pass with the configured variable / value strategies
     // (see fix_propagate_host.hpp), the pattern evaluated by a short cost-aware fixed LP (its
     // objective settles within a few thousand PDLP iterations even when the residual stalls),
     // then pushed, repaired and published if it improves. All steps are scaled to the budget.
@@ -976,10 +976,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         pref[v] = fp_preferred_value<f_t>(
           c.value_strategy, x[v], h_vlb[v], h_vub[v], red[v], c.value_param, int_tol);
       }
-      const double t_dive = timer.elapsed_time();
+      const double t_fp = timer.elapsed_time();
       i_t n_flipped = 0, n_implied = 0;
       fp_host.work    = 0;
-      i_t n_conflicts = fp_host.dive(ord, pref, n_flipped, n_implied);
+      i_t n_conflicts = fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
       std::vector<f_t> pat(h_int.size());
       f_t int_cost = 0;
       i_t n_ones   = 0;
@@ -993,10 +993,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
         if (s == pat) { dup = true; }
       }
       CUOPT_LOG_INFO(
-        "Pattern dive %s: time=%.3fs conflicts=%d flipped=%d implied_off_pref=%d ones=%d "
+        "Fix-and-propagate pass %s: time=%.3fs conflicts=%d flipped=%d implied_off_pref=%d ones=%d "
              "int_cost=%g dup=%d elapsed=%.2f",
         c.name.c_str(),
-        timer.elapsed_time() - t_dive,
+        timer.elapsed_time() - t_fp,
         n_conflicts,
         n_flipped,
         n_implied,
@@ -1081,10 +1081,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
       pref[v] = fp_preferred_value<f_t>(
         lp_free_values[attempt], h_lp[v], h_vlb[v], h_vub[v], f_t(0), f_t(0), int_tol);
     }
-    const double t_dive = timer.elapsed_time();
+    const double t_fp = timer.elapsed_time();
     i_t n_flipped = 0, n_implied = 0;
     fp_host.work    = 0;
-    i_t n_conflicts = fp_host.dive(order, pref, n_flipped, n_implied);
+    i_t n_conflicts = fp_host.fix_and_propagate(order, pref, n_flipped, n_implied);
     i_t n_dead      = 0;
     for (i_t r = 0; r < fp_host.n_rows(); ++r) {
       n_dead += fp_host.row_dead[r];
@@ -1104,10 +1104,11 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     }
     bool feas = sol.compute_feasibility();
     CUOPT_LOG_INFO(
-      "FPC attempt %d dive: time=%.3fs conflicts=%d dead_rows=%d flipped=%d implied_off_pref=%d "
+      "FPC attempt %d fix-and-propagate pass: time=%.3fs conflicts=%d dead_rows=%d flipped=%d "
+      "implied_off_pref=%d "
       "ones=%d differs_from_lp_nearest=%d work=%ld feasible=%d max_cstr_viol=%g elapsed=%.2f",
       attempt,
-      timer.elapsed_time() - t_dive,
+      timer.elapsed_time() - t_fp,
       n_conflicts,
       n_dead,
       n_flipped,
