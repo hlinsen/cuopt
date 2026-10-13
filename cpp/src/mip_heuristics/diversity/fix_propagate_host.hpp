@@ -113,9 +113,9 @@ struct host_fix_propagate_t {
   std::vector<trail_entry_t> trail;
   std::vector<i_t> queue;
   std::vector<char> in_queue;
-  f_t abs_tol = 1e-6;
-  f_t rel_tol = 1e-9;
-  int64_t work = 0;
+  f_t abs_tol            = 1e-6;
+  f_t rel_tol            = 1e-9;
+  int64_t work           = 0;
   i_t n_binary_only_rows = 0;
   i_t n_mixed_rows       = 0;
 
@@ -226,8 +226,8 @@ struct host_fix_propagate_t {
 
   void reset_domains()
   {
-    col_lb = orig_lb;
-    col_ub = orig_ub;
+    col_lb      = orig_lb;
+    col_ub      = orig_ub;
     const i_t m = n_rows();
     min_act.assign(m, 0);
     max_act.assign(m, 0);
@@ -322,7 +322,7 @@ struct host_fix_propagate_t {
   {
     size_t head = 0;
     while (head < queue.size()) {
-      i_t r = queue[head++];
+      i_t r       = queue[head++];
       in_queue[r] = 0;
       if (row_dead[r]) continue;
       work += row_offsets[r + 1] - row_offsets[r];
@@ -467,6 +467,5 @@ struct host_fix_propagate_t {
     return n_conflicts;
   }
 };
-
 
 }  // namespace cuopt::mathematical_optimization::mip
