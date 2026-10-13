@@ -30,9 +30,10 @@
 // Not implemented here: the LP-based fixing of [KK] (round up with probability equal to the
 // fractional part), its Dual and Type variable strategies, its integer-aware three-way branching,
 // and the clique/implication propagators and repair of [SRF].
-// Restricting propagation to rows with an integer and never tightening continuous bounds is a
-// speed choice of this implementation, not taken from [KK] or [SRF]: chains that pass through
-// continuous variables are only caught by the completion LP.
+// By default continuous bounds are tightened too (for conflict detection only, never handed to an
+// LP), with a minimum relative improvement as in HiGHS; with that switched off, propagation is
+// restricted to rows with an integer and chains through continuous variables are only caught by
+// the completion LP.
 
 #include <algorithm>
 #include <cmath>
@@ -94,24 +95,28 @@ f_t fp_preferred_value(
 
 template <typename i_t, typename f_t>
 struct host_fix_propagate_t {
-  // selected rows (rows with at least one integer var)
+  // selected rows: rows with at least one integer var, or all rows when continuous bounds are
+  // propagated too (chains through continuous-only rows)
   std::vector<i_t> row_offsets;  // size n_rows+1
   std::vector<i_t> row_cols;
   std::vector<f_t> row_vals;
   std::vector<f_t> row_lb, row_ub;
   std::vector<i_t> row_orig;
-  // per integer var: list of (row, coef) in selected rows
-  std::vector<i_t> int_offsets;  // indexed by var id in the original numbering (n+1)
-  std::vector<i_t> int_rows;
-  std::vector<f_t> int_vals;
+  // per var: list of (row, coef) in selected rows; integer vars only unless continuous bounds are
+  // propagated (indexed by var id in the original numbering, n+1)
+  std::vector<i_t> var_offsets;
+  std::vector<i_t> var_rows;
+  std::vector<f_t> var_vals;
   std::vector<char> is_int;
-  std::vector<f_t> col_lb, col_ub;  // current domains (integers change, continuous static)
+  // working domains: integer bounds are the fixings; continuous bounds are only tightened for
+  // conflict detection and never handed to an LP
+  std::vector<f_t> col_lb, col_ub;
   std::vector<f_t> orig_lb, orig_ub;
   // activities
   std::vector<f_t> min_act, max_act;
   std::vector<i_t> min_inf, max_inf;
   std::vector<char> row_dead;
-  // trail of fixed integer vars: (var, old_lb, old_ub)
+  // trail of bound changes: (var, old_lb, old_ub)
   struct trail_entry_t {
     i_t var;
     f_t lb, ub;
@@ -124,6 +129,13 @@ struct host_fix_propagate_t {
   int64_t work           = 0;
   i_t n_binary_only_rows = 0;
   i_t n_mixed_rows       = 0;
+  // continuous bound propagation (set before build): a tightened continuous bound is kept only if
+  // it is tighter by more than 1000 * abs_tol and shrinks the domain by at least
+  // continuous_min_improvement of its width (of the bound magnitude if one side is infinite);
+  // infinite bounds becoming finite are always kept. Same acceptance rule as HiGHS (0.3).
+  bool propagate_continuous        = false;
+  f_t continuous_min_improvement   = 0.3;
+  int64_t n_continuous_tightenings = 0;
 
   void build(i_t n_vars,
              i_t n_cstrs,
@@ -160,10 +172,10 @@ struct host_fix_propagate_t {
           has_cont = true;
         }
       }
-      if (!has_int) continue;
-      if (has_cont) {
+      if (!has_int && !propagate_continuous) continue;
+      if (has_int && has_cont) {
         n_mixed_rows++;
-      } else {
+      } else if (has_int) {
         n_binary_only_rows++;
       }
       for (i_t k = offsets[r]; k < offsets[r + 1]; ++k) {
@@ -176,25 +188,26 @@ struct host_fix_propagate_t {
       row_orig.push_back(r);
     }
     const i_t n_rows = (i_t)row_lb.size();
+    auto tracked     = [&](i_t c) { return propagate_continuous || is_int[c]; };
     std::vector<i_t> cnt(n_vars + 1, 0);
     for (i_t r = 0; r < n_rows; ++r) {
       for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
-        if (is_int[row_cols[k]]) cnt[row_cols[k] + 1]++;
+        if (tracked(row_cols[k])) cnt[row_cols[k] + 1]++;
       }
     }
     for (i_t v = 0; v < n_vars; ++v) {
       cnt[v + 1] += cnt[v];
     }
-    int_offsets = cnt;
-    int_rows.assign(int_offsets[n_vars], 0);
-    int_vals.assign(int_offsets[n_vars], 0);
-    std::vector<i_t> pos(int_offsets.begin(), int_offsets.end() - 1);
+    var_offsets = cnt;
+    var_rows.assign(var_offsets[n_vars], 0);
+    var_vals.assign(var_offsets[n_vars], 0);
+    std::vector<i_t> pos(var_offsets.begin(), var_offsets.end() - 1);
     for (i_t r = 0; r < n_rows; ++r) {
       for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
         i_t c = row_cols[k];
-        if (is_int[c]) {
-          int_rows[pos[c]] = r;
-          int_vals[pos[c]] = row_vals[k];
+        if (tracked(c)) {
+          var_rows[pos[c]] = r;
+          var_vals[pos[c]] = row_vals[k];
           pos[c]++;
         }
       }
@@ -230,6 +243,29 @@ struct host_fix_propagate_t {
     }
   }
 
+  // move the contribution of a coefficient a in row r from bounds [olb, oub] to [nlb, nub]
+  void update_activity(i_t r, f_t a, f_t olb, f_t oub, f_t nlb, f_t nub)
+  {
+    if (std::isfinite(olb) && std::isfinite(oub) && std::isfinite(nlb) && std::isfinite(nub)) {
+      if (a > 0) {
+        min_act[r] += a * (nlb - olb);
+        max_act[r] += a * (nub - oub);
+      } else {
+        min_act[r] += a * (nub - oub);
+        max_act[r] += a * (nlb - olb);
+      }
+      return;
+    }
+    f_t omn = 0, omx = 0, nmn = 0, nmx = 0;
+    i_t omni = 0, omxi = 0, nmni = 0, nmxi = 0;
+    contrib(a, olb, oub, omn, omx, omni, omxi);
+    contrib(a, nlb, nub, nmn, nmx, nmni, nmxi);
+    min_act[r] += nmn - omn;
+    max_act[r] += nmx - omx;
+    min_inf[r] += nmni - omni;
+    max_inf[r] += nmxi - omxi;
+  }
+
   void reset_domains()
   {
     col_lb      = orig_lb;
@@ -243,6 +279,7 @@ struct host_fix_propagate_t {
     in_queue.assign(m, 0);
     trail.clear();
     queue.clear();
+    n_continuous_tightenings = 0;
     for (i_t r = 0; r < m; ++r) {
       recompute_row(r);
     }
@@ -271,24 +308,16 @@ struct host_fix_propagate_t {
     return false;
   }
 
-  // change the domain of integer var v to [lb, ub] (subset of current); update activities
+  // change the domain of var v to [lb, ub] (subset of current); update activities and queue rows
   void set_domain(i_t v, f_t lb, f_t ub)
   {
     trail.push_back({v, col_lb[v], col_ub[v]});
     f_t olb = col_lb[v], oub = col_ub[v];
     col_lb[v] = lb;
     col_ub[v] = ub;
-    for (i_t k = int_offsets[v]; k < int_offsets[v + 1]; ++k) {
-      i_t r = int_rows[k];
-      f_t a = int_vals[k];
-      // integer domains are always finite
-      if (a > 0) {
-        min_act[r] += a * (lb - olb);
-        max_act[r] += a * (ub - oub);
-      } else {
-        min_act[r] += a * (ub - oub);
-        max_act[r] += a * (lb - olb);
-      }
+    for (i_t k = var_offsets[v]; k < var_offsets[v + 1]; ++k) {
+      i_t r = var_rows[k];
+      update_activity(r, var_vals[k], olb, oub, lb, ub);
       if (!in_queue[r]) {
         in_queue[r] = 1;
         queue.push_back(r);
@@ -305,16 +334,8 @@ struct host_fix_propagate_t {
       f_t lb = col_lb[v], ub = col_ub[v];
       col_lb[v] = e.lb;
       col_ub[v] = e.ub;
-      for (i_t k = int_offsets[v]; k < int_offsets[v + 1]; ++k) {
-        i_t r = int_rows[k];
-        f_t a = int_vals[k];
-        if (a > 0) {
-          min_act[r] += a * (e.lb - lb);
-          max_act[r] += a * (e.ub - ub);
-        } else {
-          min_act[r] += a * (e.ub - ub);
-          max_act[r] += a * (e.lb - lb);
-        }
+      for (i_t k = var_offsets[v]; k < var_offsets[v + 1]; ++k) {
+        update_activity(var_rows[k], var_vals[k], lb, ub, e.lb, e.ub);
       }
     }
     for (auto r : queue) {
@@ -323,10 +344,34 @@ struct host_fix_propagate_t {
     queue.clear();
   }
 
+  // HiGHS-style acceptance of a tightened continuous bound (new upper bound nub over [lb, ub])
+  bool accept_continuous_ub(f_t lb, f_t ub, f_t nub) const
+  {
+    if (!std::isfinite(nub) || std::abs(nub) > 1e15) return false;
+    if (!std::isfinite(ub)) return true;
+    if (!(nub + 1000. * abs_tol < ub)) return false;
+    const f_t denom = std::isfinite(lb) ? ub - lb : std::max(std::abs(ub), std::abs(nub));
+    return denom > 0 && (ub - nub) >= continuous_min_improvement * denom;
+  }
+  bool accept_continuous_lb(f_t lb, f_t ub, f_t nlb) const
+  {
+    if (!std::isfinite(nlb) || std::abs(nlb) > 1e15) return false;
+    if (!std::isfinite(lb)) return true;
+    if (!(nlb - 1000. * abs_tol > lb)) return false;
+    const f_t denom = std::isfinite(ub) ? ub - lb : std::max(std::abs(lb), std::abs(nlb));
+    return denom > 0 && (nlb - lb) >= continuous_min_improvement * denom;
+  }
+
   // propagate queued rows; returns false on conflict (a live row became infeasible)
   bool propagate()
   {
-    size_t head = 0;
+    size_t head        = 0;
+    auto clear_pending = [&]() {
+      for (size_t h = head; h < queue.size(); ++h) {
+        in_queue[queue[h]] = 0;
+      }
+      queue.clear();
+    };
     while (head < queue.size()) {
       i_t r       = queue[head++];
       in_queue[r] = 0;
@@ -334,52 +379,81 @@ struct host_fix_propagate_t {
       work += row_offsets[r + 1] - row_offsets[r];
       if (row_infeasible(r)) { recompute_row(r); }
       if (row_infeasible(r)) {
-        for (size_t h = head; h < queue.size(); ++h) {
-          in_queue[queue[h]] = 0;
-        }
-        queue.clear();
+        clear_pending();
         return false;
       }
-      // implications on unfixed integer vars of the row
+      // implications on the unfixed vars of the row (continuous ones only if enabled)
       const bool ub_finite = std::isfinite(row_ub[r]) && min_inf[r] == 0;
       const bool lb_finite = std::isfinite(row_lb[r]) && max_inf[r] == 0;
       if (!ub_finite && !lb_finite) continue;
       const f_t slack_ub = ub_finite ? row_ub[r] + tol(row_ub[r]) - min_act[r] : 0;
       const f_t slack_lb = lb_finite ? max_act[r] - (row_lb[r] - tol(row_lb[r])) : 0;
       for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
-        i_t c = row_cols[k];
-        if (!is_int[c]) continue;
+        i_t c  = row_cols[k];
         f_t lb = col_lb[c], ub = col_ub[c];
         if (lb == ub) continue;
-        f_t a     = row_vals[k];
-        f_t range = std::abs(a) * (ub - lb);
+        const f_t a = row_vals[k];
+        if (is_int[c]) {
+          f_t range = std::abs(a) * (ub - lb);
+          f_t nlb = lb, nub = ub;
+          // moving c from its min-activity value by its range must not exceed the slack
+          if (ub_finite && range > slack_ub) {
+            // cannot take the "max-contribution" end
+            f_t steps = std::floor(slack_ub / std::abs(a) + 1e-9);
+            if (a > 0) {
+              nub = std::min(nub, lb + steps);
+            } else {
+              nlb = std::max(nlb, ub - steps);
+            }
+          }
+          if (lb_finite && range > slack_lb) {
+            f_t steps = std::floor(slack_lb / std::abs(a) + 1e-9);
+            if (a > 0) {
+              nlb = std::max(nlb, ub - steps);
+            } else {
+              nub = std::min(nub, lb + steps);
+            }
+          }
+          if (nlb > nub) {
+            clear_pending();
+            return false;
+          }
+          if (nlb != lb || nub != ub) { set_domain(c, nlb, nub); }
+          continue;
+        }
+        if (!propagate_continuous) continue;
+        // continuous var: real-valued implied bounds (its own min/max contribution is finite
+        // because the row has no infinite contributions on that side)
         f_t nlb = lb, nub = ub;
-        // moving c from its min-activity value by its range must not exceed the slack
-        if (ub_finite && range > slack_ub) {
-          // cannot take the "max-contribution" end
-          f_t steps = std::floor(slack_ub / std::abs(a) + 1e-9);
+        if (ub_finite) {
           if (a > 0) {
-            nub = std::min(nub, lb + steps);
+            const f_t cand = lb + slack_ub / a;
+            if (accept_continuous_ub(lb, ub, cand)) nub = cand;
           } else {
-            nlb = std::max(nlb, ub - steps);
+            const f_t cand = ub - slack_ub / -a;
+            if (accept_continuous_lb(lb, ub, cand)) nlb = cand;
           }
         }
-        if (lb_finite && range > slack_lb) {
-          f_t steps = std::floor(slack_lb / std::abs(a) + 1e-9);
+        if (lb_finite) {
           if (a > 0) {
-            nlb = std::max(nlb, ub - steps);
+            const f_t cand = ub - slack_lb / a;
+            if (accept_continuous_lb(nlb, nub, cand)) nlb = cand;
           } else {
-            nub = std::min(nub, lb + steps);
+            const f_t cand = lb + slack_lb / -a;
+            if (accept_continuous_ub(nlb, nub, cand)) nub = cand;
           }
         }
         if (nlb > nub) {
-          for (size_t h = head; h < queue.size(); ++h) {
-            in_queue[queue[h]] = 0;
+          if (nlb - nub > tol(std::max(std::abs(nlb), std::abs(nub)))) {
+            clear_pending();
+            return false;
           }
-          queue.clear();
-          return false;
+          nlb = nub = 0.5 * (nlb + nub);
         }
-        if (nlb != lb || nub != ub) { set_domain(c, nlb, nub); }
+        if (nlb != lb || nub != ub) {
+          n_continuous_tightenings++;
+          set_domain(c, nlb, nub);
+        }
       }
     }
     queue.clear();
@@ -407,8 +481,8 @@ struct host_fix_propagate_t {
     }
     while (!propagate()) {
       // a conflict surfaced later in the propagation; mark all currently infeasible rows dead
-      for (i_t k = int_offsets[v]; k < int_offsets[v + 1]; ++k) {
-        i_t r = int_rows[k];
+      for (i_t k = var_offsets[v]; k < var_offsets[v + 1]; ++k) {
+        i_t r = var_rows[k];
         if (row_infeasible(r)) row_dead[r] = 1;
       }
       bool any = false;

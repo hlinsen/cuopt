@@ -1401,6 +1401,23 @@ mip_settings:
         default: "60.0"
         field_num: 62
         optional: true
+    - fix_propagate_continuous:
+        param_name: mip_hyper_heuristic_fix_propagate_continuous
+        description: >-
+          Also tighten continuous bounds in the CPU fix-and-propagate, for
+          conflict detection only (0 off, 1 on).
+        default: "1"
+        field_num: 63
+        type: int32
+        optional: true
+    - fix_propagate_continuous_min_improvement:
+        param_name: mip_hyper_heuristic_fix_propagate_continuous_min_improvement
+        description: >-
+          Minimum relative domain shrink for a continuous bound tightening in the
+          CPU fix-and-propagate to be kept.
+        default: "0.3"
+        field_num: 64
+        optional: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Optimization Problem (cpu_optimization_problem_t)
