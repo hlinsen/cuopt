@@ -882,8 +882,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
     }
   }
   host_fix_propagate_t<i_t, f_t> fp_host;
-  fp_host.abs_tol              = problem_ptr->tolerances.absolute_tolerance;
-  fp_host.propagate_continuous = context.settings.heuristic_params.fix_propagate_continuous != 0;
+  fp_host.abs_tol = problem_ptr->tolerances.absolute_tolerance;
   fp_host.continuous_min_improvement =
     context.settings.heuristic_params.fix_propagate_continuous_min_improvement;
   fp_host.build(n_vars, n_cstrs, h_offsets, h_cols, h_vals, h_clb, h_cub, h_vlb, h_vub, h_int);
