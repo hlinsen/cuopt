@@ -158,7 +158,7 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VALUE_PARAM, &mip_settings.heuristic_params.fix_propagate_value_param, f_t(0.0), f_t(1.0), f_t(0.0), "reduced-cost or fraction threshold of the fix-and-propagate value strategy"},
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_TIME_RATIO, &mip_settings.heuristic_params.fix_propagate_time_ratio, f_t(0.0), f_t(1.0), f_t(0.1), "per-call share of the time limit for the LP-guided fix-and-propagate"},
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_MAX_TIME, &mip_settings.heuristic_params.fix_propagate_max_time, f_t(0.0), std::numeric_limits<f_t>::infinity(), f_t(60.0), "per-call cap in seconds for the LP-guided fix-and-propagate"},
-    {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_CONTINUOUS_MIN_IMPROVEMENT, &mip_settings.heuristic_params.fix_propagate_continuous_min_improvement, f_t(0.0), f_t(1.0), f_t(0.3), "minimum relative domain shrink for a continuous bound tightening in the CPU fix-and-propagate"},
+    {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_CONTINUOUS_MIN_IMPROVEMENT, &mip_settings.heuristic_params.fix_propagate_continuous_min_improvement, f_t(0.0), std::numeric_limits<f_t>::infinity(), f_t(0.3), "minimum relative domain shrink for a continuous bound tightening in the CPU fix-and-propagate (0 keeps every tightening, above 1 disables them)"},
     {CUOPT_MIP_SEMICONTINUOUS_BIG_M, &mip_settings.semi_continuous_big_m, f_t(1.0), std::numeric_limits<f_t>::infinity(), f_t(1e10), "big-M value for semi-continuous variables with no finite upper bound"},
     // Diving heuristic hyper-parameters (hidden from default --help: name contains "hyper_")
     {CUOPT_MIP_HYPER_DIVING_ITERATION_LIMIT_FACTOR, &mip_settings.diving_params.iteration_limit_factor, f_t(0.0), f_t(1.0), f_t(0.05), "fraction of best-first iterations allowed per dive"},
@@ -236,7 +236,6 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE, &mip_settings.heuristic_params.fix_propagate, 0, 1, 1, "LP-guided fix-and-propagate in local search (0 off, 1 on)"},
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VARIABLE_STRATEGY, &mip_settings.heuristic_params.fix_propagate_variable_strategy, 0, 4, 1, "fixing order: 0 fractionality, 1 LP value, 2 LP value with noise, 3 reduced cost, 4 up-locks"},
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VALUE_STRATEGY, &mip_settings.heuristic_params.fix_propagate_value_strategy, 2, 4, 2, "fixing value: 2 round up, 3 round up or negative reduced cost, 4 round up above a fraction threshold"},
-    {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_CONTINUOUS, &mip_settings.heuristic_params.fix_propagate_continuous, 0, 1, 1, "also tighten continuous bounds in the CPU fix-and-propagate (0 off, 1 on)"},
     // Diving heuristic hyper-parameters (hidden from default --help: name contains "hyper_")
     {CUOPT_MIP_HYPER_DIVING_LINE_SEARCH, &mip_settings.diving_params.line_search_diving, -1, 1, -1, "line-search diving toggle: -1 automatic, 0 disabled, 1 enabled"},
     {CUOPT_MIP_HYPER_DIVING_PSEUDOCOST, &mip_settings.diving_params.pseudocost_diving, -1, 1, -1, "pseudocost diving toggle: -1 automatic, 0 disabled, 1 enabled"},

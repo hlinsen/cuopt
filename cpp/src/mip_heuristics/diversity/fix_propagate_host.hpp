@@ -30,7 +30,7 @@
 // fractional part), its Dual and Type variable strategies, its integer-aware three-way branching,
 // and the clique/implication propagators and repair of [SRF].
 // Continuous bounds are tightened inside the domain only (conflict detection, never handed to an
-// LP), with a minimum relative improvement as in HiGHS.
+// LP), subject to a minimum relative improvement.
 
 #include <algorithm>
 #include <cmath>
@@ -119,10 +119,8 @@ struct host_fix_propagate_t {
   int64_t work           = 0;
   i_t n_binary_only_rows = 0;
   i_t n_mixed_rows       = 0;
-  // continuous bound propagation in the domain: off keeps continuous bounds untouched apart from
-  // infinite bounds becoming finite; on keeps tightenings that shrink a domain by at least
-  // continuous_min_improvement of its width (HiGHS rule, 0.3)
-  bool propagate_continuous        = true;
+  // a continuous tightening is kept if it shrinks the domain by at least continuous_min_improvement
+  // of its width (0 keeps every tightening, above 1 none; infinite bounds becoming finite are kept)
   f_t continuous_min_improvement   = 0.3;
   int64_t n_continuous_tightenings = 0;
 
@@ -229,8 +227,7 @@ struct host_fix_propagate_t {
     lp_lower0 = lp->lower;
     lp_upper0 = lp->upper;
     simplex::domain_params params;
-    params.min_relative_improvement =
-      propagate_continuous ? continuous_min_improvement : std::numeric_limits<f_t>::infinity();
+    params.min_relative_improvement = continuous_min_improvement;
     domain.set_params(params);
     domain.implied_bounds = nullptr;
     domain.clique_table   = clique_table;
