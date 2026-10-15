@@ -325,8 +325,43 @@ f_t branch_and_bound_t<i_t, f_t>::get_lower_bound()
   } else if (std::isfinite(root_objective_)) {
     return root_objective_;
   } else {
-    return -inf;
+    // While the root LP is solving: the best valid bound a root solver reported so far
+    const f_t root_lower_bound = root_lp_current_lower_bound_.load();
+    return std::isfinite(root_lower_bound) ? root_lower_bound : -inf;
   }
+}
+
+template <typename i_t, typename f_t>
+void branch_and_bound_t<i_t, f_t>::set_root_lower_bound(f_t lower_bound, const char* source)
+{
+  if (!std::isfinite(lower_bound)) { return; }
+  std::lock_guard<std::mutex> lock(root_lower_bound_mutex_);
+  const f_t upper = upper_bound_.load();
+  if (std::isfinite(upper) && lower_bound > upper + 1e-6 * std::max<f_t>(f_t(1), std::abs(upper))) {
+    settings_.log.printf(
+      "Root LP lower bound from %s rejected: %+.8e is above the incumbent %+.8e\n",
+      source,
+      compute_user_objective(original_lp_, lower_bound),
+      compute_user_objective(original_lp_, upper));
+    return;
+  }
+  if (lower_bound <= root_lp_current_lower_bound_.load()) { return; }
+  root_lp_current_lower_bound_.store(lower_bound);
+  // Log the first bound, then improvements of at least 1e-4 relative or every 10 s
+  const f_t now = toc(exploration_stats_.start_time);
+  if (!std::isfinite(root_lower_bound_logged_) ||
+      lower_bound - root_lower_bound_logged_ >=
+        1e-4 * std::max<f_t>(f_t(1), std::abs(root_lower_bound_logged_)) ||
+      now - root_lower_bound_log_time_ >= 10) {
+    settings_.log.printf("Root LP lower bound %+.8e from %s. Time %.2f\n",
+                         compute_user_objective(original_lp_, lower_bound),
+                         source,
+                         now);
+    root_lower_bound_logged_   = lower_bound;
+    root_lower_bound_log_time_ = now;
+  }
+  // Once the tree search runs, report() owns the user bound
+  if (!is_running_) { update_user_bound(original_lp_, lower_bound); }
 }
 
 template <typename i_t, typename f_t>
@@ -4110,8 +4145,8 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   lp_settings.scale_columns                   = false;
   lp_settings.inside_root_node                = true;
   lp_settings.concurrent_halt                 = get_root_concurrent_halt();
-  lp_settings.dual_simplex_objective_callback = [this](f_t user_obj) {
-    root_lp_current_lower_bound_.store(user_obj);
+  lp_settings.dual_simplex_objective_callback = [this](f_t solver_obj) {
+    set_root_lower_bound(solver_obj, "dual simplex");
   };
   std::vector<i_t> basic_list(original_lp_.num_rows);
   std::vector<i_t> nonbasic_list;

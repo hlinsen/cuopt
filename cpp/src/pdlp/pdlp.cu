@@ -2662,6 +2662,25 @@ void pdlp_solver_t<i_t, f_t>::project_initial_primal_transform()
   }
 }
 template <typename i_t, typename f_t>
+void pdlp_solver_t<i_t, f_t>::report_dual_bound()
+{
+  last_dual_bound_iteration_ = total_pdlp_iterations_;
+  auto& dual                 = settings_.hyper_params.use_adaptive_step_size_strategy
+                                 ? pdhg_solver_.get_dual_solution()
+                                 : pdhg_solver_.get_potential_next_dual_solution();
+  if (static_cast<i_t>(dual.size()) != problem_ptr->n_constraints) { return; }
+  if (!dual_bound_) {
+    dual_bound_ = std::make_unique<lagrangian_dual_bound_t<i_t, f_t>>(
+      problem_ptr->n_constraints, problem_ptr->n_variables, handle_ptr_->get_stream());
+  }
+  const f_t bound = dual_bound_->compute(*problem_ptr, dual.data(), handle_ptr_->get_stream());
+  if (!std::isfinite(bound) || bound <= best_dual_bound_) { return; }
+  best_dual_bound_ = bound;
+  settings_.dual_bound_callback(problem_ptr->presolve_data.objective_scaling_factor *
+                                (bound + problem_ptr->presolve_data.objective_offset));
+}
+
+template <typename i_t, typename f_t>
 optimization_problem_solution_t<i_t, f_t> pdlp_solver_t<i_t, f_t>::run_solver(const timer_t& timer)
 {
   bool verbose;
@@ -3063,6 +3082,14 @@ optimization_problem_solution_t<i_t, f_t> pdlp_solver_t<i_t, f_t>::run_solver(co
       std::optional<optimization_problem_solution_t<i_t, f_t>> solution = check_termination(timer);
 
       if (solution.has_value()) { return std::move(solution.value()); }
+
+      // The iterates are unscaled here, so the dual iterate can be turned into a valid bound.
+      if (settings_.dual_bound_callback && climber_strategies_.size() == 1 &&
+          !is_distributed_master() &&
+          (last_dual_bound_iteration_ < 0 ||
+           total_pdlp_iterations_ - last_dual_bound_iteration_ >= settings_.dual_bound_frequency)) {
+        report_dual_bound();
+      }
 
       if (settings_.hyper_params.rescale_for_restart) {
         if (!settings_.hyper_params.never_restart_to_average) {

@@ -1410,6 +1410,23 @@ mip_settings:
         default: "0.3"
         field_num: 63
         optional: true
+    - root_pdlp_dual_bound:
+        param_name: mip_hyper_heuristic_root_pdlp_dual_bound
+        description: >-
+          Report a valid lower bound from the dual iterate of PDLP while the root
+          LP is being solved (0 off, 1 on).
+        default: "1"
+        field_num: 64
+        type: int32
+        optional: true
+    - root_pdlp_dual_bound_frequency:
+        param_name: mip_hyper_heuristic_root_pdlp_dual_bound_frequency
+        description: >-
+          PDLP iterations between two evaluations of the root dual bound.
+        default: "1000"
+        field_num: 65
+        type: int32
+        optional: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Optimization Problem (cpu_optimization_problem_t)

@@ -234,6 +234,8 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_MIP_HYPER_HEURISTIC_CYCLE_DETECTION_LENGTH, &mip_settings.heuristic_params.cycle_detection_length, 1, std::numeric_limits<i_t>::max(), 30, "FP assignment cycle ring buffer length"},
     {CUOPT_MIP_HYPER_HEURISTIC_LP_FREE_FIX_PROPAGATE, &mip_settings.heuristic_params.lp_free_fix_propagate, 0, 1, 1, "LP-free fix-and-propagate before the root LP (0 off, 1 on)"},
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE, &mip_settings.heuristic_params.fix_propagate, 0, 1, 1, "LP-guided fix-and-propagate in local search (0 off, 1 on)"},
+    {CUOPT_MIP_HYPER_HEURISTIC_ROOT_PDLP_DUAL_BOUND, &mip_settings.heuristic_params.root_pdlp_dual_bound, 0, 1, 1, "valid lower bound from the root PDLP dual iterate (0 off, 1 on)"},
+    {CUOPT_MIP_HYPER_HEURISTIC_ROOT_PDLP_DUAL_BOUND_FREQUENCY, &mip_settings.heuristic_params.root_pdlp_dual_bound_frequency, 1, std::numeric_limits<i_t>::max(), 1000, "PDLP iterations between two root dual bound evaluations"},
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VARIABLE_STRATEGY, &mip_settings.heuristic_params.fix_propagate_variable_strategy, 0, 4, 1, "fixing order: 0 fractionality, 1 LP value, 2 LP value with noise, 3 reduced cost, 4 up-locks"},
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VALUE_STRATEGY, &mip_settings.heuristic_params.fix_propagate_value_strategy, 2, 4, 2, "fixing value: 2 round up, 3 round up or negative reduced cost, 4 round up above a fraction threshold"},
     // Diving heuristic hyper-parameters (hidden from default --help: name contains "hyper_")

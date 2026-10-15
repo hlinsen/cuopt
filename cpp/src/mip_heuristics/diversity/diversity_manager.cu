@@ -1576,6 +1576,16 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     pdlp_settings.method                = context.settings.method;
     pdlp_settings.inside_mip            = false;
     pdlp_settings.num_gpus              = context.settings.num_gpus;
+    if (context.settings.heuristic_params.root_pdlp_dual_bound != 0 &&
+        problem_ptr->set_root_lower_bound_callback != nullptr) {
+      // PDLP may solve a presolved copy of the root LP: it reports in user space, which both share.
+      pdlp_settings.dual_bound_frequency =
+        context.settings.heuristic_params.root_pdlp_dual_bound_frequency;
+      pdlp_settings.dual_bound_callback = [this](f_t user_bound) {
+        problem_ptr->set_root_lower_bound_callback(
+          problem_ptr->get_solver_obj_from_user_obj(user_bound));
+      };
+    }
     timer_t lp_timer(lp_time_limit);
     auto root_lp_snapshot    = make_root_lp_snapshot(*problem_ptr);
     pdlp_settings.time_limit = lp_timer.remaining_time();

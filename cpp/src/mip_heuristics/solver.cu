@@ -399,6 +399,10 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                 std::placeholders::_5,
                 std::placeholders::_6,
                 std::placeholders::_7);
+    context.problem_ptr->set_root_lower_bound_callback =
+      [bb = branch_and_bound.get()](f_t lower_bound) {
+        bb->set_root_lower_bound(lower_bound, "PDLP");
+      };
 
     if (timer_.check_time_limit()) {
       CUOPT_LOG_INFO("Time limit reached during B&B setup");
