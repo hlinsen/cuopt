@@ -14,6 +14,7 @@
 
 #include <pdlp/cusparse_view.hpp>
 #include <pdlp/distributed_pdlp/multi_gpu_engine.hpp>
+#include <pdlp/dual_bound.cuh>
 #include <pdlp/initial_scaling_strategy/initial_scaling.cuh>
 #include <pdlp/pdhg.hpp>
 #include <pdlp/pdlp_climber_strategy.hpp>
@@ -183,6 +184,11 @@ class pdlp_solver_t {
   mip::shared_strong_branching_context_view_t<i_t, f_t> sb_view_{settings_.shared_sb_solved};
 
   mip::problem_t<i_t, f_t>* problem_ptr;
+  // Valid lower bound from the current dual iterate, reported through settings_.dual_bound_callback
+  void report_dual_bound();
+  std::unique_ptr<lagrangian_dual_bound_t<i_t, f_t>> dual_bound_;
+  i_t last_dual_bound_iteration_{-1};
+  f_t best_dual_bound_{-std::numeric_limits<f_t>::infinity()};
   // Combined bounds in op_problem_scaled_ will only be scaled if
   // compute_initial_primal_weight_before_scaling is false because of compute_initial_primal_weight
   mip::problem_t<i_t, f_t> op_problem_scaled_;

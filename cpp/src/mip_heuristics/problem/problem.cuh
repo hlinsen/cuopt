@@ -280,6 +280,8 @@ class problem_t {
                      i_t,
                      method_t)>
     set_root_relaxation_solution_callback;
+  // Valid lower bound on the root LP (solver space) found while it is being solved
+  std::function<void(f_t)> set_root_lower_bound_callback;
 
   typename mip_solver_settings_t<i_t, f_t>::tolerances_t tolerances{};
   i_t n_variables{0};

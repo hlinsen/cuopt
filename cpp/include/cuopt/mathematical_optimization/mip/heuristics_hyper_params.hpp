@@ -54,6 +54,10 @@ struct mip_heuristics_hyper_params_t {
   // minimum relative domain shrink for a continuous bound tightening in the CPU propagation to be
   // kept: 0 keeps every tightening, values above 1 disable continuous tightening
   f_t fix_propagate_continuous_min_improvement = 0.3;
+
+  // Valid lower bound from PDLP's dual iterate while the root LP is solving (pdlp/dual_bound.cuh)
+  i_t root_pdlp_dual_bound           = 1;     // 0 off, 1 on
+  i_t root_pdlp_dual_bound_frequency = 1000;  // PDLP iterations between two bound evaluations
 };
 
 }  // namespace cuopt::mathematical_optimization
