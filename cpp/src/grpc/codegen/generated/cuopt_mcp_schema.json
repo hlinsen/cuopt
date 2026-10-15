@@ -364,7 +364,7 @@
         },
         "root_lp_max_time": {
           "type": "number",
-          "description": "Hard cap in seconds on the root LP solve. Default: 15.0.",
+          "description": "Hard cap in seconds on the root LP solve. Default: 60.0.",
           "x-parameter-name": "mip_hyper_heuristic_root_lp_max_time"
         },
         "rins_time_limit": {
