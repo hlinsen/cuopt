@@ -2161,7 +2161,7 @@ TEST(MapperRoundtrip, MIPSettingsAllFields)
   orig.heuristic_params.num_cpufj_threads                  = 4;      // default 8
   orig.heuristic_params.presolve_max_rounds                = 12;     // default -1
   orig.heuristic_params.papilo_probing_max_badgesize       = 64;     // default -1
-  orig.heuristic_params.root_lp_time_ratio                 = 0.25;   // default 0.1
+  orig.heuristic_params.root_lp_time_ratio                 = 0.25;   // default 0.2
   orig.heuristic_params.root_lp_max_time                   = 7.5;    // default 60.0
   orig.heuristic_params.rins_time_limit                    = 4.0;    // default 3.0
   orig.heuristic_params.rins_max_time_limit                = 25.0;   // default 20.0

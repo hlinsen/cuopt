@@ -28,7 +28,7 @@ struct mip_heuristics_hyper_params_t {
   i_t presolve_max_rounds          = -1;  // Papilo presolve rounds cap
   i_t papilo_probing_max_badgesize = -1;  // ceiling on Papilo's probing.minbadgesize
 
-  f_t root_lp_time_ratio                 = 0.1;     // fraction of total time for root LP
+  f_t root_lp_time_ratio                 = 0.2;     // fraction of total time for root LP
   f_t root_lp_max_time                   = 60.0;    // hard cap on root LP seconds
   f_t rins_time_limit                    = 3.0;     // per-call RINS sub-MIP time
   f_t rins_max_time_limit                = 20.0;    // ceiling for RINS adaptive time budget
