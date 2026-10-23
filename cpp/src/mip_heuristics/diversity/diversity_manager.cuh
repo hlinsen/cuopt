@@ -39,6 +39,44 @@ class diversity_manager_t {
   void generate_solution(f_t time_limit, bool random_start = true);
   void run_fj_alone(solution_t<i_t, f_t>& solution);
   void run_fp_alone();
+  // LP-guided fix-and-propagate on the root LP point with the configured strategies and budget:
+  // fix the integers with bounds propagation and backtracking, then evaluate the pattern with a
+  // cost-aware fixed-integer LP, repair it and publish it when it improves the incumbent
+  // (called from local search)
+  void run_lp_guided_fix_propagate();
+  bool run_fix_propagate_complete(f_t max_budget);
+  // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
+  // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
+  // full objective of the LP point, optional objective-free repair + strict-checked publish
+  struct pattern_eval_t {
+    bool usable{false};
+    bool optimal{false};
+    f_t lp_obj{std::numeric_limits<f_t>::infinity()};
+    f_t l2_primal_res{0};
+    f_t repaired_obj{std::numeric_limits<f_t>::infinity()};
+    bool published{false};
+    int iters{0};
+    double time{0};
+    std::vector<f_t> primal, dual;  // phase-A (PID) fixed-LP primal/dual
+    std::vector<f_t> repaired_assignment;
+    f_t pushed_lp_obj{std::numeric_limits<f_t>::infinity()};
+    f_t pushed_l2_primal_res{-1};
+    double push_time{0};
+  };
+  pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
+                                    f_t tol,
+                                    f_t tlimit,
+                                    const std::vector<f_t>* warm_primal,
+                                    const std::vector<f_t>* warm_dual,
+                                    bool repair,
+                                    f_t repair_tlimit,
+                                    const char* origin,
+                                    f_t repair_below  = std::numeric_limits<f_t>::infinity(),
+                                    f_t max_push_time = 11.);
+  // strict host-side feasibility check of a full assignment against the model rows and bounds
+  // (compensated activities, validator-style relative term, half the absolute tolerance) so
+  // that published LP-derived points keep a margin over the external validator
+  bool strict_point_ok(const std::vector<f_t>& x, f_t& max_excess);
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring

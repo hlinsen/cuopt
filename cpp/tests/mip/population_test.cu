@@ -398,14 +398,14 @@ End
     set_callback.assignment[fixed] = 1.;
     set_callback.objective =
       objective - model.get_objective_scaling_factor() * objective_coefficients[fixed];
-    dm.population.run_solution_callbacks(seed);
+    dm.population.run_solution_callbacks(seed, "test");
     EXPECT_EQ(dm.population.get_external_solution_size(), 0);
     EXPECT_EQ(get_callback.n_calls, 0);
     set_callback.assignment = assignment;
     set_callback.objective  = objective;
   }
   const int previous_set_calls = set_callback.n_calls;
-  dm.population.run_solution_callbacks(seed);
+  dm.population.run_solution_callbacks(seed, "test");
   EXPECT_EQ(set_callback.n_calls, previous_set_calls + 1);
   auto injected = dm.population.get_external_solutions();
   ASSERT_EQ(injected.size(), 1);
@@ -436,7 +436,7 @@ End
       case 1: values[x0] = 0.5; break;
       case 2: cost = inf; break;
     }
-    dm.population.run_solution_callbacks(seed);
+    dm.population.run_solution_callbacks(seed, "test");
     EXPECT_EQ(dm.population.get_external_solution_size(), 0);
     EXPECT_EQ(get_callback.n_calls, 1);
   }

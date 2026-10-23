@@ -732,6 +732,10 @@ bool local_search_t<i_t, f_t>::check_fj_on_lp_optimal(solution_t<i_t, f_t>& solu
                                                       timer_t timer)
 {
   raft::common::nvtx::range fun_scope("check_fj_on_lp_optimal");
+  if (!perturb && lp_optimal_exists && lp_point_fix_propagate && !lp_point_fix_propagate_done) {
+    lp_point_fix_propagate_done = true;
+    lp_point_fix_propagate();
+  }
   if (lp_optimal_exists) {
     raft::copy(solution.assignment.data(),
                lp_optimal_solution.data(),
@@ -930,7 +934,7 @@ void local_search_t<i_t, f_t>::reset_alpha_and_save_solution(
   solution_t<i_t, f_t> solution_copy(solution);
   solution_copy.problem_ptr = old_problem_ptr;
   solution_copy.resize_to_problem();
-  population_ptr->add_solution(std::move(solution_copy));
+  population_ptr->add_solution(std::move(solution_copy), "feasibility_pump");
   population_ptr->add_external_solutions_to_population();
   if (!cutting_plane_added_for_active_run) {
     solution.problem_ptr = &problem_with_objective_cut;
