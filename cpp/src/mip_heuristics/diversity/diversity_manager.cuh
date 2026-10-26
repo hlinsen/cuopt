@@ -72,10 +72,6 @@ class diversity_manager_t {
                                     const char* origin,
                                     f_t repair_below  = std::numeric_limits<f_t>::infinity(),
                                     f_t max_push_time = 11.);
-  // strict host-side feasibility check of a full assignment against the model rows and bounds
-  // (compensated activities, validator-style relative term, half the absolute tolerance) so
-  // that published LP-derived points keep a margin over the external validator
-  bool strict_point_ok(const std::vector<f_t>& x, f_t& max_excess);
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring
