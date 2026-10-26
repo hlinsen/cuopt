@@ -194,7 +194,7 @@ void diversity_manager_t<i_t, f_t>::generate_solution(f_t time_limit, bool rando
   sol.compute_feasibility();
   // if a feasible is found, it is added to the population
   ls.generate_solution(sol, random_start, &population, time_limit);
-  population.add_solution(std::move(sol), "generate_solution");
+  population.add_solution(std::move(sol));
 }
 
 template <typename i_t, typename f_t>
@@ -206,7 +206,6 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                                   const std::vector<f_t>* warm_dual,
                                                   bool repair,
                                                   f_t repair_tlimit,
-                                                  const char* origin,
                                                   f_t repair_below,
                                                   f_t max_push_time)
 {
@@ -364,7 +363,11 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                   : std::numeric_limits<f_t>::infinity();
       if (res.repaired_obj < best_pub) {
         res.published = true;
-        population.add_solution(solution_t<i_t, f_t>(sol), origin);
+        CUOPT_LOG_INFO(
+          "New solution from primal heuristics (CPU fix-and-propagate). Objective %+.6e. Time %.3f",
+          res.repaired_obj,
+          timer.elapsed_time());
+        population.add_solution(solution_t<i_t, f_t>(sol));
       }
     }
   }
@@ -382,7 +385,7 @@ void diversity_manager_t<i_t, f_t>::run_lp_guided_fix_propagate()
   const f_t budget = std::min<f_t>(hp.fix_propagate_max_time,
                                    hp.fix_propagate_time_ratio * context.settings.time_limit);
   if (budget <= 1.) { return; }
-  CUOPT_LOG_INFO(
+  CUOPT_LOG_DEBUG(
     "LP-guided fix-and-propagate start: budget=%.1fs elapsed=%.2f", budget, timer.elapsed_time());
   run_fix_propagate_complete(budget);
 }
@@ -427,7 +430,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     if ((x - std::floor(x) > int_tol) && (std::ceil(x) - x > int_tol)) n_frac++;
     if (x >= 1. - int_tol) n_at_one++;
   }
-  CUOPT_LOG_INFO(
+  CUOPT_LOG_DEBUG(
     "FPC start: budget=%.1fs n_int=%zu lp_fractional=%d lp_ge_one=%d int_rows=%d "
     "(int_only=%d mixed=%d) int_row_nnz=%zu build=%.2fs elapsed=%.2f",
     budget,
@@ -514,7 +517,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     for (auto& s : seen) {
       if (s == pat) { dup = true; }
     }
-    CUOPT_LOG_INFO(
+    CUOPT_LOG_DEBUG(
       "Fix-and-propagate pass %s: time=%.3fs conflicts=%d flipped=%d implied_off_pref=%d ones=%d "
            "int_cost=%g dup=%d cont_tightenings=%ld elapsed=%.2f",
       c.name.c_str(),
@@ -533,19 +536,11 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     for (size_t q = 0; q < h_int.size(); ++q) {
       assign[h_int[q]] = pat[q];
     }
-    auto ev = eval_fixed_pattern(assign,
-                                 rank_tol,
-                                 rank_tlimit,
-                                 nullptr,
-                                 nullptr,
-                                 true,
-                                 repair_tlimit,
-                                 "fix_propagate",
-                                 best_lp,
-                                 push_tlimit);
+    auto ev = eval_fixed_pattern(
+      assign, rank_tol, rank_tlimit, nullptr, nullptr, true, repair_tlimit, best_lp, push_tlimit);
     n_eval++;
     const bool better = ev.usable && ev.lp_obj < best_lp;
-    CUOPT_LOG_INFO(
+    CUOPT_LOG_DEBUG(
       "Pattern rank %s: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g time=%.2fs "
            "better=%d pushed_lp_obj=%g pushed_res=%g push_time=%.2fs repaired=%g published=%d "
            "elapsed=%.2f",
@@ -577,16 +572,16 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
                           12u};
   run_candidate(configured, h_lp);
   if (best_repaired.empty()) {
-    CUOPT_LOG_INFO("LP-guided fix-and-propagate: no repaired pattern (evaluated %d) elapsed=%.2f",
-                   n_eval,
-                   timer.elapsed_time());
+    CUOPT_LOG_DEBUG("LP-guided fix-and-propagate: no repaired pattern (evaluated %d) elapsed=%.2f",
+                    n_eval,
+                    timer.elapsed_time());
     return false;
   }
-  CUOPT_LOG_INFO("LP-guided fix-and-propagate best: %s lp_obj=%g evaluated=%d elapsed=%.2f",
-                 best_name.c_str(),
-                 best_lp,
-                 n_eval,
-                 timer.elapsed_time());
+  CUOPT_LOG_DEBUG("LP-guided fix-and-propagate best: %s lp_obj=%g evaluated=%d elapsed=%.2f",
+                  best_name.c_str(),
+                  best_lp,
+                  n_eval,
+                  timer.elapsed_time());
   // the pattern was already pushed, repaired and published by its evaluation
   return true;
 }
@@ -680,7 +675,7 @@ void diversity_manager_t<i_t, f_t>::add_user_given_solutions(
                       is_feasible,
                       sol.get_user_objective(),
                       sol.get_total_excess());
-      population.run_solution_callbacks(sol, "user_initial_solution");
+      population.run_solution_callbacks(sol);
       initial_sol_vector.emplace_back(std::move(sol));
     } else {
       CUOPT_LOG_ERROR(
@@ -810,13 +805,13 @@ void diversity_manager_t<i_t, f_t>::generate_quick_feasible_solution()
   // do very short LP run to get somewhere close to the optimal point
   ls.generate_fast_solution(solution, sol_timer);
   if (solution.get_feasible()) {
-    population.run_solution_callbacks(solution, "quick_feasible");
+    population.run_solution_callbacks(solution);
     initial_sol_vector.emplace_back(std::move(solution));
     problem_ptr->handle_ptr->sync_stream();
     solution_t<i_t, f_t> searched_sol(initial_sol_vector.back());
     ls_config_t<i_t, f_t> ls_config;
     run_local_search(searched_sol, population.weights, sol_timer, ls_config);
-    population.run_solution_callbacks(searched_sol, "quick_feasible_local_search");
+    population.run_solution_callbacks(searched_sol);
     initial_sol_vector.emplace_back(std::move(searched_sol));
     auto& feas_sol = initial_sol_vector.back().get_feasible()
                        ? initial_sol_vector.back()
@@ -898,7 +893,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver(
     population.initialize_population();
     population.allocate_solutions();
     add_user_given_solutions(initial_sol_vector);
-    population.add_solutions_from_vec(std::move(initial_sol_vector), "initial_solutions");
+    population.add_solutions_from_vec(std::move(initial_sol_vector));
     if (check_b_b_preemption()) { return population.best_feasible(); }
 
     while (!check_b_b_preemption()) {
@@ -931,7 +926,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver(
   population.initialize_population();
   population.allocate_solutions();
   add_user_given_solutions(initial_sol_vector);
-  population.add_solutions_from_vec(std::move(initial_sol_vector), "initial_solutions");
+  population.add_solutions_from_vec(std::move(initial_sol_vector));
   if (check_b_b_preemption()) { return population.best_feasible(); }
   // Run CPUFJ early to find quick initial solutions
   ls_cpufj_raii_guard_t ls_cpufj_raii_guard(ls);  // RAII to stop cpufj threads on solve stop
@@ -1086,7 +1081,7 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver(
     lp_rounded_sol.copy_new_assignment(lp_optimal_solution);
     lp_rounded_sol.round_nearest(rng());
     lp_rounded_sol.compute_feasibility();
-    population.add_solution(std::move(lp_rounded_sol), "lp_round_nearest");
+    population.add_solution(std::move(lp_rounded_sol));
     ls.start_cpufj_lptopt_scratch_threads(population);
   }
 
@@ -1139,11 +1134,9 @@ void diversity_manager_t<i_t, f_t>::diversity_step(i_t max_iterations_without_im
       constexpr bool tournament = true;
       auto [sol1, sol2]         = population.get_two_random(tournament);
       cuopt_assert(population.test_invariant(), "");
-      auto [lp_offspring, offspring] = recombine_and_local_search(sol1, sol2);
-      auto [inserted_pos_1, best_updated_1] =
-        population.add_solution(std::move(lp_offspring), "diversity_step_lp_offspring");
-      auto [inserted_pos_2, best_updated_2] =
-        population.add_solution(std::move(offspring), "diversity_step_offspring");
+      auto [lp_offspring, offspring]        = recombine_and_local_search(sol1, sol2);
+      auto [inserted_pos_1, best_updated_1] = population.add_solution(std::move(lp_offspring));
+      auto [inserted_pos_2, best_updated_2] = population.add_solution(std::move(offspring));
       if (best_updated_1 || best_updated_2) { recombine_stats.add_best_updated(); }
       cuopt_assert(population.test_invariant(), "");
       if ((inserted_pos_1 != -1 && inserted_pos_1 <= 2) ||
@@ -1185,10 +1178,10 @@ void diversity_manager_t<i_t, f_t>::recombine_and_ls_with_all(solution_t<i_t, f_
         auto [offspring, lp_offspring] =
           recombine_and_local_search(curr_sol, solution, recombiner_type);
         if (!add_only_feasible || lp_offspring.get_feasible()) {
-          population.add_solution(std::move(lp_offspring), "recombine_all_lp_offspring");
+          population.add_solution(std::move(lp_offspring));
         }
         if (!add_only_feasible || offspring.get_feasible()) {
-          population.add_solution(std::move(offspring), "recombine_all_offspring");
+          population.add_solution(std::move(offspring));
         }
         if (timer.check_time_limit()) { return; }
       }
@@ -1206,7 +1199,7 @@ void diversity_manager_t<i_t, f_t>::recombine_and_ls_with_all(
     // add all solutions because time limit might have been consumed and we might have exited before
     for (auto& sol : solutions) {
       cuopt_func_call(sol.test_feasibility(true));
-      population.add_solution(std::move(solution_t<i_t, f_t>(sol)), "bnb_solution_import");
+      population.add_solution(std::move(solution_t<i_t, f_t>(sol)));
     }
     for (auto& sol : solutions) {
       if (timer.check_time_limit()) { return; }
