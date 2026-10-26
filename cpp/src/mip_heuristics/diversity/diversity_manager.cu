@@ -466,9 +466,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     std::string name;  // log name
     fp_variable_strategy_t var_strategy;
     fp_value_strategy_t value_strategy;
-    f_t order_param;  // noise amplitude of LP_VALUE_DESC_NOISE
     f_t value_param;  // reduced-cost or fraction threshold of the value strategy
-    unsigned seed;
+    unsigned seed;    // LP-randomized value strategy
   };
   std::vector<std::vector<f_t>> seen;
   f_t best_lp = std::numeric_limits<f_t>::infinity();
@@ -488,16 +487,16 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     std::vector<f_t> key(n_vars, 0);
     std::mt19937 g(c.seed);
     std::uniform_real_distribution<double> U(0., 1.);
-    const bool noisy = c.var_strategy == fp_variable_strategy_t::LP_VALUE_DESC_NOISE;
     for (auto v : h_int) {
-      const f_t noise = noisy ? c.order_param * U(g) : f_t(0);
-      key[v]          = fp_order_key<i_t, f_t>(c.var_strategy, x[v], red[v], uplocks[v], noise);
+      key[v] = fp_order_key<i_t, f_t>(c.var_strategy, x[v], red[v], uplocks[v]);
     }
     std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
     std::vector<f_t> pref(n_vars, 0.);
+    const bool randomized = c.value_strategy == fp_value_strategy_t::LP_RANDOMIZED;
     for (auto v : h_int) {
-      pref[v] = fp_preferred_value<f_t>(
-        c.value_strategy, x[v], h_vlb[v], h_vub[v], red[v], c.value_param, int_tol);
+      const f_t u = randomized ? f_t(U(g)) : f_t(0);
+      pref[v]     = fp_preferred_value<f_t>(
+        c.value_strategy, x[v], h_vlb[v], h_vub[v], red[v], c.value_param, int_tol, u);
     }
     const double t_fp = timer.elapsed_time();
     i_t n_flipped = 0, n_implied = 0;
@@ -574,7 +573,6 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
   const cand_t configured{"lp_guided",
                           static_cast<fp_variable_strategy_t>(hp.fix_propagate_variable_strategy),
                           static_cast<fp_value_strategy_t>(hp.fix_propagate_value_strategy),
-                          hp.fix_propagate_order_noise,
                           hp.fix_propagate_value_param,
                           12u};
   run_candidate(configured, h_lp);
