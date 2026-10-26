@@ -26,7 +26,7 @@ namespace cuopt::mathematical_optimization::mip {
 template <typename i_t, typename f_t>
 class diversity_manager_t;
 
-enum class solution_origin_t { BRANCH_AND_BOUND, CPUFJ, EXTERNAL, FIX_PROPAGATE, POLISH };
+enum class solution_origin_t { BRANCH_AND_BOUND, CPUFJ, EXTERNAL };
 
 constexpr const char* solution_origin_to_string(solution_origin_t origin)
 {
@@ -34,8 +34,6 @@ constexpr const char* solution_origin_to_string(solution_origin_t origin)
     case solution_origin_t::BRANCH_AND_BOUND: return "B&B";
     case solution_origin_t::CPUFJ: return "CPUFJ";
     case solution_origin_t::EXTERNAL: return "injected";
-    case solution_origin_t::FIX_PROPAGATE: return "fix_propagate_complete_early";
-    case solution_origin_t::POLISH: return "polish_early";
     default: return "unknown";
   }
 }
@@ -112,7 +110,7 @@ class population_t {
   /*! \brief { Add a solution to population. Similar solutions may be ejected from the pool. }
    *  \return { -1 = not inserted , others = inserted index}
    */
-  std::pair<i_t, bool> add_solution(solution_t<i_t, f_t>&& sol, const char* origin = "unspecified");
+  std::pair<i_t, bool> add_solution(solution_t<i_t, f_t>&& sol);
   void add_external_solution(const std::vector<f_t>& solution,
                              f_t objective,
                              solution_origin_t origin,
@@ -123,8 +121,7 @@ class population_t {
   size_t get_external_solution_size();
   void preempt_heuristic_solver();
 
-  void add_solutions_from_vec(std::vector<solution_t<i_t, f_t>>&& solutions,
-                              const char* origin = "solution_vector");
+  void add_solutions_from_vec(std::vector<solution_t<i_t, f_t>>&& solutions);
 
   // Updates the cstr weights according to the best solutions feasibility
   void compute_new_weights();
@@ -165,7 +162,7 @@ class population_t {
   std::vector<solution_t<i_t, f_t>> population_to_vector();
   void halve_the_population();
 
-  void run_solution_callbacks(solution_t<i_t, f_t>& sol, const char* origin);
+  void run_solution_callbacks(solution_t<i_t, f_t>& sol);
 
   void adjust_weights_according_to_best_feasible();
 

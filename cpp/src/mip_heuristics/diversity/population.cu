@@ -128,12 +128,11 @@ std::pair<solution_t<i_t, f_t>, solution_t<i_t, f_t>> population_t<i_t, f_t>::ge
 }
 
 template <typename i_t, typename f_t>
-void population_t<i_t, f_t>::add_solutions_from_vec(std::vector<solution_t<i_t, f_t>>&& solutions,
-                                                    const char* origin)
+void population_t<i_t, f_t>::add_solutions_from_vec(std::vector<solution_t<i_t, f_t>>&& solutions)
 {
   raft::common::nvtx::range fun_scope("add_solution_from_vec");
   for (auto&& sol : solutions) {
-    add_solution(std::move(sol), origin);
+    add_solution(std::move(sol));
   }
 }
 
@@ -174,10 +173,8 @@ void population_t<i_t, f_t>::add_external_solution(const std::vector<f_t>& solut
                   external_solution_queue.size(),
                   problem_ptr->get_user_obj_from_solver_obj(objective));
   if (objective < best_feasible_objective) {
-    CUOPT_LOG_INFO("Heuristic incumbent candidate: origin=%s objective=%g elapsed=%.3f",
-                   solution_origin_to_string(origin),
-                   problem_ptr->get_user_obj_from_solver_obj(objective),
-                   timer.elapsed_time());
+    CUOPT_LOG_DEBUG("Found new best solution %g in external queue",
+                    problem_ptr->get_user_obj_from_solver_obj(objective));
   }
   if (external_solution_queue.size() >= 5) { early_exit_primal_generation = true; }
   solutions_in_external_queue_ = true;
@@ -220,7 +217,7 @@ void population_t<i_t, f_t>::notify_feasible_solution(solution_t<i_t, f_t>& sol)
 template <typename i_t, typename f_t>
 void population_t<i_t, f_t>::add_external_solutions_to_population()
 {
-  add_solutions_from_vec(get_external_solutions(), "external_queue");
+  add_solutions_from_vec(get_external_solutions());
 }
 
 // normally we would need a lock here but these are boolean types and race conditions are not
@@ -302,7 +299,7 @@ bool population_t<i_t, f_t>::is_better_than_best_feasible(solution_t<i_t, f_t>& 
 }
 
 template <typename i_t, typename f_t>
-void population_t<i_t, f_t>::run_solution_callbacks(solution_t<i_t, f_t>& sol, const char* origin)
+void population_t<i_t, f_t>::run_solution_callbacks(solution_t<i_t, f_t>& sol)
 {
   bool better_solution_found = is_better_than_best_feasible(sol);
   auto user_callbacks        = context.settings.get_mip_callbacks();
@@ -310,10 +307,7 @@ void population_t<i_t, f_t>::run_solution_callbacks(solution_t<i_t, f_t>& sol, c
     if (context.settings.benchmark_info_ptr != nullptr) {
       context.settings.benchmark_info_ptr->last_improvement_of_best_feasible = timer.elapsed_time();
     }
-    CUOPT_LOG_INFO("Heuristic incumbent candidate: origin=%s objective=%g elapsed=%.3f",
-                   origin,
-                   sol.get_user_objective(),
-                   timer.elapsed_time());
+    CUOPT_LOG_DEBUG("Population: Found new best solution %g", sol.get_user_objective());
     if (problem_ptr->branch_and_bound_callback != nullptr ||
         context.solution_publication.enabled()) {
       auto host_assignment = sol.get_host_assignment();
@@ -458,8 +452,7 @@ void population_t<i_t, f_t>::adjust_weights_according_to_best_feasible()
 }
 
 template <typename i_t, typename f_t>
-std::pair<i_t, bool> population_t<i_t, f_t>::add_solution(solution_t<i_t, f_t>&& sol,
-                                                          const char* origin)
+std::pair<i_t, bool> population_t<i_t, f_t>::add_solution(solution_t<i_t, f_t>&& sol)
 {
   std::lock_guard<std::recursive_mutex> lock(write_mutex);
   raft::common::nvtx::range fun_scope("add_solution");
@@ -478,7 +471,7 @@ std::pair<i_t, bool> population_t<i_t, f_t>::add_solution(solution_t<i_t, f_t>&&
   // We store the best feasible found so far at index 0.
   if (sol.get_feasible() &&
       (solutions[0].first == false || sol_cost + OBJECTIVE_EPSILON < indices[0].second)) {
-    run_solution_callbacks(sol, origin);
+    run_solution_callbacks(sol);
     solutions[0].first = true;
     // we only have move assignment operator
     solution_t<i_t, f_t> temp_sol(sol);
@@ -765,7 +758,7 @@ void population_t<i_t, f_t>::halve_the_population()
     clear_except_best_feasible();
     var_threshold = std::max(var_threshold * 0.97, 0.5 * problem_ptr->n_integer_vars);
     for (auto& sol : sol_vec) {
-      add_solution(solution_t<i_t, f_t>(sol), "population_readd");
+      add_solution(solution_t<i_t, f_t>(sol));
     }
     if (counter++ > max_adjustments) break;
   }
@@ -777,7 +770,7 @@ void population_t<i_t, f_t>::halve_the_population()
       max_var_threshold,
       std::min((size_t)(var_threshold * 1.02), (size_t)(0.995 * problem_ptr->n_integer_vars)));
     for (auto& sol : sol_vec) {
-      add_solution(solution_t<i_t, f_t>(sol), "population_readd");
+      add_solution(solution_t<i_t, f_t>(sol));
     }
     if (counter++ > max_adjustments) break;
   }

@@ -46,7 +46,7 @@ class diversity_manager_t {
   bool run_fix_propagate_complete(f_t max_budget);
   // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
   // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
-  // full objective of the LP point, optional objective-free repair + strict-checked publish
+  // full objective of the LP point, optional objective-free repair and publish
   struct pattern_eval_t {
     bool usable{false};
     bool optimal{false};
@@ -69,7 +69,6 @@ class diversity_manager_t {
                                     const std::vector<f_t>* warm_dual,
                                     bool repair,
                                     f_t repair_tlimit,
-                                    const char* origin,
                                     f_t repair_below  = std::numeric_limits<f_t>::infinity(),
                                     f_t max_push_time = 11.);
   // main loop of diversity improvements
