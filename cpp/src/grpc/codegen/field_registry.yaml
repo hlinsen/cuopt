@@ -1345,8 +1345,7 @@ mip_settings:
     - fix_propagate_variable_strategy:
         param_name: mip_hyper_heuristic_fix_propagate_variable_strategy
         description: >-
-          Fixing order: 0 fractionality, 1 LP value, 2 LP value with noise,
-          3 reduced cost, 4 up-locks.
+          Fixing order: 0 fractionality, 1 LP value, 2 reduced cost, 3 up-locks.
         default: "1"
         field_num: 56
         type: int32
@@ -1355,37 +1354,32 @@ mip_settings:
         param_name: mip_hyper_heuristic_fix_propagate_value_strategy
         description: >-
           Fixing value: 2 round up, 3 round up or negative reduced cost,
-          4 round up above a fraction threshold.
+          4 round up above a fraction threshold, 5 round up with probability
+          equal to the fractional part.
         default: "2"
         field_num: 57
         type: int32
-        optional: true
-    - fix_propagate_order_noise:
-        param_name: mip_hyper_heuristic_fix_propagate_order_noise
-        description: Noise amplitude of the LP-value-with-noise fixing order.
-        default: "0.2"
-        field_num: 58
         optional: true
     - fix_propagate_value_param:
         param_name: mip_hyper_heuristic_fix_propagate_value_param
         description: >-
           Reduced-cost or fraction threshold used by the fixing value strategy.
         default: "0.0"
-        field_num: 59
+        field_num: 58
         optional: true
     - fix_propagate_time_ratio:
         param_name: mip_hyper_heuristic_fix_propagate_time_ratio
         description: >-
           Per-call share of the time limit for the LP-guided fix-and-propagate.
         default: "0.1"
-        field_num: 60
+        field_num: 59
         optional: true
     - fix_propagate_max_time:
         param_name: mip_hyper_heuristic_fix_propagate_max_time
         description: >-
           Per-call cap in seconds for the LP-guided fix-and-propagate.
         default: "60.0"
-        field_num: 61
+        field_num: 60
         optional: true
     - fix_propagate_continuous_min_improvement:
         param_name: mip_hyper_heuristic_fix_propagate_continuous_min_improvement
@@ -1394,7 +1388,7 @@ mip_settings:
           CPU fix-and-propagate to be kept; 0 keeps every tightening, values
           above 1 disable continuous tightening.
         default: "0.3"
-        field_num: 62
+        field_num: 61
         optional: true
 
 # ─────────────────────────────────────────────────────────────────────────────

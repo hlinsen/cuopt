@@ -134,8 +134,6 @@
   "mip_hyper_heuristic_fix_propagate_variable_strategy"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VALUE_STRATEGY \
   "mip_hyper_heuristic_fix_propagate_value_strategy"
-#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_ORDER_NOISE \
-  "mip_hyper_heuristic_fix_propagate_order_noise"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VALUE_PARAM \
   "mip_hyper_heuristic_fix_propagate_value_param"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_TIME_RATIO \

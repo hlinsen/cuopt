@@ -26,9 +26,8 @@
 // Terminology follows [KK]: a variable strategy orders the integers, a value strategy picks the
 // value each integer is fixed to. Both are computed from a reference point: the root LP solution,
 // or zero clamped to the bounds when no LP is available yet.
-// Not implemented here: the LP-based fixing of [KK] (round up with probability equal to the
-// fractional part), its Dual and Type variable strategies, its integer-aware three-way branching,
-// and the clique/implication propagators and repair of [SRF].
+// Not implemented here: the Dual and Type variable strategies of [KK], its integer-aware three-way
+// branching, and the clique/implication propagators and repair of [SRF].
 // Continuous bounds are tightened inside the domain only (conflict detection, never handed to an
 // LP), subject to a minimum relative improvement.
 
@@ -50,11 +49,10 @@ namespace cuopt::mathematical_optimization::mip {
 // Variable strategy: integers with a larger key are fixed first.
 // The integer values are the settings values (mip_hyper_heuristic_fix_propagate_*_strategy).
 enum class fp_variable_strategy_t {
-  FRACTIONALITY       = 0,  // closest to integral first; same measure as [KK] Frac
-  LP_VALUE_DESC       = 1,  // largest reference value first; not in [KK]
-  LP_VALUE_DESC_NOISE = 2,  // reference value + noise * U(0,1), largest first; not in [KK]
-  REDUCED_COST        = 3,  // most negative reduced cost first; [KK] RedCost orders by |red. cost|
-  UPLOCKS = 4,  // fewest up-locks first, ties by larger reference value; cf. [SRF] locks
+  FRACTIONALITY = 0,  // closest to integral first; same measure as [KK] Frac
+  LP_VALUE_DESC = 1,  // largest reference value first; not in [KK]
+  REDUCED_COST  = 2,  // most negative reduced cost first; [KK] RedCost orders by |red. cost|
+  UPLOCKS       = 3,  // fewest up-locks first, ties by larger reference value; cf. [SRF] locks
 };
 
 // Value strategy: the value an integer is fixed to (fix_and_propagate clamps it to the current
@@ -65,15 +63,16 @@ enum class fp_value_strategy_t {
   ROUND_UP                 = 2,  // round any fractional reference value up
   ROUND_UP_OR_NEG_REDCOST  = 3,  // round up if fractional or reduced cost < -param
   ROUND_UP_ABOVE_THRESHOLD = 4,  // round up if the fractional part is > param
+  LP_RANDOMIZED            = 5,  // round up with probability equal to the fractional part:
+                                 // the LP-based fixing of [KK]
 };
 
 template <typename i_t, typename f_t>
-f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks, f_t noise)
+f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks)
 {
   switch (s) {
     case fp_variable_strategy_t::FRACTIONALITY: return std::abs(x - std::floor(x) - f_t(0.5));
     case fp_variable_strategy_t::LP_VALUE_DESC: return x;
-    case fp_variable_strategy_t::LP_VALUE_DESC_NOISE: return x + noise;
     case fp_variable_strategy_t::REDUCED_COST: return -red;
     case fp_variable_strategy_t::UPLOCKS: return -(f_t)uplocks + f_t(1e-3) * x;
   }
@@ -82,7 +81,7 @@ f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks, f_t nois
 
 template <typename f_t>
 f_t fp_preferred_value(
-  fp_value_strategy_t s, f_t x, f_t lb, f_t ub, f_t red, f_t param, f_t int_tol)
+  fp_value_strategy_t s, f_t x, f_t lb, f_t ub, f_t red, f_t param, f_t int_tol, f_t u = 0)
 {
   const f_t fl = std::floor(x + int_tol);
   const f_t fr = x - fl;
@@ -93,6 +92,7 @@ f_t fp_preferred_value(
     case fp_value_strategy_t::ROUND_UP_OR_NEG_REDCOST:
       return (fr > int_tol || red < -param) ? std::min(fl + 1, ub) : fl;
     case fp_value_strategy_t::ROUND_UP_ABOVE_THRESHOLD: return fr > param ? fl + 1 : fl;
+    case fp_value_strategy_t::LP_RANDOMIZED: return u < fr ? fl + 1 : fl;  // u ~ U(0,1)
   }
   return fl;
 }
