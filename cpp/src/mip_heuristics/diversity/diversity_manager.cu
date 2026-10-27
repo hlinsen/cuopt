@@ -266,6 +266,16 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   // full objective (fixed integers included) of the (slightly infeasible) LP point
   res.lp_obj = sol.get_user_objective();
   res.usable = std::isfinite(res.lp_obj);
+  // the repair rarely improves the objective of the LP point, so a point that does not beat the
+  // incumbent cannot be published: skip the push and the repair (solver-space objectives)
+  if (res.usable && population.is_feasible()) {
+    const f_t incumbent = population.best_feasible().get_objective();
+    if (sol.get_objective() > incumbent + f_t(1e-4) * std::max<f_t>(1., std::abs(incumbent))) {
+      res.cannot_beat_incumbent = true;
+      res.time                  = timer.elapsed_time() - t0;
+      return res;
+    }
+  }
   if (repair && res.usable && res.lp_obj < repair_below) {
     // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
@@ -358,10 +368,9 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     if (feas) {
       res.repaired_obj        = sol.get_user_objective();
       res.repaired_assignment = sol.get_host_assignment();
-      const f_t best_pub      = population.is_feasible()
-                                  ? population.best_feasible().get_user_objective()
-                                  : std::numeric_limits<f_t>::infinity();
-      if (res.repaired_obj < best_pub) {
+      const f_t best_pub = population.is_feasible() ? population.best_feasible().get_objective()
+                                                    : std::numeric_limits<f_t>::infinity();
+      if (sol.get_objective() < best_pub) {
         res.published = true;
         CUOPT_LOG_INFO(
           "New solution from primal heuristics (CPU fix-and-propagate). Objective %+.6e. Time %.3f",
@@ -424,6 +433,13 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     problem_ptr->get_host_user_problem(user_problem);
     fp_host.build_domain(user_problem, problem_ptr->clique_table.get());
   }
+  // a pass may process max(3e8, 20 x the model's nonzeros) nonzeros before it gives up: measured
+  // passes stayed below 1.2e8 (up to 350 x nnz on small models) while a pathological one with
+  // very dense integer rows processed 2.5e9 in 54 s (Arow is built by build_domain)
+  constexpr int64_t pass_work_floor   = 300000000;
+  constexpr int64_t pass_work_per_nnz = 20;
+  const int64_t model_nnz = std::max<int64_t>(1, (int64_t)fp_host.Arow.row_start.back());
+  fp_host.work_limit      = std::max(pass_work_floor, pass_work_per_nnz * model_nnz);
   i_t n_frac = 0, n_at_one = 0;
   for (auto v : h_int) {
     f_t x = h_lp[v];
@@ -477,10 +493,11 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
   int n_eval  = 0;
   std::string best_name;
   std::vector<f_t> best_repaired;
-  constexpr f_t rank_tol  = 1e-4;
-  const f_t rank_tlimit   = std::min<f_t>(8., 0.25 * budget);
-  const f_t push_tlimit   = std::min<f_t>(11., 0.3 * budget);
-  const f_t repair_tlimit = std::min<f_t>(20., 0.4 * budget);
+  constexpr f_t rank_tol = 1e-4;
+  const f_t rank_tlimit  = std::min<f_t>(8., 0.25 * budget);
+  const f_t push_tlimit  = std::min<f_t>(11., 0.3 * budget);
+  // a repair that succeeds takes about a second; one that fails would use the whole cap
+  const f_t repair_tlimit = std::min<f_t>(5., 0.4 * budget);
   auto run_candidate      = [&](const cand_t& c, const std::vector<f_t>& x) {
     if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption() ||
         timer.remaining_time() < 2. * budget) {
@@ -519,7 +536,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     }
     CUOPT_LOG_DEBUG(
       "Fix-and-propagate pass %s: time=%.3fs conflicts=%d flipped=%d implied_off_pref=%d ones=%d "
-           "int_cost=%g dup=%d cont_tightenings=%ld elapsed=%.2f",
+           "int_cost=%g dup=%d cont_tightenings=%ld work=%ld (%.1fx nnz) work_limit_hit=%d "
+           "elapsed=%.2f",
       c.name.c_str(),
       timer.elapsed_time() - t_fp,
       n_conflicts,
@@ -529,6 +547,9 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
       int_cost,
       (int)dup,
       (long)fp_host.n_continuous_tightenings,
+      (long)fp_host.work,
+      (double)fp_host.work / (double)model_nnz,
+      (int)fp_host.work_limit_hit,
       timer.elapsed_time());
     if (dup || n_conflicts > 0) { return; }
     seen.push_back(pat);
@@ -543,7 +564,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     CUOPT_LOG_DEBUG(
       "Pattern rank %s: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g time=%.2fs "
            "better=%d pushed_lp_obj=%g pushed_res=%g push_time=%.2fs repaired=%g published=%d "
-           "elapsed=%.2f",
+           "cannot_beat=%d elapsed=%.2f",
       c.name.c_str(),
       n_ones,
       ev.lp_obj,
@@ -557,6 +578,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
       ev.push_time,
       ev.repaired_obj,
       (int)ev.published,
+      (int)ev.cannot_beat_incumbent,
       timer.elapsed_time());
     if (better && !ev.repaired_assignment.empty()) {
       best_lp       = ev.lp_obj;
