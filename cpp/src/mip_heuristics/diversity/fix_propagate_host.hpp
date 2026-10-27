@@ -53,6 +53,8 @@ enum class fp_variable_strategy_t {
   LP_VALUE_DESC = 1,  // largest reference value first; not in [KK]
   REDUCED_COST  = 2,  // most negative reduced cost first; [KK] RedCost orders by |red. cost|
   UPLOCKS       = 3,  // fewest up-locks first, ties by larger reference value; cf. [SRF] locks
+  LOCKS         = 4,  // most locks (up + down) first, ties by larger reference value: the order of
+                      // SCIP's locks heuristic
 };
 
 // Value strategy: the value an integer is fixed to (fix_and_propagate clamps it to the current
@@ -65,23 +67,34 @@ enum class fp_value_strategy_t {
   ROUND_UP_ABOVE_THRESHOLD = 4,  // round up if the fractional part is > param
   LP_RANDOMIZED            = 5,  // round up with probability equal to the fractional part:
                                  // the LP-based fixing of [KK]
+  FEWER_LOCKS = 6,               // round toward the side with fewer locks (SCIP's locks heuristic
+                                 // fixes to that bound); ties round a fractional value up
 };
 
 template <typename i_t, typename f_t>
-f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks)
+f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks, i_t downlocks = 0)
 {
   switch (s) {
     case fp_variable_strategy_t::FRACTIONALITY: return std::abs(x - std::floor(x) - f_t(0.5));
     case fp_variable_strategy_t::LP_VALUE_DESC: return x;
     case fp_variable_strategy_t::REDUCED_COST: return -red;
     case fp_variable_strategy_t::UPLOCKS: return -(f_t)uplocks + f_t(1e-3) * x;
+    case fp_variable_strategy_t::LOCKS: return (f_t)(uplocks + downlocks) + f_t(1e-3) * x;
   }
   return x;
 }
 
 template <typename f_t>
-f_t fp_preferred_value(
-  fp_value_strategy_t s, f_t x, f_t lb, f_t ub, f_t red, f_t param, f_t int_tol, f_t u = 0)
+f_t fp_preferred_value(fp_value_strategy_t s,
+                       f_t x,
+                       f_t lb,
+                       f_t ub,
+                       f_t red,
+                       f_t param,
+                       f_t int_tol,
+                       f_t u         = 0,
+                       int uplocks   = 0,
+                       int downlocks = 0)
 {
   const f_t fl = std::floor(x + int_tol);
   const f_t fr = x - fl;
@@ -93,6 +106,9 @@ f_t fp_preferred_value(
       return (fr > int_tol || red < -param) ? std::min(fl + 1, ub) : fl;
     case fp_value_strategy_t::ROUND_UP_ABOVE_THRESHOLD: return fr > param ? fl + 1 : fl;
     case fp_value_strategy_t::LP_RANDOMIZED: return u < fr ? fl + 1 : fl;  // u ~ U(0,1)
+    case fp_value_strategy_t::FEWER_LOCKS:
+      if (uplocks != downlocks) { return uplocks < downlocks ? std::min(fl + 1, ub) : fl; }
+      return fr > int_tol ? fl + 1 : fl;
   }
   return fl;
 }

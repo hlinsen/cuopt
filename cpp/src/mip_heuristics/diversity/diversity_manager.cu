@@ -467,7 +467,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
   auto h_obj  = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
   auto h_dual = cuopt::host_copy(lp_dual_optimal_solution, stream);
   std::vector<f_t> red(n_vars, 0);
-  std::vector<i_t> uplocks(n_vars, 0);
+  std::vector<i_t> uplocks(n_vars, 0), downlocks(n_vars, 0);
   for (auto v : h_int) {
     f_t aty = 0;
     for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
@@ -477,6 +477,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
       if ((a > 0 && std::isfinite(fp_host.row_ub[r])) ||
           (a < 0 && std::isfinite(fp_host.row_lb[r]))) {
         uplocks[v]++;
+      }
+      if ((a > 0 && std::isfinite(fp_host.row_lb[r])) ||
+          (a < 0 && std::isfinite(fp_host.row_ub[r]))) {
+        downlocks[v]++;
       }
     }
     red[v] = h_obj[v] - aty;
@@ -488,91 +492,160 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     f_t value_param;  // reduced-cost or fraction threshold of the value strategy
     unsigned seed;    // LP-randomized value strategy
   };
-  std::vector<std::vector<f_t>> seen;
-  f_t best_lp = std::numeric_limits<f_t>::infinity();
-  int n_eval  = 0;
-  std::string best_name;
-  std::vector<f_t> best_repaired;
+  struct pass_t {
+    size_t cand{0};
+    std::vector<f_t> pattern;  // values of the integers (h_int order)
+    f_t int_cost{0};
+    i_t n_ones{0};
+  };
   constexpr f_t rank_tol = 1e-4;
   const f_t rank_tlimit  = std::min<f_t>(8., 0.25 * budget);
   const f_t push_tlimit  = std::min<f_t>(11., 0.3 * budget);
   // a repair that succeeds takes about a second; one that fails would use the whole cap
   const f_t repair_tlimit = std::min<f_t>(5., 0.4 * budget);
-  auto run_candidate      = [&](const cand_t& c, const std::vector<f_t>& x) {
-    if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption() ||
-        timer.remaining_time() < 2. * budget) {
-      return;
-    }
+  auto out_of_time        = [&]() {
+    return fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption() ||
+           timer.remaining_time() < 2. * budget;
+  };
+  // one fix-and-propagate pass; false when it ends in a conflict or exceeds its work limit
+  auto run_pass = [&](const cand_t& c, const std::vector<f_t>& x, pass_t& out) {
     std::vector<i_t> ord(h_int.begin(), h_int.end());
     std::vector<f_t> key(n_vars, 0);
     std::mt19937 g(c.seed);
     std::uniform_real_distribution<double> U(0., 1.);
     for (auto v : h_int) {
-      key[v] = fp_order_key<i_t, f_t>(c.var_strategy, x[v], red[v], uplocks[v]);
+      key[v] = fp_order_key<i_t, f_t>(c.var_strategy, x[v], red[v], uplocks[v], downlocks[v]);
     }
     std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
     std::vector<f_t> pref(n_vars, 0.);
     const bool randomized = c.value_strategy == fp_value_strategy_t::LP_RANDOMIZED;
     for (auto v : h_int) {
       const f_t u = randomized ? f_t(U(g)) : f_t(0);
-      pref[v]     = fp_preferred_value<f_t>(
-        c.value_strategy, x[v], h_vlb[v], h_vub[v], red[v], c.value_param, int_tol, u);
+      pref[v]     = fp_preferred_value<f_t>(c.value_strategy,
+                                        x[v],
+                                        h_vlb[v],
+                                        h_vub[v],
+                                        red[v],
+                                        c.value_param,
+                                        int_tol,
+                                        u,
+                                        uplocks[v],
+                                        downlocks[v]);
     }
     const double t_fp = timer.elapsed_time();
     i_t n_flipped = 0, n_implied = 0;
     fp_host.work    = 0;
     i_t n_conflicts = fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
-    std::vector<f_t> pat(h_int.size());
-    f_t int_cost = 0;
-    i_t n_ones   = 0;
+    out.pattern.assign(h_int.size(), 0);
+    out.int_cost = 0;
+    out.n_ones   = 0;
     for (size_t q = 0; q < h_int.size(); ++q) {
-      pat[q] = fp_host.col_lb[h_int[q]];
-      int_cost += h_obj[h_int[q]] * pat[q];
-      n_ones += pat[q] > 0.5;
-    }
-    bool dup = false;
-    for (auto& s : seen) {
-      if (s == pat) { dup = true; }
+      out.pattern[q] = fp_host.col_lb[h_int[q]];
+      out.int_cost += h_obj[h_int[q]] * out.pattern[q];
+      out.n_ones += out.pattern[q] > 0.5;
     }
     CUOPT_LOG_DEBUG(
       "Fix-and-propagate pass %s: time=%.3fs conflicts=%d flipped=%d implied_off_pref=%d ones=%d "
-           "int_cost=%g dup=%d cont_tightenings=%ld work=%ld (%.1fx nnz) work_limit_hit=%d "
-           "elapsed=%.2f",
+      "int_cost=%g cont_tightenings=%ld work=%ld (%.1fx nnz) work_limit_hit=%d elapsed=%.2f",
       c.name.c_str(),
       timer.elapsed_time() - t_fp,
       n_conflicts,
       n_flipped,
       n_implied,
-      n_ones,
-      int_cost,
-      (int)dup,
+      out.n_ones,
+      out.int_cost,
       (long)fp_host.n_continuous_tightenings,
       (long)fp_host.work,
       (double)fp_host.work / (double)model_nnz,
       (int)fp_host.work_limit_hit,
       timer.elapsed_time());
-    if (dup || n_conflicts > 0) { return; }
-    seen.push_back(pat);
-    std::vector<f_t> assign = x;
-    for (size_t q = 0; q < h_int.size(); ++q) {
-      assign[h_int[q]] = pat[q];
+    return n_conflicts == 0;
+  };
+
+  const auto& hp = context.settings.heuristic_params;
+  std::vector<cand_t> cands{
+    {"lp_guided",
+     static_cast<fp_variable_strategy_t>(hp.fix_propagate_variable_strategy),
+     static_cast<fp_value_strategy_t>(hp.fix_propagate_value_strategy),
+     hp.fix_propagate_value_param,
+     12u}};
+  if (hp.fix_propagate_portfolio != 0) {
+    // SCIP's locks rule, [KK]'s fractionality order and [KK]'s LP-based (randomized) fixing
+    const cand_t extra[] = {
+      {"locks", fp_variable_strategy_t::LOCKS, fp_value_strategy_t::FEWER_LOCKS, 0., 12u},
+      {"fractionality",
+       fp_variable_strategy_t::FRACTIONALITY,
+       fp_value_strategy_t::ROUND_UP,
+       0.,
+       12u},
+      {"lp_randomized",
+       fp_variable_strategy_t::LP_VALUE_DESC,
+       fp_value_strategy_t::LP_RANDOMIZED,
+       0.,
+       12u}};
+    for (const auto& e : extra) {
+      if (e.var_strategy != cands[0].var_strategy || e.value_strategy != cands[0].value_strategy) {
+        cands.push_back(e);
+      }
     }
-    auto ev = eval_fixed_pattern(
-      assign, rank_tol, rank_tlimit, nullptr, nullptr, true, repair_tlimit, best_lp, push_tlimit);
+  }
+  std::vector<pass_t> passes;
+  for (size_t k = 0; k < cands.size() && !out_of_time(); ++k) {
+    pass_t p;
+    p.cand = k;
+    if (!run_pass(cands[k], h_lp, p)) { continue; }
+    bool dup = false;
+    for (const auto& q : passes) {
+      if (q.pattern == p.pattern) { dup = true; }
+    }
+    if (!dup) { passes.push_back(std::move(p)); }
+  }
+  // the configured strategy first, then the other patterns by integer cost: the integer cost is
+  // only a proxy on mixed models (on fixed-charge models the pattern opening the fewest setups
+  // looks cheapest but routes flow expensively), so it only orders the fallbacks
+  std::stable_sort(passes.begin(), passes.end(), [](const pass_t& a, const pass_t& b) {
+    if ((a.cand == 0) != (b.cand == 0)) { return a.cand == 0; }
+    return a.int_cost < b.int_cost;
+  });
+  CUOPT_LOG_DEBUG(
+    "Fix-and-propagate portfolio: passes=%zu conflict_free_distinct=%zu first=%s elapsed=%.2f",
+    cands.size(),
+    passes.size(),
+    passes.empty() ? "none" : cands[passes[0].cand].name.c_str(),
+    timer.elapsed_time());
+
+  constexpr int max_evaluations = 2;
+  int n_eval                    = 0;
+  bool published                = false;
+  for (const auto& p : passes) {
+    if (n_eval >= max_evaluations || published || out_of_time()) { break; }
+    std::vector<f_t> assign = h_lp;
+    for (size_t q = 0; q < h_int.size(); ++q) {
+      assign[h_int[q]] = p.pattern[q];
+    }
+    auto ev = eval_fixed_pattern(assign,
+                                 rank_tol,
+                                 rank_tlimit,
+                                 nullptr,
+                                 nullptr,
+                                 true,
+                                 repair_tlimit,
+                                 std::numeric_limits<f_t>::infinity(),
+                                 push_tlimit);
     n_eval++;
-    const bool better = ev.usable && ev.lp_obj < best_lp;
+    published = ev.published;
     CUOPT_LOG_DEBUG(
       "Pattern rank %s: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g time=%.2fs "
-           "better=%d pushed_lp_obj=%g pushed_res=%g push_time=%.2fs repaired=%g published=%d "
-           "cannot_beat=%d elapsed=%.2f",
-      c.name.c_str(),
-      n_ones,
+      "better=%d pushed_lp_obj=%g pushed_res=%g push_time=%.2fs repaired=%g published=%d "
+      "cannot_beat=%d elapsed=%.2f",
+      cands[p.cand].name.c_str(),
+      p.n_ones,
       ev.lp_obj,
       (int)ev.optimal,
       ev.iters,
       ev.l2_primal_res,
       ev.time,
-      (int)better,
+      (int)ev.usable,
       ev.pushed_lp_obj,
       ev.pushed_l2_primal_res,
       ev.push_time,
@@ -580,32 +653,12 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
       (int)ev.published,
       (int)ev.cannot_beat_incumbent,
       timer.elapsed_time());
-    if (better && !ev.repaired_assignment.empty()) {
-      best_lp       = ev.lp_obj;
-      best_name     = c.name;
-      best_repaired = std::move(ev.repaired_assignment);
-    }
-  };
-  const auto& hp = context.settings.heuristic_params;
-  const cand_t configured{"lp_guided",
-                          static_cast<fp_variable_strategy_t>(hp.fix_propagate_variable_strategy),
-                          static_cast<fp_value_strategy_t>(hp.fix_propagate_value_strategy),
-                          hp.fix_propagate_value_param,
-                          12u};
-  run_candidate(configured, h_lp);
-  if (best_repaired.empty()) {
-    CUOPT_LOG_DEBUG("LP-guided fix-and-propagate: no repaired pattern (evaluated %d) elapsed=%.2f",
-                    n_eval,
-                    timer.elapsed_time());
-    return false;
   }
-  CUOPT_LOG_DEBUG("LP-guided fix-and-propagate best: %s lp_obj=%g evaluated=%d elapsed=%.2f",
-                  best_name.c_str(),
-                  best_lp,
+  CUOPT_LOG_DEBUG("LP-guided fix-and-propagate: evaluated=%d published=%d elapsed=%.2f",
                   n_eval,
+                  (int)published,
                   timer.elapsed_time());
-  // the pattern was already pushed, repaired and published by its evaluation
-  return true;
+  return published;
 }
 
 template <typename i_t, typename f_t>
