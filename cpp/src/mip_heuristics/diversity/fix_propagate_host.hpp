@@ -114,9 +114,13 @@ struct host_fix_propagate_t {
   // values of the last pass (integer entries are the fixings)
   std::vector<f_t> col_lb;
   std::vector<char> row_dead;
-  f_t abs_tol            = 1e-6;
-  f_t int_tol            = 1e-5;
-  int64_t work           = 0;
+  f_t abs_tol  = 1e-6;
+  f_t int_tol  = 1e-5;
+  int64_t work = 0;
+  // propagation work budget of one pass (nonzeros processed); exceeding it ends the pass like a
+  // conflict, so one pass cannot hold local search for long on models with very dense rows
+  int64_t work_limit     = std::numeric_limits<int64_t>::max();
+  bool work_limit_hit    = false;
   i_t n_binary_only_rows = 0;
   i_t n_mixed_rows       = 0;
   // a continuous tightening is kept if it shrinks the domain by at least continuous_min_improvement
@@ -262,7 +266,8 @@ struct host_fix_propagate_t {
   // fix-and-propagate pass: order = integer vars in processing order, pref = preferred value per
   // var (indexed by var id). One-level backtrack: on a conflict the other end of the domain is
   // tried; if both conflict, the remaining integers get their preferred values without propagation
-  // (the pattern is reported as conflicting). Returns the number of conflicts; values in col_lb.
+  // (the pattern is reported as conflicting), as when the pass exceeds work_limit. Returns the
+  // number of conflicts; values in col_lb.
   i_t fix_and_propagate(const std::vector<i_t>& order,
                         const std::vector<f_t>& pref,
                         i_t& n_flipped,
@@ -276,6 +281,7 @@ struct host_fix_propagate_t {
     row_dead.assign(n_rows(), 0);
     n_flipped       = 0;
     n_implied       = 0;
+    work_limit_hit  = false;
     i_t n_conflicts = 0;
     if (!domain.propagate_full(Arow, var_types, settings, *lp)) { n_conflicts++; }
     work += (int64_t)domain.last_nnz_processed;
@@ -288,6 +294,11 @@ struct host_fix_propagate_t {
         continue;
       }
       const f_t p = std::min(std::max(pref[v], lb), ub);
+      if (propagate && work > work_limit) {
+        work_limit_hit = true;
+        n_conflicts++;
+        propagate = false;
+      }
       if (!propagate) {
         lp->lower[v] = lp->upper[v] = p;
         continue;

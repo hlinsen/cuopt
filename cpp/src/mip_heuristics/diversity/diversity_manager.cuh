@@ -61,6 +61,7 @@ class diversity_manager_t {
     f_t pushed_lp_obj{std::numeric_limits<f_t>::infinity()};
     f_t pushed_l2_primal_res{-1};
     double push_time{0};
+    bool cannot_beat_incumbent{false};  // stopped after stage 1
   };
   pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
                                     f_t tol,
