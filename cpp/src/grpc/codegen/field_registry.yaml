@@ -1345,7 +1345,8 @@ mip_settings:
     - fix_propagate_variable_strategy:
         param_name: mip_hyper_heuristic_fix_propagate_variable_strategy
         description: >-
-          Fixing order: 0 fractionality, 1 LP value, 2 reduced cost, 3 up-locks.
+          Fixing order: 0 fractionality, 1 LP value, 2 reduced cost, 3 up-locks,
+          4 most locks.
         default: "1"
         field_num: 56
         type: int32
@@ -1355,7 +1356,7 @@ mip_settings:
         description: >-
           Fixing value: 2 round up, 3 round up or negative reduced cost,
           4 round up above a fraction threshold, 5 round up with probability
-          equal to the fractional part.
+          equal to the fractional part, 6 round toward fewer locks.
         default: "2"
         field_num: 57
         type: int32
@@ -1389,6 +1390,15 @@ mip_settings:
           above 1 disable continuous tightening.
         default: "0.3"
         field_num: 61
+        optional: true
+    - fix_propagate_portfolio:
+        param_name: mip_hyper_heuristic_fix_propagate_portfolio
+        description: >-
+          Also run the locks, fractionality and LP-randomized fix-and-propagate
+          passes as fallbacks to the configured one (0 off, 1 on).
+        default: "1"
+        field_num: 62
+        type: int32
         optional: true
 
 # ─────────────────────────────────────────────────────────────────────────────
