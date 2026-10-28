@@ -52,9 +52,6 @@ struct mip_heuristics_hyper_params_t {
   // minimum relative domain shrink for a continuous bound tightening in the CPU propagation to be
   // kept: 0 keeps every tightening, values above 1 disable continuous tightening
   f_t fix_propagate_continuous_min_improvement = 0.3;
-  // also run the locks, fractionality and LP-randomized passes as fallbacks to the configured one
-  // (0 off, 1 on)
-  i_t fix_propagate_portfolio = 1;
 };
 
 }  // namespace cuopt::mathematical_optimization
