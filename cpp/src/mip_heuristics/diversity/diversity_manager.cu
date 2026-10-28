@@ -368,15 +368,13 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     if (feas) {
       res.repaired_obj        = sol.get_user_objective();
       res.repaired_assignment = sol.get_host_assignment();
-      const f_t best_pub = population.is_feasible() ? population.best_feasible().get_objective()
-                                                    : std::numeric_limits<f_t>::infinity();
-      if (sol.get_objective() < best_pub) {
-        res.published = true;
+      // like the other heuristics, hand every feasible solution to the population and let it decide
+      res.published = population.add_solution(solution_t<i_t, f_t>(sol)).second;
+      if (res.published) {
         CUOPT_LOG_INFO(
           "New solution from primal heuristics (CPU fix-and-propagate). Objective %+.6e. Time %.3f",
           res.repaired_obj,
           timer.elapsed_time());
-        population.add_solution(solution_t<i_t, f_t>(sol));
       }
     }
   }
@@ -463,7 +461,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
   // LP-guided fix-and-propagate: one pass with the configured variable / value strategies
   // (see fix_propagate_host.hpp), the pattern evaluated by a short cost-aware fixed LP (its
   // objective settles within a few thousand PDLP iterations even when the residual stalls),
-  // then pushed, repaired and published if it improves. All steps are scaled to the budget.
+  // then pushed, repaired and added to the population. All steps are scaled to the budget.
   auto h_obj  = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
   auto h_dual = cuopt::host_copy(lp_dual_optimal_solution, stream);
   std::vector<f_t> red(n_vars, 0);
@@ -604,7 +602,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
                   best_lp,
                   n_eval,
                   timer.elapsed_time());
-  // the pattern was already pushed, repaired and published by its evaluation
+  // the pattern was already pushed, repaired and added to the population by its evaluation
   return true;
 }
 
