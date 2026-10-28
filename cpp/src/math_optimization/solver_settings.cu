@@ -233,9 +233,8 @@ solver_settings_t<i_t, f_t>::solver_settings_t() : pdlp_settings(), mip_settings
     {CUOPT_MIP_HYPER_HEURISTIC_ENABLED_RECOMBINERS, &mip_settings.heuristic_params.enabled_recombiners, 0, 15, 15, "bitmask: 1=BP 2=FP 4=LS 8=SubMIP"},
     {CUOPT_MIP_HYPER_HEURISTIC_CYCLE_DETECTION_LENGTH, &mip_settings.heuristic_params.cycle_detection_length, 1, std::numeric_limits<i_t>::max(), 30, "FP assignment cycle ring buffer length"},
     {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE, &mip_settings.heuristic_params.fix_propagate, 0, 1, 1, "LP-guided fix-and-propagate in local search (0 off, 1 on)"},
-    {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VARIABLE_STRATEGY, &mip_settings.heuristic_params.fix_propagate_variable_strategy, 0, 4, 1, "fixing order: 0 fractionality, 1 LP value, 2 reduced cost, 3 up-locks, 4 most locks"},
-    {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VALUE_STRATEGY, &mip_settings.heuristic_params.fix_propagate_value_strategy, 2, 6, 2, "fixing value: 2 round up, 3 round up or negative reduced cost, 4 round up above a fraction threshold, 5 round up with probability equal to the fractional part, 6 round toward fewer locks"},
-    {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_PORTFOLIO, &mip_settings.heuristic_params.fix_propagate_portfolio, 0, 1, 1, "also run the locks, fractionality and LP-randomized fix-and-propagate passes as fallbacks to the configured one (0 off, 1 on)"},
+    {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VARIABLE_STRATEGY, &mip_settings.heuristic_params.fix_propagate_variable_strategy, 0, 3, 1, "fixing order: 0 fractionality, 1 LP value, 2 reduced cost, 3 up-locks"},
+    {CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_VALUE_STRATEGY, &mip_settings.heuristic_params.fix_propagate_value_strategy, 2, 5, 2, "fixing value: 2 round up, 3 round up or negative reduced cost, 4 round up above a fraction threshold, 5 round up with probability equal to the fractional part"},
     // Diving heuristic hyper-parameters (hidden from default --help: name contains "hyper_")
     {CUOPT_MIP_HYPER_DIVING_LINE_SEARCH, &mip_settings.diving_params.line_search_diving, -1, 1, -1, "line-search diving toggle: -1 automatic, 0 disabled, 1 enabled"},
     {CUOPT_MIP_HYPER_DIVING_PSEUDOCOST, &mip_settings.diving_params.pseudocost_diving, -1, 1, -1, "pseudocost diving toggle: -1 automatic, 0 disabled, 1 enabled"},
