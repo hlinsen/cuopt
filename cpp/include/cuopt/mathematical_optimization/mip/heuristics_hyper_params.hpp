@@ -60,6 +60,13 @@ struct mip_heuristics_hyper_params_t {
   // repair of the configured pattern when its pass ends in a conflict: 0 none, 1 fixed-integer LP
   // then feasibility jump, 2 feasibility pump, 3 WalkSAT repair inside the pass
   i_t fix_propagate_repair = 0;
+  // background heuristics (0 off, 1 on), to run one heuristic alone (e.g. the fix-and-propagate
+  // study): the probe, early CPU FJ, early GPU FJ and early structural heuristic around presolve;
+  // the scratch CPU FJ thread; the LNS improvement worker; the root structural heuristic
+  i_t early_heuristics = 1;
+  i_t scratch_cpufj    = 1;
+  i_t lns              = 1;
+  i_t root_structural  = 1;
   // iterations per call of the in-pass WalkSAT repair (fix-propagate-repair uses 200)
   i_t fix_propagate_repair_iterations = 200;
   // strategy study (diversity_manager_t::run_fix_propagate_study): 1 runs it on the root LP point

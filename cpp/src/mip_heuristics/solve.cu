@@ -270,6 +270,7 @@ mip_solution_t<i_t, f_t> run_mip_solver(
     std::unique_ptr<mip::early_structural_t<i_t, f_t>> early_structural;
     bool run_early_cpufj = problem.has_papilo_presolve_data() &&
                            settings.determinism_mode != CUOPT_MODE_DETERMINISTIC &&
+                           settings.heuristic_params.early_heuristics != 0 &&
                            problem.original_problem_ptr->get_n_integers() > 0;
     if (run_early_cpufj) {
       auto* presolver_ptr = problem.presolve_data.papilo_presolve_ptr;
@@ -520,6 +521,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
     std::unique_ptr<mip::early_structural_t<i_t, f_t>> early_structural;
 
     bool run_early_fj = run_presolve && settings.determinism_mode != CUOPT_MODE_DETERMINISTIC &&
+                        settings.heuristic_params.early_heuristics != 0 &&
                         op_problem.get_problem_category() != problem_category_t::LP &&
                         op_problem.get_n_constraints() > 0;
     const f_t objective_sense = op_problem.get_sense() ? f_t{-1} : f_t{1};
@@ -998,6 +1000,7 @@ mip_solution_t<i_t, f_t> solve_mip(optimization_problem_t<i_t, f_t>& op_problem,
   // Semi-continuous variables are only reformulated once solve_mip_helper is under way, so the
   // probe would search a relaxation that admits 0 < x < L and report it as an incumbent.
   if (settings_const.determinism_mode != CUOPT_MODE_DETERMINISTIC &&
+      settings_const.heuristic_params.early_heuristics != 0 &&
       op_problem.get_problem_category() != problem_category_t::LP &&
       op_problem.get_n_constraints() > 0 && !op_problem.has_semi_continuous_variables()) {
     // The probe publishes before solve_mip_helper reaches its own setup() loop, and get_solution

@@ -239,7 +239,10 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
 
   i_t num_threads = omp_get_num_threads();
   const i_t lns_threads =
-    lns_worker_count(num_threads, context.settings.determinism_mode == CUOPT_MODE_DETERMINISTIC);
+    context.settings.heuristic_params.lns == 0
+      ? 0
+      : lns_worker_count(num_threads,
+                         context.settings.determinism_mode == CUOPT_MODE_DETERMINISTIC);
   CUOPT_LOG_INFO(
     "LNS thread budget: %d workers within %d OpenMP threads", lns_threads, num_threads);
 
@@ -386,6 +389,7 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
 
   std::unique_ptr<mip::root_structural_t<i_t, f_t>> root_structural;
   if (num_threads - lns_threads >= CUOPT_MIP_ROOT_STRUCTURAL_REQUIRED_THREAD_COUNT &&
+      context.settings.heuristic_params.root_structural != 0 &&
       context.settings.determinism_mode != CUOPT_MODE_DETERMINISTIC) {
     root_structural = std::make_unique<mip::root_structural_t<i_t, f_t>>(
       *context.problem_ptr,

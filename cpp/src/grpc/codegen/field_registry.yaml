@@ -1488,6 +1488,38 @@ mip_settings:
         field_num: 73
         type: int32
         optional: true
+    - early_heuristics:
+        param_name: mip_hyper_heuristic_early_heuristics
+        description: >-
+          Early heuristics around presolve: probe, early CPU FJ, early GPU FJ, early structural (0 off, 1 on).
+        default: "1"
+        field_num: 74
+        type: int32
+        optional: true
+    - scratch_cpufj:
+        param_name: mip_hyper_heuristic_scratch_cpufj
+        description: >-
+          Scratch CPU FJ thread started with the heuristics (0 off, 1 on).
+        default: "1"
+        field_num: 75
+        type: int32
+        optional: true
+    - lns:
+        param_name: mip_hyper_heuristic_lns
+        description: >-
+          LNS improvement worker (0 off, 1 on).
+        default: "1"
+        field_num: 76
+        type: int32
+        optional: true
+    - root_structural:
+        param_name: mip_hyper_heuristic_root_structural
+        description: >-
+          Root structural heuristic (0 off, 1 on).
+        default: "1"
+        field_num: 77
+        type: int32
+        optional: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Optimization Problem (cpu_optimization_problem_t)

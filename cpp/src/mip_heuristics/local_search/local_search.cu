@@ -81,6 +81,7 @@ fj_improvement_callback_t<f_t> local_search_t<i_t, f_t>::make_fj_improvement_cal
 template <typename i_t, typename f_t>
 void local_search_t<i_t, f_t>::start_cpufj_scratch_threads(population_t<i_t, f_t>& population)
 {
+  if (context.settings.heuristic_params.scratch_cpufj == 0) return;
   // TODO: Find a way to enable this in low core count scenarios
   if (feasibility_team_size(context) < CUOPT_MIP_FJ_REQUIRED_THREAD_COUNT) return;
 
@@ -137,6 +138,7 @@ template <typename i_t, typename f_t>
 void local_search_t<i_t, f_t>::start_cpufj_lns_improvement_thread(
   population_t<i_t, f_t>& population)
 {
+  if (context.settings.heuristic_params.lns == 0) return;
   // Share the solve team and leave capacity for feasibility discovery.
   const int workers = lns_worker_count(
     omp_get_num_threads(), context.settings.determinism_mode == CUOPT_MODE_DETERMINISTIC);
