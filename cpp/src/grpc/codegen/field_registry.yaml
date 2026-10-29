@@ -1412,7 +1412,7 @@ mip_settings:
         param_name: mip_hyper_heuristic_fix_propagate_repair
         description: >-
           Repair of a conflicting fix-and-propagate pattern: 0 none, 1 fixed-integer
-          LP then feasibility jump, 2 feasibility pump.
+          LP then feasibility jump, 2 feasibility pump, 3 WalkSAT repair inside the pass.
         default: "0"
         field_num: 64
         type: int32
@@ -1453,8 +1453,8 @@ mip_settings:
         param_name: mip_hyper_heuristic_fix_propagate_study_repairs
         description: >-
           Fix-and-propagate study: bit 1 feasibility jump repair, bit 2 feasibility
-          pump repair.
-        default: "6"
+          pump repair, bit 3 WalkSAT repair inside the pass.
+        default: "14"
         field_num: 69
         type: int32
         optional: true
@@ -1479,6 +1479,14 @@ mip_settings:
           Fix-and-propagate study: seconds for the whole study.
         default: "1800.0"
         field_num: 72
+        optional: true
+    - fix_propagate_repair_iterations:
+        param_name: mip_hyper_heuristic_fix_propagate_repair_iterations
+        description: >-
+          Iterations per call of the in-pass WalkSAT repair of fix-and-propagate.
+        default: "200"
+        field_num: 73
+        type: int32
         optional: true
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -58,17 +58,19 @@ struct mip_heuristics_hyper_params_t {
   // configured pass: binaries before general integers (0 off, 1 on)
   i_t fix_propagate_type_grouping = 0;
   // repair of the configured pattern when its pass ends in a conflict: 0 none, 1 fixed-integer LP
-  // then feasibility jump, 2 feasibility pump
+  // then feasibility jump, 2 feasibility pump, 3 WalkSAT repair inside the pass
   i_t fix_propagate_repair = 0;
+  // iterations per call of the in-pass WalkSAT repair (fix-propagate-repair uses 200)
+  i_t fix_propagate_repair_iterations = 200;
   // strategy study (diversity_manager_t::run_fix_propagate_study): 1 runs it on the root LP point
   // and ends the process
   i_t fix_propagate_study             = 0;
-  i_t fix_propagate_study_orders      = 127;     // bit k: variable strategy k (0..6)
-  i_t fix_propagate_study_values      = 4095;    // bit k: value strategy k (0..11)
-  i_t fix_propagate_study_grouping    = 1;       // bit 0: as defined, bit 1: with type grouping
-  i_t fix_propagate_study_repairs     = 6;       // bit 1: feasibility jump, bit 2: feasibility pump
-  i_t fix_propagate_study_seeds       = 1;       // seeds of the randomized value strategies
-  f_t fix_propagate_study_repair_time = 5.0;     // seconds per repair hand-off
+  i_t fix_propagate_study_orders      = 127;   // bit k: variable strategy k (0..6)
+  i_t fix_propagate_study_values      = 4095;  // bit k: value strategy k (0..11)
+  i_t fix_propagate_study_grouping    = 1;     // bit 0: as defined, bit 1: with type grouping
+  i_t fix_propagate_study_repairs     = 14;    // bit 1: FJ, bit 2: feasibility pump, bit 3: WalkSAT
+  i_t fix_propagate_study_seeds       = 1;     // seeds of the randomized value strategies
+  f_t fix_propagate_study_repair_time = 5.0;   // seconds per repair hand-off
   f_t fix_propagate_study_time_limit  = 1800.0;  // seconds for the whole study
 };
 

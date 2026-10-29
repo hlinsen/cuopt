@@ -148,6 +148,8 @@
   "mip_hyper_heuristic_fix_propagate_type_grouping"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_REPAIR "mip_hyper_heuristic_fix_propagate_repair"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY  "mip_hyper_heuristic_fix_propagate_study"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_REPAIR_ITERATIONS \
+  "mip_hyper_heuristic_fix_propagate_repair_iterations"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_ORDERS \
   "mip_hyper_heuristic_fix_propagate_study_orders"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_VALUES \

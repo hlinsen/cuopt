@@ -439,7 +439,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
   fp_host.continuous_min_improvement =
     context.settings.heuristic_params.fix_propagate_continuous_min_improvement;
   fp_host.build(n_vars, n_cstrs, h_offsets, h_cols, h_vals, h_clb, h_cub, h_vlb, h_vub, h_int);
-  fp_host.int_tol = problem_ptr->tolerances.integrality_tolerance;
+  fp_host.int_tol               = problem_ptr->tolerances.integrality_tolerance;
+  fp_host.repair_max_iterations = context.settings.heuristic_params.fix_propagate_repair_iterations;
   {
     simplex::user_problem_t<i_t, f_t> user_problem(problem_ptr->handle_ptr);
     problem_ptr->get_host_user_problem(user_problem);
@@ -513,6 +514,9 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
     i_t n_conflicts{0};
     double time{0};
     bool work_limit_hit{false};
+    int repair_calls{0};  // in-pass repairs (fp_host.repair_enabled)
+    int repair_success{0};
+    int repair_invisible{0}, repair_unsolved{0}, repair_reprop_fail{0};
   };
   std::vector<char> is_binary(n_vars, 0);
   for (auto v : h_int) {
@@ -577,9 +581,23 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
     i_t n_conflicts =
       dynamic ? fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied, &dyn, &dyn_up, &dyn_down)
               : fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
-    out.n_conflicts    = n_conflicts;
-    out.time           = timer.elapsed_time() - t_fp;
-    out.work_limit_hit = fp_host.work_limit_hit;
+    out.n_conflicts        = n_conflicts;
+    out.time               = timer.elapsed_time() - t_fp;
+    out.work_limit_hit     = fp_host.work_limit_hit;
+    out.repair_calls       = fp_host.n_repair_calls;
+    out.repair_success     = fp_host.n_repair_success;
+    out.repair_invisible   = fp_host.n_repair_invisible;
+    out.repair_unsolved    = fp_host.n_repair_unsolved;
+    out.repair_reprop_fail = fp_host.n_repair_reprop_fail;
+    if (fp_host.repair_enabled && fp_host.n_repair_calls > 0) {
+      CUOPT_LOG_INFO(
+        "FPS walk rows_start=%ld rows_best=%ld iterations=%ld no_candidate=%ld calls=%d",
+        (long)fp_host.walk_rows_start,
+        (long)fp_host.walk_rows_best,
+        (long)fp_host.walk_iters,
+        (long)fp_host.walk_no_cand,
+        fp_host.n_repair_calls);
+    }
     out.pattern.assign(h_int.size(), 0);
     out.int_cost = 0;
     out.n_ones   = 0;
@@ -625,7 +643,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
                                          "random",
                                          "loosedyn",
                                          "scip_locks"};
-    static const char* repair_names[] = {"none", "fj", "fp"};
+    static const char* repair_names[] = {"none", "fj", "fp", "walksat"};
     constexpr int n_orders = 7, n_values = 12;
     const int n_seeds = std::max(1, (int)hp.fix_propagate_study_seeds);
     struct seen_t {
@@ -689,20 +707,26 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
             for (size_t q = 0; q < h_int.size(); ++q) {
               assign[h_int[q]] = p.pattern[q];
             }
-            auto log_result = [&](int repair, const seen_t& s, bool dup) {
+            auto log_result = [&](int repair, const pass_t& ps, const seen_t& s, bool dup) {
               CUOPT_LOG_INFO(
                 "FPS result order=%s value=%s group=%d seed=%d repair=%s conflicts=%d "
-                "pass_time=%.3f work_limit_hit=%d ones=%d dup=%d feasible=%d obj=%.12g time=%.3f "
-                "stage=%s elapsed=%.2f",
+                "pass_time=%.3f work_limit_hit=%d ones=%d walk_calls=%d walk_ok=%d "
+                "walk_why=%d/%d/%d dup=%d "
+                "feasible=%d obj=%.12g time=%.3f stage=%s elapsed=%.2f",
                 order_names[o],
                 value_names[val],
                 grouping,
                 seed,
                 repair_names[repair],
-                (int)p.n_conflicts,
-                p.time,
-                (int)p.work_limit_hit,
-                (int)p.n_ones,
+                (int)ps.n_conflicts,
+                ps.time,
+                (int)ps.work_limit_hit,
+                (int)ps.n_ones,
+                ps.repair_calls,
+                ps.repair_success,
+                ps.repair_invisible,
+                ps.repair_unsolved,
+                ps.repair_reprop_fail,
                 (int)dup,
                 (int)s.feasible,
                 s.feasible ? (double)s.obj : std::numeric_limits<double>::infinity(),
@@ -710,39 +734,48 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
                 s.stage,
                 timer.elapsed_time());
             };
-            // the pass and its evaluation (no repair hand-off)
+            // evaluation of a conflict-free pattern (shared by identical patterns)
+            auto evaluate = [&](const std::vector<f_t>& pattern, bool& dup) -> seen_t {
+              if (const seen_t* s = find_seen(pattern, 0)) {
+                dup = true;
+                return *s;
+              }
+              dup                  = false;
+              std::vector<f_t> asg = h_lp;
+              for (size_t q = 0; q < h_int.size(); ++q) {
+                asg[h_int[q]] = pattern[q];
+              }
+              auto ev = eval_fixed_pattern(asg,
+                                           rank_tol,
+                                           rank_tlimit,
+                                           nullptr,
+                                           nullptr,
+                                           true,
+                                           repair_tlimit,
+                                           std::numeric_limits<f_t>::infinity(),
+                                           push_tlimit,
+                                           false);
+              seen_t s{pattern, 0, false, std::numeric_limits<f_t>::infinity(), ev.time, ""};
+              s.feasible = std::isfinite(ev.repaired_obj);
+              s.obj      = ev.repaired_obj;
+              s.stage    = s.feasible ? "evaluated" : (ev.usable ? "lp_infeasible" : "lp_failed");
+              seen.push_back(s);
+              return s;
+            };
+            // the pass and its evaluation (no repair)
             seen_t base{p.pattern, 0, false, std::numeric_limits<f_t>::infinity(), 0., "conflict"};
             if (p.n_conflicts == 0) {
-              if (const seen_t* s = find_seen(p.pattern, 0)) {
-                base = *s;
-                log_result(0, base, true);
-              } else {
-                auto ev       = eval_fixed_pattern(assign,
-                                             rank_tol,
-                                             rank_tlimit,
-                                             nullptr,
-                                             nullptr,
-                                             true,
-                                             repair_tlimit,
-                                             std::numeric_limits<f_t>::infinity(),
-                                             push_tlimit,
-                                             false);
-                base.feasible = std::isfinite(ev.repaired_obj);
-                base.obj      = ev.repaired_obj;
-                base.time     = ev.time;
-                base.stage =
-                  base.feasible ? "evaluated" : (ev.usable ? "lp_infeasible" : "lp_failed");
-                seen.push_back(base);
-                log_result(0, base, false);
-              }
+              bool dup = false;
+              base     = evaluate(p.pattern, dup);
+              log_result(0, p, base, dup);
             } else {
-              log_result(0, base, false);
+              log_result(0, p, base, false);
             }
             // repair hand-offs for patterns still infeasible
             for (int repair = 1; repair <= 2 && !base.feasible; ++repair) {
               if (!((hp.fix_propagate_study_repairs >> repair) & 1)) { continue; }
               if (const seen_t* s = find_seen(p.pattern, repair)) {
-                log_result(repair, *s, true);
+                log_result(repair, p, *s, true);
                 continue;
               }
               if (study_out_of_time()) { break; }
@@ -751,7 +784,20 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
               auto r = repair_pattern(assign, repair, hp.fix_propagate_study_repair_time);
               seen_t s{p.pattern, repair, r.feasible, r.obj, r.time, "repair"};
               seen.push_back(s);
-              log_result(repair, s, false);
+              log_result(repair, p, s, false);
+            }
+            // in-pass WalkSAT repair ([SRF] RepairWalk): the same pass again, repairing its
+            // conflicts instead of stopping, then the usual evaluation
+            if (p.n_conflicts > 0 && ((hp.fix_propagate_study_repairs >> 3) & 1) &&
+                !study_out_of_time()) {
+              fp_host.repair_enabled = true;
+              pass_t pw;
+              run_pass(c, h_lp, pw);
+              fp_host.repair_enabled = false;
+              seen_t sw{pw.pattern, 3, false, std::numeric_limits<f_t>::infinity(), 0., "conflict"};
+              bool dup = false;
+              if (pw.n_conflicts == 0) { sw = evaluate(pw.pattern, dup); }
+              log_result(3, pw, sw, dup);
             }
             n_configs++;
           }
@@ -793,6 +839,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
       }
     }
   }
+  // repair 3: the passes repair their conflicts themselves ([SRF] RepairWalk)
+  fp_host.repair_enabled = hp.fix_propagate_repair == 3;
   std::vector<pass_t> passes;
   pass_t configured_conflict;  // the configured pass when it ends in a conflict (for the repair)
   bool configured_conflicted = false;
@@ -868,7 +916,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, b
   }
   // repair hand-off (mip_hyper_heuristic_fix_propagate_repair) of the configured pattern when its
   // pass ended in a conflict and no other pattern was published
-  if (!published && configured_conflicted && hp.fix_propagate_repair != 0 && !out_of_time()) {
+  if (!published && configured_conflicted &&
+      (hp.fix_propagate_repair == 1 || hp.fix_propagate_repair == 2) && !out_of_time()) {
     std::vector<f_t> assign = h_lp;
     for (size_t q = 0; q < h_int.size(); ++q) {
       assign[h_int[q]] = configured_conflict.pattern[q];

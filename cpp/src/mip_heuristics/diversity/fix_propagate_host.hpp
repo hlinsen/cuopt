@@ -36,6 +36,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <vector>
 
 #include <dual_simplex/domain.hpp>
@@ -179,6 +180,29 @@ bool fp_dynamic_lock_values(
   return false;
 }
 
+// [SRF] Sect. 5: the shift of variable j (coefficient a, domain [lo, hi] within its original
+// [lo0, hi0]) that repairs a violated row, where gap = U - min activity (row too high, negative) or
+// L - max activity (row too low, positive). Only variables whose domain was reduced can move: a
+// fixed binary flips when the flip goes the right way; other variables shift their interval by
+// gap / a, rounded toward zero for integers and clipped to the original bounds. 0 = no move.
+template <typename f_t>
+f_t fp_repair_shift(
+  f_t a, bool too_high, f_t gap, f_t lo, f_t hi, f_t lo0, f_t hi0, bool is_integer, f_t int_tol)
+{
+  if (a == 0 || !(lo > lo0 || hi < hi0)) { return 0; }
+  f_t s = gap / a;
+  if (is_integer && lo0 == 0 && hi0 == 1) {
+    if (lo != hi) { return 0; }
+    const f_t flip = lo > f_t(0.5) ? -1 : 1;
+    return (flip > 0) == (s > 0) ? flip : 0;
+  }
+  if (is_integer) { s = s > 0 ? std::floor(s + int_tol) : std::ceil(s - int_tol); }
+  s = std::min(s, hi0 - hi);
+  s = std::max(s, lo0 - lo);
+  (void)too_high;
+  return std::isfinite(s) ? s : 0;
+}
+
 // A row side still locks its variables when it can be violated given the current activity range:
 // the <= side while the maximum activity exceeds the right-hand side, the >= side while the minimum
 // activity is below the left-hand side. Sides already redundant stop counting ([SRF] loosedyn,
@@ -303,6 +327,248 @@ struct host_fix_propagate_t {
         }
       }
     }
+    // every column of the integer rows (the repair also shifts continuous domains)
+    std::vector<i_t> ccnt(n_vars + 1, 0);
+    for (i_t k = 0; k < (i_t)row_cols.size(); ++k) {
+      ccnt[row_cols[k] + 1]++;
+    }
+    for (i_t v = 0; v < n_vars; ++v) {
+      ccnt[v + 1] += ccnt[v];
+    }
+    csc_offsets = ccnt;
+    csc_rows.assign(csc_offsets[n_vars], 0);
+    csc_vals.assign(csc_offsets[n_vars], 0);
+    std::vector<i_t> cpos(csc_offsets.begin(), csc_offsets.end() - 1);
+    for (i_t r = 0; r < n_rows; ++r) {
+      for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
+        const i_t c       = row_cols[k];
+        csc_rows[cpos[c]] = r;
+        csc_vals[cpos[c]] = row_vals[k];
+        cpos[c]++;
+      }
+    }
+  }
+
+  // ---- in-pass repair: [SRF] RepairWalk (Sect. 5, Fig. 4) ----
+  // On a conflict the pass propagates the conflicting fixing to the infeasible state and walks on
+  // it: pick a violated integer row at random, shift the domain of one of its variables whose
+  // domain was reduced (a flip for a fixed binary) so that the row's violation decreases, choosing
+  // a zero-damage shift if one exists, else a random candidate with probability repair_noise, else
+  // a least-damage one (damage = total increase of violation over the other rows). The best state
+  // of the walk is kept; at zero violation the slack bounds are reset and the state propagated
+  // again, and the pass goes on. The walk uses the integer rows in their original form.
+  bool repair_enabled       = false;
+  int repair_max_iterations = 200;   // [SRF]: 200 per call
+  double repair_noise       = 0.75;  // [SRF]: p = 0.75
+  int repair_max_candidates = 64;    // candidates evaluated per iteration (sampled beyond this)
+  unsigned repair_seed      = 1;
+  int n_repair_calls        = 0;  // of the last pass
+  int n_repair_success      = 0;
+  int n_repair_invisible    = 0;  // failures: no integer row violated at the infeasible state,
+  int n_repair_unsolved     = 0;  // the walk did not reach zero violation,
+  int n_repair_reprop_fail  = 0;  // the repaired state did not propagate
+  // walk statistics of the last pass (summed over its calls): violated rows at the start and at the
+  // best state, iterations, iterations without a candidate move
+  int64_t walk_rows_start = 0, walk_rows_best = 0, walk_iters = 0, walk_no_cand = 0;
+  std::vector<i_t> csc_offsets, csc_rows;
+  std::vector<f_t> csc_vals;
+  struct row_act_t {
+    f_t min_fin{0}, max_fin{0};
+    i_t min_inf{0}, max_inf{0};
+  };
+  std::vector<row_act_t> act;
+  std::vector<f_t> viol;
+  std::vector<i_t> viol_rows, viol_pos;  // violated rows and their positions (-1: not violated)
+  f_t total_viol = 0;
+
+  static void add_contribution(row_act_t& a, f_t coef, f_t lo, f_t hi, f_t sign)
+  {
+    const f_t mn = coef > 0 ? lo : hi;
+    const f_t mx = coef > 0 ? hi : lo;
+    if (std::isfinite(mn)) {
+      a.min_fin += sign * coef * mn;
+    } else {
+      a.min_inf += sign > 0 ? 1 : -1;
+    }
+    if (std::isfinite(mx)) {
+      a.max_fin += sign * coef * mx;
+    } else {
+      a.max_inf += sign > 0 ? 1 : -1;
+    }
+  }
+  f_t act_min(i_t r) const
+  {
+    return act[r].min_inf > 0 ? -std::numeric_limits<f_t>::infinity() : act[r].min_fin;
+  }
+  f_t act_max(i_t r) const
+  {
+    return act[r].max_inf > 0 ? std::numeric_limits<f_t>::infinity() : act[r].max_fin;
+  }
+  f_t row_tol(i_t r) const
+  {
+    const f_t b = std::isfinite(row_ub[r]) ? row_ub[r] : (std::isfinite(row_lb[r]) ? row_lb[r] : 0);
+    return abs_tol * std::max<f_t>(1, std::abs(b));
+  }
+  f_t violation_of(i_t r, f_t mn, f_t mx) const
+  {
+    f_t v = 0;
+    if (std::isfinite(row_lb[r]) && mx < row_lb[r]) { v = row_lb[r] - mx; }
+    if (std::isfinite(row_ub[r]) && mn > row_ub[r]) { v = std::max(v, mn - row_ub[r]); }
+    return v > row_tol(r) ? v : 0;
+  }
+  void set_violation(i_t r, f_t v)
+  {
+    total_viol += v - viol[r];
+    viol[r] = v;
+    if (v > 0 && viol_pos[r] < 0) {
+      viol_pos[r] = (i_t)viol_rows.size();
+      viol_rows.push_back(r);
+    } else if (v == 0 && viol_pos[r] >= 0) {
+      const i_t last         = viol_rows.back();
+      viol_rows[viol_pos[r]] = last;
+      viol_pos[last]         = viol_pos[r];
+      viol_rows.pop_back();
+      viol_pos[r] = -1;
+    }
+  }
+  void compute_all_activities()
+  {
+    const i_t m = n_rows();
+    act.assign(m, row_act_t{});
+    viol.assign(m, 0);
+    viol_pos.assign(m, -1);
+    viol_rows.clear();
+    total_viol = 0;
+    for (i_t r = 0; r < m; ++r) {
+      for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
+        const i_t c = row_cols[k];
+        add_contribution(act[r], row_vals[k], lp->lower[c], lp->upper[c], 1);
+      }
+      set_violation(r, violation_of(r, act_min(r), act_max(r)));
+    }
+    work += (int64_t)row_cols.size();
+  }
+  // moves column c to [lo, hi], updating the activities and violations of its rows
+  void move_column(i_t c, f_t lo, f_t hi)
+  {
+    for (i_t k = csc_offsets[c]; k < csc_offsets[c + 1]; ++k) {
+      const i_t r = csc_rows[k];
+      add_contribution(act[r], csc_vals[k], lp->lower[c], lp->upper[c], -1);
+      add_contribution(act[r], csc_vals[k], lo, hi, 1);
+      set_violation(r, violation_of(r, act_min(r), act_max(r)));
+    }
+    work += csc_offsets[c + 1] - csc_offsets[c];
+    lp->lower[c] = lo;
+    lp->upper[c] = hi;
+  }
+  // total violation increase over the rows of c (except row i) if c moves by shift (both bounds)
+  f_t shift_damage(i_t c, f_t shift, i_t i)
+  {
+    f_t damage = 0;
+    for (i_t k = csc_offsets[c]; k < csc_offsets[c + 1]; ++k) {
+      const i_t r = csc_rows[k];
+      if (r == i) { continue; }
+      const f_t d = csc_vals[k] * shift;
+      damage += std::max<f_t>(0, violation_of(r, act_min(r) + d, act_max(r) + d) - viol[r]);
+    }
+    work += csc_offsets[c + 1] - csc_offsets[c];
+    return damage;
+  }
+
+  // RepairWalk on the current (infeasible) bounds; true if it reaches zero violation, the bounds
+  // then holding the repaired state (the best state of the walk is restored otherwise)
+  bool repair_walk(std::mt19937& g)
+  {
+    compute_all_activities();
+    if (viol_rows.empty()) {  // infeasibility not visible in the integer rows
+      n_repair_invisible++;
+      return false;
+    }
+    std::uniform_real_distribution<double> U(0., 1.);
+    walk_rows_start += (int64_t)viol_rows.size();
+    size_t best_rows = viol_rows.size();
+    struct move_t {
+      i_t c;
+      f_t lo, hi;  // bounds before the move
+    };
+    std::vector<move_t> moves;
+    f_t best_total  = total_viol;
+    size_t best_len = 0;
+    struct cand_t {
+      i_t c;
+      f_t shift, damage;
+    };
+    std::vector<cand_t> cands;
+    std::vector<i_t> ks;
+    for (int it = 0; it < repair_max_iterations && !viol_rows.empty() && work <= work_limit; ++it) {
+      walk_iters++;
+      const i_t i  = viol_rows[std::uniform_int_distribution<size_t>(0, viol_rows.size() - 1)(g)];
+      const f_t mn = act_min(i), mx = act_max(i);
+      const bool too_high = std::isfinite(row_ub[i]) && mn > row_ub[i];
+      ks.clear();
+      for (i_t k = row_offsets[i]; k < row_offsets[i + 1]; ++k) {
+        ks.push_back(k);
+      }
+      if ((int)ks.size() > repair_max_candidates) {
+        std::shuffle(ks.begin(), ks.end(), g);
+        ks.resize(repair_max_candidates);
+      }
+      cands.clear();
+      f_t best_damage = std::numeric_limits<f_t>::infinity();
+      for (i_t k : ks) {
+        const i_t c = row_cols[k];
+        const f_t s = fp_repair_shift<f_t>(row_vals[k],
+                                           too_high,
+                                           too_high ? row_ub[i] - mn : row_lb[i] - mx,
+                                           lp->lower[c],
+                                           lp->upper[c],
+                                           lp_lower0[c],
+                                           lp_upper0[c],
+                                           is_int[c] != 0,
+                                           int_tol);
+        if (s == 0) { continue; }
+        const f_t d = row_vals[k] * s;
+        if (!(violation_of(i, mn + d, mx + d) < viol[i])) { continue; }
+        const f_t damage = shift_damage(c, s, i);
+        cands.push_back({c, s, damage});
+        best_damage = std::min(best_damage, damage);
+      }
+      if (cands.empty()) {
+        walk_no_cand++;
+        continue;
+      }
+      // [SRF] Fig. 4: a zero-damage move at random, else noise: random candidate, else least damage
+      std::vector<size_t> pool;
+      if (best_damage <= 0) {
+        for (size_t q = 0; q < cands.size(); ++q) {
+          if (cands[q].damage <= 0) { pool.push_back(q); }
+        }
+      } else if (U(g) < repair_noise) {
+        for (size_t q = 0; q < cands.size(); ++q) {
+          pool.push_back(q);
+        }
+      } else {
+        for (size_t q = 0; q < cands.size(); ++q) {
+          if (cands[q].damage <= best_damage) { pool.push_back(q); }
+        }
+      }
+      const auto& m = cands[pool[std::uniform_int_distribution<size_t>(0, pool.size() - 1)(g)]];
+      moves.push_back({m.c, lp->lower[m.c], lp->upper[m.c]});
+      move_column(m.c, lp->lower[m.c] + m.shift, lp->upper[m.c] + m.shift);
+      if (total_viol < best_total) {
+        best_total = total_viol;
+        best_len   = moves.size();
+        best_rows  = viol_rows.size();
+      }
+    }
+    while (moves.size() > best_len) {
+      const auto mv = moves.back();
+      moves.pop_back();
+      move_column(mv.c, mv.lo, mv.hi);
+    }
+    walk_rows_best += (int64_t)best_rows;
+    if (!viol_rows.empty()) { n_repair_unsolved++; }
+    return viol_rows.empty();
   }
 
   // Builds the propagation domain from the problem (same conversion as branch and bound).
@@ -402,10 +668,16 @@ struct host_fix_propagate_t {
     work                     = 0;
     n_continuous_tightenings = 0;
     row_dead.assign(n_rows(), 0);
-    n_flipped       = 0;
-    n_implied       = 0;
-    work_limit_hit  = false;
-    i_t n_conflicts = 0;
+    n_flipped            = 0;
+    n_implied            = 0;
+    work_limit_hit       = false;
+    n_repair_calls       = 0;
+    n_repair_success     = 0;
+    n_repair_invisible   = 0;
+    n_repair_unsolved    = 0;
+    n_repair_reprop_fail = 0;
+    walk_rows_start = walk_rows_best = walk_iters = walk_no_cand = 0;
+    i_t n_conflicts                                              = 0;
     if (!domain.propagate_full(Arow, var_types, settings, *lp)) { n_conflicts++; }
     work += (int64_t)domain.last_nnz_processed;
     domain.clear();
@@ -442,12 +714,42 @@ struct host_fix_propagate_t {
         n_flipped++;
         continue;
       }
+      if (repair_enabled && repair_conflict(v, p)) { continue; }
       n_conflicts++;
       propagate    = false;
       lp->lower[v] = lp->upper[v] = p;
     }
     col_lb.assign(lp->lower.begin(), lp->lower.begin() + n_orig_cols);
     return n_conflicts;
+  }
+
+  // fixes v to p, propagates to the infeasible state and repairs it (repair_walk); true when the
+  // repaired state propagates again, the pass then continuing from it
+  bool repair_conflict(i_t v, f_t p)
+  {
+    n_repair_calls++;
+    lp->lower[v] = lp->upper[v] = p;
+    domain.clear();
+    bool ok = domain.propagate_full(Arow, var_types, settings, *lp);
+    work += (int64_t)domain.last_nnz_processed;
+    domain.clear();
+    if (ok) {
+      n_repair_success++;
+      return true;
+    }
+    std::mt19937 g(repair_seed + (unsigned)n_repair_calls);
+    if (!repair_walk(g)) { return false; }
+    // slack bounds were tightened from the old activities: let propagation derive them again
+    for (size_t c = n_orig_cols; c < lp->lower.size(); ++c) {
+      lp->lower[c] = lp_lower0[c];
+      lp->upper[c] = lp_upper0[c];
+    }
+    ok = domain.propagate_full(Arow, var_types, settings, *lp);
+    work += (int64_t)domain.last_nnz_processed;
+    domain.clear();
+    n_repair_success += ok;
+    n_repair_reprop_fail += !ok;
+    return ok;
   }
 };
 

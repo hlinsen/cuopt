@@ -48,8 +48,9 @@ class diversity_manager_t {
   // Fix-and-propagate study (mip_hyper_heuristic_fix_propagate_study): on the root LP point, run
   // every configured order x value (x type grouping x seed), evaluate each distinct pattern
   // without the incumbent gate, hand patterns the pass or the evaluation could not make feasible to
-  // the configured repairs (FJ, feasibility pump), log one "FPS result" line per configuration and
-  // end the process. Pure integer problems are included (their evaluation is a feasibility check).
+  // the configured repairs (FJ, feasibility pump, in-pass WalkSAT), log one "FPS result" line per
+  // configuration and end the process. Pure integer problems are included (their evaluation is a
+  // feasibility check).
   void run_fix_propagate_study();
   // repair of a complete but infeasible assignment (integers = pattern, continuous = LP point):
   // 1 = fixed-integer LP then feasibility jump, 2 = feasibility pump started from the pattern

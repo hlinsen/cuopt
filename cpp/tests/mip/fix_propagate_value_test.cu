@@ -138,6 +138,33 @@ TEST(FixPropagateValue, ScipLocksTieRuleAndDynamicDirections)
   EXPECT_EQ(down, 2.);
 }
 
+TEST(FixPropagateValue, RepairShiftFollowsTheViolatedSide)
+{
+  auto shift = [](
+                 double a, double gap, double lo, double hi, double lo0, double hi0, bool integer) {
+    return mip::fp_repair_shift<double>(a, gap < 0, gap, lo, hi, lo0, hi0, integer, int_tol);
+  };
+  // row too high (gap < 0): a binary fixed to 1 with a positive coefficient flips down
+  EXPECT_EQ(shift(2., -1., 1., 1., 0., 1., true), -1.);
+  // ... but not up, and a binary fixed to 0 cannot help
+  EXPECT_EQ(shift(2., -1., 0., 0., 0., 1., true), 0.);
+  // a free binary (domain not reduced) never moves
+  EXPECT_EQ(shift(2., -1., 0., 1., 0., 1., true), 0.);
+  // row too low (gap > 0) with a negative coefficient: the fixed-to-1 binary flips down
+  EXPECT_EQ(shift(-1., 0.5, 1., 1., 0., 1., true), -1.);
+  // general integer fixed to 3 in [0, 10]: gap 7.5 / a 2 = 3.75, rounded toward zero
+  EXPECT_EQ(shift(2., 7.5, 3., 3., 0., 10., true), 3.);
+  EXPECT_EQ(shift(2., -7.5, 3., 3., 0., 10., true), -3.);
+  // the shifted domain stays within the original bounds
+  EXPECT_EQ(shift(1., 20., 3., 3., 0., 10., true), 7.);
+  EXPECT_EQ(shift(1., -20., 3., 3., 0., 10., true), -3.);
+  // continuous interval [2, 4] in [0, 10]: exact shift, clipped by its upper end
+  EXPECT_DOUBLE_EQ(shift(4., 3., 2., 4., 0., 10., false), 0.75);
+  EXPECT_DOUBLE_EQ(shift(1., 9., 2., 4., 0., 10., false), 6.);
+  // integer shifts smaller than one step are no move
+  EXPECT_EQ(shift(4., 3., 2., 2., 0., 10., true), 0.);
+}
+
 TEST(FixPropagateValue, RowSidesStopLockingOnceRedundant)
 {
   bool le = false, ge = false;
