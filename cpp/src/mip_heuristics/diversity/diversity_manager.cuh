@@ -43,7 +43,24 @@ class diversity_manager_t {
   // cost-aware fixed-integer LP, repair it and publish it when it improves the incumbent
   // (called from local search)
   void run_lp_guided_fix_propagate();
-  bool run_fix_propagate_complete(f_t max_budget);
+  // study = true runs the strategy study instead (run_fix_propagate_study)
+  bool run_fix_propagate_complete(f_t max_budget, bool study = false);
+  // Fix-and-propagate study (mip_hyper_heuristic_fix_propagate_study): on the root LP point, run
+  // every configured order x value (x type grouping x seed), evaluate each distinct pattern
+  // without the incumbent gate, hand patterns the pass or the evaluation could not make feasible to
+  // the configured repairs (FJ, feasibility pump), log one "FPS result" line per configuration and
+  // end the process. Pure integer problems are included (their evaluation is a feasibility check).
+  void run_fix_propagate_study();
+  // repair of a complete but infeasible assignment (integers = pattern, continuous = LP point):
+  // 1 = fixed-integer LP then feasibility jump, 2 = feasibility pump started from the pattern
+  struct pattern_repair_t {
+    bool feasible{false};
+    bool published{false};  // the population took it as its new best
+    f_t obj{std::numeric_limits<f_t>::infinity()};
+    double time{0};
+  };
+  pattern_repair_t repair_pattern(const std::vector<f_t>& assign, int mode, f_t time_limit);
+  bool fp_study_active{false};  // the study ignores B&B preemption
   // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
   // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
   // full objective of the LP point, optional objective-free repair and publish
@@ -71,7 +88,8 @@ class diversity_manager_t {
                                     bool repair,
                                     f_t repair_tlimit,
                                     f_t repair_below  = std::numeric_limits<f_t>::infinity(),
-                                    f_t max_push_time = 11.);
+                                    f_t max_push_time = 11.,
+                                    bool gate         = true);
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring

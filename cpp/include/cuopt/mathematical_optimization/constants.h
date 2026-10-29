@@ -144,6 +144,24 @@
   "mip_hyper_heuristic_fix_propagate_continuous_min_improvement"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_PORTFOLIO \
   "mip_hyper_heuristic_fix_propagate_portfolio"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_TYPE_GROUPING \
+  "mip_hyper_heuristic_fix_propagate_type_grouping"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_REPAIR "mip_hyper_heuristic_fix_propagate_repair"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY  "mip_hyper_heuristic_fix_propagate_study"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_ORDERS \
+  "mip_hyper_heuristic_fix_propagate_study_orders"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_VALUES \
+  "mip_hyper_heuristic_fix_propagate_study_values"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_GROUPING \
+  "mip_hyper_heuristic_fix_propagate_study_grouping"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_REPAIRS \
+  "mip_hyper_heuristic_fix_propagate_study_repairs"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_SEEDS \
+  "mip_hyper_heuristic_fix_propagate_study_seeds"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_REPAIR_TIME \
+  "mip_hyper_heuristic_fix_propagate_study_repair_time"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_STUDY_TIME_LIMIT \
+  "mip_hyper_heuristic_fix_propagate_study_time_limit"
 #define CUOPT_MIP_HYPER_HEURISTIC_RELATED_VARS_TIME_LIMIT \
   "mip_hyper_heuristic_related_vars_time_limit"
 

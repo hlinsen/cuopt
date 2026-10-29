@@ -26,8 +26,9 @@
 // Terminology follows [KK]: a variable strategy orders the integers, a value strategy picks the
 // value each integer is fixed to. Both are computed from a reference point: the root LP solution,
 // or zero clamped to the bounds when no LP is available yet.
-// Not implemented here: the Dual and Type variable strategies of [KK], its integer-aware three-way
-// branching, and the clique/implication propagators and repair of [SRF].
+// Not implemented here: the Dual variable strategy of [KK], its integer-aware three-way branching,
+// the clique-cover orders and the in-pass (WalkSAT-style) repair of [SRF], and the dynamic order of
+// SCIP's locks heuristic (its lock updates only change the value here, as in [SRF] loosedyn).
 // Continuous bounds are tightened inside the domain only (conflict detection, never handed to an
 // LP), subject to a minimum relative improvement.
 
@@ -55,6 +56,9 @@ enum class fp_variable_strategy_t {
   UPLOCKS       = 3,  // fewest up-locks first, ties by larger reference value; cf. [SRF] locks
   LOCKS         = 4,  // most locks (up + down) first, ties by larger reference value: the order of
                       // SCIP's locks heuristic
+  REDUCED_COST_ABS = 5,  // largest |reduced cost| first: [KK] RedCost
+  TYPE             = 6,  // binaries, then general integers, in formulation order: [KK] Type,
+                         // [SRF] type
 };
 
 // Value strategy: the value an integer is fixed to (fix_and_propagate clamps it to the current
@@ -69,7 +73,32 @@ enum class fp_value_strategy_t {
                                  // the LP-based fixing of [KK]
   FEWER_LOCKS = 6,               // round toward the side with fewer locks (SCIP's locks heuristic
                                  // fixes to that bound); ties round a fractional value up
+  GOOD_OBJ = 7,                  // the bound that improves the objective, the lower one without an
+                                 // objective coefficient: [SRF] goodobj (LP-free)
+  BAD_OBJ      = 8,  // the bound that worsens the objective, same tie: [SRF] badobj (LP-free)
+  RANDOM_BOUND = 9,  // lower or upper bound with probability 1/2: [SRF] random (LP-free)
+  FEWER_LOCKS_DYNAMIC = 10,  // FEWER_LOCKS with the locks recounted at fixing time over the rows
+                             // that can still be violated: [SRF] loosedyn
+  SCIP_LOCKS = 11,  // SCIP's locks heuristic: dynamic locks on binaries only (general integers
+                    // round up as ROUND_UP, after all binaries), ties up when the objective
+                    // coefficient is <= 0, else up with probability 0.67
 };
+
+inline bool fp_dynamic_locks(fp_value_strategy_t s)
+{
+  return s == fp_value_strategy_t::FEWER_LOCKS_DYNAMIC || s == fp_value_strategy_t::SCIP_LOCKS;
+}
+
+// Type grouping ([SRF]: the first step of every order but LR): binaries before general integers,
+// the order key deciding within each group. TYPE and SCIP_LOCKS always group.
+inline bool fp_groups_by_type(fp_variable_strategy_t s, fp_value_strategy_t v, bool grouping)
+{
+  return grouping || s == fp_variable_strategy_t::TYPE || v == fp_value_strategy_t::SCIP_LOCKS;
+}
+
+// SCIP's locks heuristic: probability of rounding up on a lock tie with a positive objective
+// coefficient (heuristics/locks/roundupprobability)
+constexpr double fp_scip_locks_roundup_probability = 0.67;
 
 template <typename i_t, typename f_t>
 f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks, i_t downlocks = 0)
@@ -80,10 +109,16 @@ f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks, i_t down
     case fp_variable_strategy_t::REDUCED_COST: return -red;
     case fp_variable_strategy_t::UPLOCKS: return -(f_t)uplocks + f_t(1e-3) * x;
     case fp_variable_strategy_t::LOCKS: return (f_t)(uplocks + downlocks) + f_t(1e-3) * x;
+    case fp_variable_strategy_t::REDUCED_COST_ABS: return std::abs(red);
+    case fp_variable_strategy_t::TYPE: return 0;  // formulation order within each type group
   }
   return x;
 }
 
+// Preferred value of one integer. For the dynamic-locks strategies this is the value taken on a
+// lock tie; fix_and_propagate decides the direction at fixing time (see fp_dynamic_lock_values).
+// The LP-free bound strategies fall back to rounding the reference value up when the chosen bound
+// is infinite ([SRF] assumes finite bounds).
 template <typename f_t>
 f_t fp_preferred_value(fp_value_strategy_t s,
                        f_t x,
@@ -94,14 +129,24 @@ f_t fp_preferred_value(fp_value_strategy_t s,
                        f_t int_tol,
                        f_t u         = 0,
                        int uplocks   = 0,
-                       int downlocks = 0)
+                       int downlocks = 0,
+                       f_t obj       = 0)
 {
-  const f_t fl = std::floor(x + int_tol);
-  const f_t fr = x - fl;
+  const f_t fl       = std::floor(x + int_tol);
+  const f_t fr       = x - fl;
+  const f_t round_up = fr > int_tol ? fl + 1 : fl;
+  auto bound         = [&](f_t b) { return std::isfinite(b) ? b : round_up; };
   switch (s) {
-    case fp_value_strategy_t::UPPER_BOUND: return ub;
-    case fp_value_strategy_t::LOWER_BOUND: return lb;
-    case fp_value_strategy_t::ROUND_UP: return fr > int_tol ? fl + 1 : fl;
+    case fp_value_strategy_t::UPPER_BOUND: return bound(ub);
+    case fp_value_strategy_t::LOWER_BOUND: return bound(lb);
+    case fp_value_strategy_t::ROUND_UP: return round_up;
+    case fp_value_strategy_t::GOOD_OBJ: return bound(obj < 0 ? ub : lb);
+    case fp_value_strategy_t::BAD_OBJ: return bound(obj > 0 ? ub : lb);
+    case fp_value_strategy_t::RANDOM_BOUND: return bound(u < f_t(0.5) ? ub : lb);
+    case fp_value_strategy_t::FEWER_LOCKS_DYNAMIC: return round_up;
+    case fp_value_strategy_t::SCIP_LOCKS:
+      if (lb != 0 || ub != 1) { return round_up; }  // general integers: not fixed by locks
+      return (obj <= 0 || u < f_t(fp_scip_locks_roundup_probability)) ? ub : lb;
     case fp_value_strategy_t::ROUND_UP_OR_NEG_REDCOST:
       return (fr > int_tol || red < -param) ? std::min(fl + 1, ub) : fl;
     case fp_value_strategy_t::ROUND_UP_ABOVE_THRESHOLD: return fr > param ? fl + 1 : fl;
@@ -111,6 +156,39 @@ f_t fp_preferred_value(fp_value_strategy_t s,
       return fr > int_tol ? fl + 1 : fl;
   }
   return fl;
+}
+
+// Values of a dynamic-locks variable when its up-locks (first) or down-locks (second) are fewer at
+// fixing time; nothing when the strategy does not use dynamic locks for this variable (general
+// integers under SCIP_LOCKS).
+template <typename f_t>
+bool fp_dynamic_lock_values(
+  fp_value_strategy_t s, f_t x, f_t lb, f_t ub, f_t int_tol, f_t& up_value, f_t& down_value)
+{
+  if (s == fp_value_strategy_t::FEWER_LOCKS_DYNAMIC) {
+    const f_t fl = std::floor(x + int_tol);
+    up_value     = std::min(fl + 1, ub);
+    down_value   = fl;
+    return true;
+  }
+  if (s == fp_value_strategy_t::SCIP_LOCKS && lb == 0 && ub == 1) {
+    up_value   = 1;
+    down_value = 0;
+    return true;
+  }
+  return false;
+}
+
+// A row side still locks its variables when it can be violated given the current activity range:
+// the <= side while the maximum activity exceeds the right-hand side, the >= side while the minimum
+// activity is below the left-hand side. Sides already redundant stop counting ([SRF] loosedyn,
+// SCIP heuristics/locks/updatelocks).
+template <typename f_t>
+void fp_active_sides(
+  f_t min_act, f_t max_act, f_t row_lb, f_t row_ub, f_t tol, bool& le_active, bool& ge_active)
+{
+  le_active = std::isfinite(row_ub) && !(max_act <= row_ub + tol);
+  ge_active = std::isfinite(row_lb) && !(min_act >= row_lb - tol);
 }
 
 template <typename i_t, typename f_t>
@@ -279,15 +357,44 @@ struct host_fix_propagate_t {
     return false;
   }
 
+  // up- and down-locks of integer var v over the rows that can still be violated under the current
+  // bounds (fp_active_sides); the scan counts toward the pass's work
+  void dynamic_locks(i_t v, i_t& uplocks, i_t& downlocks)
+  {
+    uplocks = downlocks = 0;
+    const f_t tol       = abs_tol;
+    for (i_t kk = var_offsets[v]; kk < var_offsets[v + 1]; ++kk) {
+      const i_t r = var_rows[kk];
+      f_t min_act = 0, max_act = 0;
+      for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
+        const i_t c = row_cols[k];
+        const f_t a = row_vals[k];
+        min_act += a > 0 ? a * lp->lower[c] : a * lp->upper[c];
+        max_act += a > 0 ? a * lp->upper[c] : a * lp->lower[c];
+      }
+      work += row_offsets[r + 1] - row_offsets[r];
+      bool le_active, ge_active;
+      fp_active_sides<f_t>(min_act, max_act, row_lb[r], row_ub[r], tol, le_active, ge_active);
+      const f_t a = var_vals[kk];
+      if ((a > 0 && le_active) || (a < 0 && ge_active)) { uplocks++; }
+      if ((a > 0 && ge_active) || (a < 0 && le_active)) { downlocks++; }
+    }
+  }
+
   // fix-and-propagate pass: order = integer vars in processing order, pref = preferred value per
   // var (indexed by var id). One-level backtrack: on a conflict the other end of the domain is
   // tried; if both conflict, the remaining integers get their preferred values without propagation
   // (the pattern is reported as conflicting), as when the pass exceeds work_limit. Returns the
   // number of conflicts; values in col_lb.
+  // dyn (optional, by var id): variables whose value is decided at fixing time by their dynamic
+  // locks: dyn_up when they have fewer up-locks, dyn_down when fewer down-locks, pref on a tie.
   i_t fix_and_propagate(const std::vector<i_t>& order,
                         const std::vector<f_t>& pref,
                         i_t& n_flipped,
-                        i_t& n_implied)
+                        i_t& n_implied,
+                        const std::vector<char>* dyn     = nullptr,
+                        const std::vector<f_t>* dyn_up   = nullptr,
+                        const std::vector<f_t>* dyn_down = nullptr)
   {
     lp->lower = lp_lower0;
     lp->upper = lp_upper0;
@@ -309,7 +416,17 @@ struct host_fix_propagate_t {
         if (lb != pref[v]) n_implied++;
         continue;
       }
-      const f_t p = std::min(std::max(pref[v], lb), ub);
+      f_t pv = pref[v];
+      if (propagate && dyn != nullptr && (*dyn)[v]) {
+        i_t up = 0, down = 0;
+        dynamic_locks(v, up, down);
+        if (up < down) {
+          pv = (*dyn_up)[v];
+        } else if (down < up) {
+          pv = (*dyn_down)[v];
+        }
+      }
+      const f_t p = std::min(std::max(pv, lb), ub);
       if (propagate && work > work_limit) {
         work_limit_hit = true;
         n_conflicts++;

@@ -1400,6 +1400,86 @@ mip_settings:
         field_num: 62
         type: int32
         optional: true
+    - fix_propagate_type_grouping:
+        param_name: mip_hyper_heuristic_fix_propagate_type_grouping
+        description: >-
+          Fix-and-propagate: fix binaries before general integers (0 off, 1 on).
+        default: "0"
+        field_num: 63
+        type: int32
+        optional: true
+    - fix_propagate_repair:
+        param_name: mip_hyper_heuristic_fix_propagate_repair
+        description: >-
+          Repair of a conflicting fix-and-propagate pattern: 0 none, 1 fixed-integer
+          LP then feasibility jump, 2 feasibility pump.
+        default: "0"
+        field_num: 64
+        type: int32
+        optional: true
+    - fix_propagate_study:
+        param_name: mip_hyper_heuristic_fix_propagate_study
+        description: >-
+          Fix-and-propagate strategy study on the root LP point, then exit (0 off, 1 on).
+        default: "0"
+        field_num: 65
+        type: int32
+        optional: true
+    - fix_propagate_study_orders:
+        param_name: mip_hyper_heuristic_fix_propagate_study_orders
+        description: >-
+          Fix-and-propagate study: bit mask of the variable strategies.
+        default: "127"
+        field_num: 66
+        type: int32
+        optional: true
+    - fix_propagate_study_values:
+        param_name: mip_hyper_heuristic_fix_propagate_study_values
+        description: >-
+          Fix-and-propagate study: bit mask of the value strategies.
+        default: "4095"
+        field_num: 67
+        type: int32
+        optional: true
+    - fix_propagate_study_grouping:
+        param_name: mip_hyper_heuristic_fix_propagate_study_grouping
+        description: >-
+          Fix-and-propagate study: bit 0 strategies as defined, bit 1 with type grouping.
+        default: "1"
+        field_num: 68
+        type: int32
+        optional: true
+    - fix_propagate_study_repairs:
+        param_name: mip_hyper_heuristic_fix_propagate_study_repairs
+        description: >-
+          Fix-and-propagate study: bit 1 feasibility jump repair, bit 2 feasibility
+          pump repair.
+        default: "6"
+        field_num: 69
+        type: int32
+        optional: true
+    - fix_propagate_study_seeds:
+        param_name: mip_hyper_heuristic_fix_propagate_study_seeds
+        description: >-
+          Fix-and-propagate study: seeds of the randomized value strategies.
+        default: "1"
+        field_num: 70
+        type: int32
+        optional: true
+    - fix_propagate_study_repair_time:
+        param_name: mip_hyper_heuristic_fix_propagate_study_repair_time
+        description: >-
+          Fix-and-propagate study: seconds per repair hand-off.
+        default: "5.0"
+        field_num: 71
+        optional: true
+    - fix_propagate_study_time_limit:
+        param_name: mip_hyper_heuristic_fix_propagate_study_time_limit
+        description: >-
+          Fix-and-propagate study: seconds for the whole study.
+        default: "1800.0"
+        field_num: 72
+        optional: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Optimization Problem (cpu_optimization_problem_t)

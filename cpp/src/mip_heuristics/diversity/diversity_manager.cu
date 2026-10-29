@@ -207,7 +207,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                                   bool repair,
                                                   f_t repair_tlimit,
                                                   f_t repair_below,
-                                                  f_t max_push_time)
+                                                  f_t max_push_time,
+                                                  bool gate)
 {
   raft::common::nvtx::range fun_scope("eval_fixed_pattern");
   pattern_eval_t res;
@@ -218,6 +219,19 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   const double t0   = timer.elapsed_time();
   solution_t<i_t, f_t> sol(*problem_ptr);
   sol.copy_new_assignment(assign);
+  if (problem_ptr->n_integer_vars == problem_ptr->n_variables) {
+    // pure integer: the pattern is the whole solution, so the evaluation is a feasibility check
+    sol.compute_feasibility();
+    res.usable = true;
+    res.lp_obj = sol.get_user_objective();
+    if (repair && sol.get_feasible()) {
+      res.repaired_obj        = res.lp_obj;
+      res.repaired_assignment = sol.get_host_assignment();
+      res.published           = population.add_solution(solution_t<i_t, f_t>(sol)).second;
+    }
+    res.time = timer.elapsed_time() - t0;
+    return res;
+  }
   auto [fixed_problem, fixed_assignment, variable_map] =
     sol.fix_variables(problem_ptr->integer_indices);
   fixed_problem.check_problem_representation(true);
@@ -268,7 +282,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   res.usable = std::isfinite(res.lp_obj);
   // the repair rarely improves the objective of the LP point, so a point that does not beat the
   // incumbent cannot be published: skip the push and the repair (solver-space objectives)
-  if (res.usable && population.is_feasible()) {
+  if (gate && res.usable && population.is_feasible()) {
     const f_t incumbent = population.best_feasible().get_objective();
     if (sol.get_objective() > incumbent + f_t(1e-4) * std::max<f_t>(1., std::abs(incumbent))) {
       res.cannot_beat_incumbent = true;
@@ -368,15 +382,13 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     if (feas) {
       res.repaired_obj        = sol.get_user_objective();
       res.repaired_assignment = sol.get_host_assignment();
-      const f_t best_pub = population.is_feasible() ? population.best_feasible().get_objective()
-                                                    : std::numeric_limits<f_t>::infinity();
-      if (sol.get_objective() < best_pub) {
-        res.published = true;
+      // like the other heuristics, hand every feasible solution to the population and let it decide
+      res.published = population.add_solution(solution_t<i_t, f_t>(sol)).second;
+      if (res.published) {
         CUOPT_LOG_INFO(
           "New solution from primal heuristics (CPU fix-and-propagate). Objective %+.6e. Time %.3f",
           res.repaired_obj,
           timer.elapsed_time());
-        population.add_solution(solution_t<i_t, f_t>(sol));
       }
     }
   }
@@ -400,12 +412,12 @@ void diversity_manager_t<i_t, f_t>::run_lp_guided_fix_propagate()
 }
 
 template <typename i_t, typename f_t>
-bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
+bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget, bool study)
 {
   raft::common::nvtx::range fun_scope("run_fix_propagate_complete");
   auto* handle_ptr = problem_ptr->handle_ptr;
   auto stream      = handle_ptr->get_stream();
-  const f_t budget = std::min<f_t>(timer.remaining_time() * 0.8, max_budget);
+  const f_t budget = study ? max_budget : std::min<f_t>(timer.remaining_time() * 0.8, max_budget);
   timer_t fpc_timer(budget);
   const f_t int_tol    = problem_ptr->tolerances.integrality_tolerance;
   const double t_build = timer.elapsed_time();
@@ -489,15 +501,23 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     std::string name;  // log name
     fp_variable_strategy_t var_strategy;
     fp_value_strategy_t value_strategy;
-    f_t value_param;  // reduced-cost or fraction threshold of the value strategy
-    unsigned seed;    // LP-randomized value strategy
+    f_t value_param;       // reduced-cost or fraction threshold of the value strategy
+    unsigned seed;         // randomized value strategies
+    bool grouping{false};  // binaries before general integers (fp_groups_by_type)
   };
   struct pass_t {
     size_t cand{0};
     std::vector<f_t> pattern;  // values of the integers (h_int order)
     f_t int_cost{0};
     i_t n_ones{0};
+    i_t n_conflicts{0};
+    double time{0};
+    bool work_limit_hit{false};
   };
+  std::vector<char> is_binary(n_vars, 0);
+  for (auto v : h_int) {
+    is_binary[v] = h_vlb[v] == 0 && h_vub[v] == 1;
+  }
   constexpr f_t rank_tol = 1e-4;
   const f_t rank_tlimit  = std::min<f_t>(8., 0.25 * budget);
   const f_t push_tlimit  = std::min<f_t>(11., 0.3 * budget);
@@ -516,9 +536,23 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     for (auto v : h_int) {
       key[v] = fp_order_key<i_t, f_t>(c.var_strategy, x[v], red[v], uplocks[v], downlocks[v]);
     }
-    std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
+    const bool group = fp_groups_by_type(c.var_strategy, c.value_strategy, c.grouping);
+    std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) {
+      if (group && is_binary[a] != is_binary[b]) { return is_binary[a] > is_binary[b]; }
+      return key[a] > key[b];
+    });
     std::vector<f_t> pref(n_vars, 0.);
-    const bool randomized = c.value_strategy == fp_value_strategy_t::LP_RANDOMIZED;
+    const bool randomized = c.value_strategy == fp_value_strategy_t::LP_RANDOMIZED ||
+                            c.value_strategy == fp_value_strategy_t::RANDOM_BOUND ||
+                            c.value_strategy == fp_value_strategy_t::SCIP_LOCKS;
+    const bool dynamic = fp_dynamic_locks(c.value_strategy);
+    std::vector<char> dyn;
+    std::vector<f_t> dyn_up, dyn_down;
+    if (dynamic) {
+      dyn.assign(n_vars, 0);
+      dyn_up.assign(n_vars, 0);
+      dyn_down.assign(n_vars, 0);
+    }
     for (auto v : h_int) {
       const f_t u = randomized ? f_t(U(g)) : f_t(0);
       pref[v]     = fp_preferred_value<f_t>(c.value_strategy,
@@ -530,12 +564,22 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
                                         int_tol,
                                         u,
                                         uplocks[v],
-                                        downlocks[v]);
+                                        downlocks[v],
+                                        h_obj[v]);
+      if (dynamic) {
+        dyn[v] = fp_dynamic_lock_values<f_t>(
+          c.value_strategy, x[v], h_vlb[v], h_vub[v], int_tol, dyn_up[v], dyn_down[v]);
+      }
     }
     const double t_fp = timer.elapsed_time();
     i_t n_flipped = 0, n_implied = 0;
-    fp_host.work    = 0;
-    i_t n_conflicts = fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
+    fp_host.work = 0;
+    i_t n_conflicts =
+      dynamic ? fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied, &dyn, &dyn_up, &dyn_down)
+              : fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
+    out.n_conflicts    = n_conflicts;
+    out.time           = timer.elapsed_time() - t_fp;
+    out.work_limit_hit = fp_host.work_limit_hit;
     out.pattern.assign(h_int.size(), 0);
     out.int_cost = 0;
     out.n_ones   = 0;
@@ -563,12 +607,172 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
   };
 
   const auto& hp = context.settings.heuristic_params;
+  if (study) {
+    // strategy study: every configured order x value (x grouping x seed) on the same root LP
+    // point; distinct conflict-free patterns get the full evaluation without the incumbent gate;
+    // patterns left infeasible by the pass or the evaluation go to each configured repair
+    static const char* order_names[] = {
+      "frac", "lpval", "redcost", "uplocks", "locks", "redcost_abs", "type"};
+    static const char* value_names[]  = {"ub",
+                                         "lb",
+                                         "round_up",
+                                         "round_up_negrc",
+                                         "round_up_thr",
+                                         "lp_rand",
+                                         "fewer_locks",
+                                         "goodobj",
+                                         "badobj",
+                                         "random",
+                                         "loosedyn",
+                                         "scip_locks"};
+    static const char* repair_names[] = {"none", "fj", "fp"};
+    constexpr int n_orders = 7, n_values = 12;
+    const int n_seeds = std::max(1, (int)hp.fix_propagate_study_seeds);
+    struct seen_t {
+      std::vector<f_t> pattern;
+      int repair;
+      bool feasible;
+      f_t obj;
+      double time;
+      const char* stage;
+    };
+    std::vector<seen_t> seen;
+    auto find_seen = [&](const std::vector<f_t>& pat, int repair) -> const seen_t* {
+      for (const auto& s : seen) {
+        if (s.repair == repair && s.pattern == pat) { return &s; }
+      }
+      return nullptr;
+    };
+    auto study_out_of_time = [&]() {
+      return fpc_timer.check_time_limit() || timer.check_time_limit();
+    };
+    CUOPT_LOG_INFO(
+      "FPS start n_int=%zu n_binary=%d n_vars=%d pure_integer=%d lp_fractional=%d budget=%.1fs "
+      "elapsed=%.2f",
+      h_int.size(),
+      (int)std::count(is_binary.begin(), is_binary.end(), 1),
+      n_vars,
+      (int)(problem_ptr->n_integer_vars == problem_ptr->n_variables),
+      n_frac,
+      budget,
+      timer.elapsed_time());
+    int n_configs = 0;
+    bool stopped  = false;
+    for (int grouping = 0; grouping < 2 && !stopped; ++grouping) {
+      if (!((hp.fix_propagate_study_grouping >> grouping) & 1)) { continue; }
+      for (int o = 0; o < n_orders && !stopped; ++o) {
+        if (!((hp.fix_propagate_study_orders >> o) & 1)) { continue; }
+        const auto order = static_cast<fp_variable_strategy_t>(o);
+        // TYPE always groups: its grouped variant is the same pass
+        if (grouping == 1 && order == fp_variable_strategy_t::TYPE) { continue; }
+        for (int val = 0; val < n_values && !stopped; ++val) {
+          if (!((hp.fix_propagate_study_values >> val) & 1)) { continue; }
+          const auto value = static_cast<fp_value_strategy_t>(val);
+          if (grouping == 1 && value == fp_value_strategy_t::SCIP_LOCKS) { continue; }
+          const bool randomized = value == fp_value_strategy_t::LP_RANDOMIZED ||
+                                  value == fp_value_strategy_t::RANDOM_BOUND ||
+                                  value == fp_value_strategy_t::SCIP_LOCKS;
+          for (int seed = 0; seed < (randomized ? n_seeds : 1); ++seed) {
+            if (study_out_of_time()) {
+              stopped = true;
+              break;
+            }
+            const cand_t c{std::string(order_names[o]) + "/" + value_names[val],
+                           order,
+                           value,
+                           hp.fix_propagate_value_param,
+                           12u + 1000u * (unsigned)seed,
+                           grouping == 1};
+            pass_t p;
+            run_pass(c, h_lp, p);
+            std::vector<f_t> assign = h_lp;
+            for (size_t q = 0; q < h_int.size(); ++q) {
+              assign[h_int[q]] = p.pattern[q];
+            }
+            auto log_result = [&](int repair, const seen_t& s, bool dup) {
+              CUOPT_LOG_INFO(
+                "FPS result order=%s value=%s group=%d seed=%d repair=%s conflicts=%d "
+                "pass_time=%.3f work_limit_hit=%d ones=%d dup=%d feasible=%d obj=%.12g time=%.3f "
+                "stage=%s elapsed=%.2f",
+                order_names[o],
+                value_names[val],
+                grouping,
+                seed,
+                repair_names[repair],
+                (int)p.n_conflicts,
+                p.time,
+                (int)p.work_limit_hit,
+                (int)p.n_ones,
+                (int)dup,
+                (int)s.feasible,
+                s.feasible ? (double)s.obj : std::numeric_limits<double>::infinity(),
+                s.time,
+                s.stage,
+                timer.elapsed_time());
+            };
+            // the pass and its evaluation (no repair hand-off)
+            seen_t base{p.pattern, 0, false, std::numeric_limits<f_t>::infinity(), 0., "conflict"};
+            if (p.n_conflicts == 0) {
+              if (const seen_t* s = find_seen(p.pattern, 0)) {
+                base = *s;
+                log_result(0, base, true);
+              } else {
+                auto ev       = eval_fixed_pattern(assign,
+                                             rank_tol,
+                                             rank_tlimit,
+                                             nullptr,
+                                             nullptr,
+                                             true,
+                                             repair_tlimit,
+                                             std::numeric_limits<f_t>::infinity(),
+                                             push_tlimit,
+                                             false);
+                base.feasible = std::isfinite(ev.repaired_obj);
+                base.obj      = ev.repaired_obj;
+                base.time     = ev.time;
+                base.stage =
+                  base.feasible ? "evaluated" : (ev.usable ? "lp_infeasible" : "lp_failed");
+                seen.push_back(base);
+                log_result(0, base, false);
+              }
+            } else {
+              log_result(0, base, false);
+            }
+            // repair hand-offs for patterns still infeasible
+            for (int repair = 1; repair <= 2 && !base.feasible; ++repair) {
+              if (!((hp.fix_propagate_study_repairs >> repair) & 1)) { continue; }
+              if (const seen_t* s = find_seen(p.pattern, repair)) {
+                log_result(repair, *s, true);
+                continue;
+              }
+              if (study_out_of_time()) { break; }
+              // a finished B&B preempts the heuristics; the repairs still get their time
+              context.preempt_heuristic_solver_.store(false);
+              auto r = repair_pattern(assign, repair, hp.fix_propagate_study_repair_time);
+              seen_t s{p.pattern, repair, r.feasible, r.obj, r.time, "repair"};
+              seen.push_back(s);
+              log_result(repair, s, false);
+            }
+            n_configs++;
+          }
+        }
+      }
+    }
+    CUOPT_LOG_INFO("FPS done configs=%d distinct_evaluations=%zu stopped=%d elapsed=%.2f",
+                   n_configs,
+                   seen.size(),
+                   (int)stopped,
+                   timer.elapsed_time());
+    return false;
+  }
+
   std::vector<cand_t> cands{
     {"lp_guided",
      static_cast<fp_variable_strategy_t>(hp.fix_propagate_variable_strategy),
      static_cast<fp_value_strategy_t>(hp.fix_propagate_value_strategy),
      hp.fix_propagate_value_param,
-     12u}};
+     12u,
+     hp.fix_propagate_type_grouping != 0}};
   if (hp.fix_propagate_portfolio != 0) {
     // SCIP's locks rule, [KK]'s fractionality order and [KK]'s LP-based (randomized) fixing
     const cand_t extra[] = {
@@ -590,10 +794,18 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     }
   }
   std::vector<pass_t> passes;
+  pass_t configured_conflict;  // the configured pass when it ends in a conflict (for the repair)
+  bool configured_conflicted = false;
   for (size_t k = 0; k < cands.size() && !out_of_time(); ++k) {
     pass_t p;
     p.cand = k;
-    if (!run_pass(cands[k], h_lp, p)) { continue; }
+    if (!run_pass(cands[k], h_lp, p)) {
+      if (k == 0) {
+        configured_conflict   = std::move(p);
+        configured_conflicted = true;
+      }
+      continue;
+    }
     bool dup = false;
     for (const auto& q : passes) {
       if (q.pattern == p.pattern) { dup = true; }
@@ -654,11 +866,94 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
       (int)ev.cannot_beat_incumbent,
       timer.elapsed_time());
   }
+  // repair hand-off (mip_hyper_heuristic_fix_propagate_repair) of the configured pattern when its
+  // pass ended in a conflict and no other pattern was published
+  if (!published && configured_conflicted && hp.fix_propagate_repair != 0 && !out_of_time()) {
+    std::vector<f_t> assign = h_lp;
+    for (size_t q = 0; q < h_int.size(); ++q) {
+      assign[h_int[q]] = configured_conflict.pattern[q];
+    }
+    auto r    = repair_pattern(assign, hp.fix_propagate_repair, repair_tlimit);
+    published = r.published;
+    CUOPT_LOG_DEBUG("Fix-and-propagate repair %d: feasible=%d obj=%g published=%d time=%.2fs",
+                    (int)hp.fix_propagate_repair,
+                    (int)r.feasible,
+                    r.obj,
+                    (int)r.published,
+                    r.time);
+  }
   CUOPT_LOG_DEBUG("LP-guided fix-and-propagate: evaluated=%d published=%d elapsed=%.2f",
                   n_eval,
                   (int)published,
                   timer.elapsed_time());
   return published;
+}
+
+template <typename i_t, typename f_t>
+typename diversity_manager_t<i_t, f_t>::pattern_repair_t
+diversity_manager_t<i_t, f_t>::repair_pattern(const std::vector<f_t>& assign,
+                                              int mode,
+                                              f_t time_limit)
+{
+  raft::common::nvtx::range fun_scope("repair_pattern");
+  pattern_repair_t res;
+  const double t0 = timer.elapsed_time();
+  timer_t rtimer(time_limit);
+  solution_t<i_t, f_t> sol(*problem_ptr);
+  sol.copy_new_assignment(assign);
+  sol.compute_feasibility();
+  const bool has_continuous = problem_ptr->n_integer_vars < problem_ptr->n_variables;
+  if (mode == 1) {
+    // as for the rounded root LP point in local search: complete the continuous part with a short
+    // fixed-integer LP, then let feasibility jump move every variable
+    if (has_continuous) {
+      relaxed_lp_settings_t lp_settings;
+      lp_settings.time_limit = std::min<f_t>(2., 0.4 * time_limit);
+      lp_settings.tolerance  = problem_ptr->tolerances.absolute_tolerance;
+      run_lp_with_vars_fixed(*problem_ptr, sol, problem_ptr->integer_indices, lp_settings);
+    }
+    ls.fj.settings.mode                   = fj_mode_t::EXIT_NON_IMPROVING;
+    ls.fj.settings.n_of_minimums_for_exit = 20000;
+    ls.fj.settings.update_weights         = true;
+    ls.fj.settings.feasibility_run        = false;
+    ls.do_fj_solve(sol, ls.fj, std::max<f_t>(rtimer.remaining_time(), 0.1), "fix_propagate_repair");
+  } else if (mode == 2) {
+    // feasibility pump descents started from the pattern (already integral, so the first rounding
+    // keeps it), restarted on cycles until the time limit
+    ls.fp.timer                = rtimer;
+    ls.fp.improvement_callback = ls.make_fj_improvement_callback(problem_ptr);
+    ls.fp.cycle_queue.reset(sol);
+    ls.fp.reset();
+    ls.fp.resize_vectors(*problem_ptr, problem_ptr->handle_ptr);
+    bool feas = false;
+    while (!feas && !rtimer.check_time_limit()) {
+      feas = ls.fp.run_single_fp_descent(sol);
+      if (!feas && !rtimer.check_time_limit()) { feas = ls.fp.restart_fp(sol); }
+    }
+  }
+  sol.compute_feasibility();
+  res.feasible = sol.get_feasible();
+  if (res.feasible) {
+    res.obj       = sol.get_user_objective();
+    res.published = population.add_solution(solution_t<i_t, f_t>(sol)).second;
+  }
+  res.time = timer.elapsed_time() - t0;
+  return res;
+}
+
+template <typename i_t, typename f_t>
+void diversity_manager_t<i_t, f_t>::run_fix_propagate_study()
+{
+  const auto& hp = context.settings.heuristic_params;
+  if (problem_ptr->n_integer_vars == 0) {
+    CUOPT_LOG_INFO("FPS skip reason=no_integers");
+    return;
+  }
+  CUOPT_LOG_INFO("FPS begin time_limit=%.1fs repair_time=%.1fs elapsed=%.2f",
+                 hp.fix_propagate_study_time_limit,
+                 hp.fix_propagate_study_repair_time,
+                 timer.elapsed_time());
+  run_fix_propagate_complete(hp.fix_propagate_study_time_limit, true);
 }
 
 template <typename i_t, typename f_t>
@@ -901,6 +1196,10 @@ void diversity_manager_t<i_t, f_t>::generate_quick_feasible_solution()
 template <typename i_t, typename f_t>
 bool diversity_manager_t<i_t, f_t>::check_b_b_preemption()
 {
+  if (fp_study_active) {
+    population.add_external_solutions_to_population();
+    return false;
+  }
   if (context.preempt_heuristic_solver_.load()) {
     if (population.current_size() == 0) { population.allocate_solutions(); }
     population.add_external_solutions_to_population();
@@ -977,9 +1276,11 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver(
     return population.best_feasible();
   }
 
-  population.timer        = timer;
-  const f_t time_limit    = timer.remaining_time();
-  const auto& hp          = context.settings.heuristic_params;
+  population.timer     = timer;
+  const f_t time_limit = timer.remaining_time();
+  const auto& hp       = context.settings.heuristic_params;
+  // the fix-and-propagate study needs the root LP point even when B&B finishes first
+  fp_study_active         = hp.fix_propagate_study != 0;
   const f_t lp_time_limit = std::min(hp.root_lp_max_time, time_limit * hp.root_lp_time_ratio);
   // after every change to the problem, we should resize all the relevant vars
   // we need to encapsulate that to prevent repetitions
@@ -1149,6 +1450,22 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver(
       // in case the pdlp returned var boudns that are out of bounds
       clamp_within_var_bounds(lp_optimal_solution, problem_ptr, problem_ptr->handle_ptr);
     }
+  }
+
+  if (hp.fix_propagate_study != 0) {
+    // fix-and-propagate study: stop the scratch FJ threads, run the study on the root LP point and
+    // end the process; the "FPS" log lines are the result. B&B keeps running (its halt is private);
+    // the study ignores its preemption (fp_study_active) and resets the flag before each repair.
+    ls.stop_cpufj_scratch_threads();
+    if (ls.lp_optimal_exists) {
+      run_fix_propagate_study();
+    } else {
+      CUOPT_LOG_INFO("FPS skip reason=no_root_lp");
+    }
+    CUOPT_LOG_INFO("FPS exit elapsed=%.2f", timer.elapsed_time());
+    cuopt::default_logger().flush();
+    std::fflush(nullptr);
+    std::_Exit(0);
   }
 
   if (ls.lp_optimal_exists) {
