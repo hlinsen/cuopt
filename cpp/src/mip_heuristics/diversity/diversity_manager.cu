@@ -496,6 +496,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
   const f_t push_tlimit  = std::min<f_t>(11., 0.3 * budget);
   // a repair that succeeds takes about a second; one that fails would use the whole cap
   const f_t repair_tlimit = std::min<f_t>(5., 0.4 * budget);
+  const auto& hp          = context.settings.heuristic_params;
   auto run_candidate      = [&](const cand_t& c, const std::vector<f_t>& x) {
     if (fpc_timer.check_time_limit() || timer.check_time_limit() || check_b_b_preemption() ||
         timer.remaining_time() < 2. * budget) {
@@ -549,11 +550,33 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
       (double)fp_host.work / (double)model_nnz,
       (int)fp_host.work_limit_hit,
       timer.elapsed_time());
-    if (dup || n_conflicts > 0) { return; }
+    if (dup) { return; }
     seen.push_back(pat);
     std::vector<f_t> assign = x;
     for (size_t q = 0; q < h_int.size(); ++q) {
       assign[h_int[q]] = pat[q];
+    }
+    // feasibility jump hand-off of a pattern the pass or its evaluation left infeasible
+    auto fj_repair = [&]() {
+      if (hp.fix_propagate_repair == 0 || fpc_timer.check_time_limit() ||
+          timer.check_time_limit() || check_b_b_preemption()) {
+        return;
+      }
+      auto r = fj_repair_pattern(assign, repair_tlimit);
+      CUOPT_LOG_DEBUG("Fix-and-propagate FJ repair %s: feasible=%d obj=%g published=%d time=%.2fs",
+                      c.name.c_str(),
+                      (int)r.feasible,
+                      r.obj,
+                      (int)r.published,
+                      r.time);
+      if (r.feasible && best_repaired.empty()) {
+        best_name     = c.name + "+fj";
+        best_repaired = std::move(r.assignment);
+      }
+    };
+    if (n_conflicts > 0) {
+      fj_repair();
+      return;
     }
     auto ev = eval_fixed_pattern(
       assign, rank_tol, rank_tlimit, nullptr, nullptr, true, repair_tlimit, best_lp, push_tlimit);
@@ -582,9 +605,10 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
       best_lp       = ev.lp_obj;
       best_name     = c.name;
       best_repaired = std::move(ev.repaired_assignment);
+    } else if (ev.repaired_assignment.empty() && !ev.cannot_beat_incumbent) {
+      fj_repair();
     }
   };
-  const auto& hp = context.settings.heuristic_params;
   const cand_t configured{"lp_guided",
                           static_cast<fp_variable_strategy_t>(hp.fix_propagate_variable_strategy),
                           static_cast<fp_value_strategy_t>(hp.fix_propagate_value_strategy),
@@ -604,6 +628,47 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
                   timer.elapsed_time());
   // the pattern was already pushed, repaired and added to the population by its evaluation
   return true;
+}
+
+template <typename i_t, typename f_t>
+typename diversity_manager_t<i_t, f_t>::fj_repair_t
+diversity_manager_t<i_t, f_t>::fj_repair_pattern(const std::vector<f_t>& assign, f_t time_limit)
+{
+  raft::common::nvtx::range fun_scope("fj_repair_pattern");
+  fj_repair_t res;
+  const double t0 = timer.elapsed_time();
+  timer_t rtimer(time_limit);
+  solution_t<i_t, f_t> sol(*problem_ptr);
+  sol.copy_new_assignment(assign);
+  // as for the rounded root LP point in local search: complete the continuous part with a short
+  // fixed-integer LP, then let feasibility jump move every variable
+  if (problem_ptr->n_integer_vars < problem_ptr->n_variables) {
+    relaxed_lp_settings_t lp_settings;
+    lp_settings.time_limit = std::min<f_t>(2., 0.4 * time_limit);
+    lp_settings.tolerance  = problem_ptr->tolerances.absolute_tolerance;
+    run_lp_with_vars_fixed(*problem_ptr, sol, problem_ptr->integer_indices, lp_settings);
+  }
+  ls.fj.settings.mode                   = fj_mode_t::EXIT_NON_IMPROVING;
+  ls.fj.settings.n_of_minimums_for_exit = 20000;
+  ls.fj.settings.update_weights         = true;
+  ls.fj.settings.feasibility_run        = false;
+  ls.do_fj_solve(sol, ls.fj, std::max<f_t>(rtimer.remaining_time(), 0.1), "fix_propagate_repair");
+  sol.compute_feasibility();
+  res.feasible = sol.get_feasible();
+  if (res.feasible) {
+    res.obj        = sol.get_user_objective();
+    res.assignment = sol.get_host_assignment();
+    res.published  = population.add_solution(solution_t<i_t, f_t>(sol)).second;
+    if (res.published) {
+      CUOPT_LOG_INFO(
+        "New solution from primal heuristics (CPU fix-and-propagate, FJ repair). Objective %+.6e. "
+        "Time %.3f",
+        res.obj,
+        timer.elapsed_time());
+    }
+  }
+  res.time = timer.elapsed_time() - t0;
+  return res;
 }
 
 template <typename i_t, typename f_t>

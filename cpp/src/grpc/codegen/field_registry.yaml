@@ -1390,6 +1390,15 @@ mip_settings:
         default: "0.3"
         field_num: 61
         optional: true
+    - fix_propagate_repair:
+        param_name: mip_hyper_heuristic_fix_propagate_repair
+        description: >-
+          Repair of a fix-and-propagate pattern left infeasible by the pass or its
+          evaluation: 0 none, 1 feasibility jump.
+        default: "1"
+        field_num: 62
+        type: int32
+        optional: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Optimization Problem (cpu_optimization_problem_t)

@@ -142,6 +142,7 @@
   "mip_hyper_heuristic_fix_propagate_max_time"
 #define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_CONTINUOUS_MIN_IMPROVEMENT \
   "mip_hyper_heuristic_fix_propagate_continuous_min_improvement"
+#define CUOPT_MIP_HYPER_HEURISTIC_FIX_PROPAGATE_REPAIR "mip_hyper_heuristic_fix_propagate_repair"
 #define CUOPT_MIP_HYPER_HEURISTIC_RELATED_VARS_TIME_LIMIT \
   "mip_hyper_heuristic_related_vars_time_limit"
 

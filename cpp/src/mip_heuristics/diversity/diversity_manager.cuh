@@ -44,6 +44,16 @@ class diversity_manager_t {
   // (called from local search)
   void run_lp_guided_fix_propagate();
   bool run_fix_propagate_complete(f_t max_budget);
+  // feasibility jump repair of a complete but infeasible pattern (integers from the pass,
+  // continuous from the LP point): a short fixed-integer LP, then FJ on every variable
+  struct fj_repair_t {
+    bool feasible{false};
+    bool published{false};  // the population took it as its new best
+    f_t obj{std::numeric_limits<f_t>::infinity()};
+    std::vector<f_t> assignment;
+    double time{0};
+  };
+  fj_repair_t fj_repair_pattern(const std::vector<f_t>& assign, f_t time_limit);
   // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
   // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
   // full objective of the LP point, optional objective-free repair and publish
