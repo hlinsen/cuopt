@@ -38,50 +38,9 @@ class diversity_manager_t {
   solution_t<i_t, f_t> run_solver(branch_and_bound_t<i_t, f_t>& branch_and_bound);
   void generate_solution(f_t time_limit, bool random_start = true);
   void run_fp_alone();
-  // LP-guided fix-and-propagate on the root LP point with the configured strategies and budget:
-  // fix the integers with bounds propagation and backtracking, then evaluate the pattern with a
-  // cost-aware fixed-integer LP, repair it and publish it when it improves the incumbent
-  // (called from local search)
-  void run_lp_guided_fix_propagate();
-  bool run_fix_propagate_complete(f_t max_budget);
-  // feasibility jump repair of a complete but infeasible pattern (integers from the pass,
-  // continuous from the LP point): a short fixed-integer LP, then FJ on every variable
-  struct fj_repair_t {
-    bool feasible{false};
-    bool published{false};  // the population took it as its new best
-    f_t obj{std::numeric_limits<f_t>::infinity()};
-    std::vector<f_t> assignment;
-    double time{0};
-  };
-  fj_repair_t fj_repair_pattern(const std::vector<f_t>& assign, f_t time_limit);
-  // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
-  // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
-  // full objective of the LP point, optional objective-free repair and publish
-  struct pattern_eval_t {
-    bool usable{false};
-    bool optimal{false};
-    f_t lp_obj{std::numeric_limits<f_t>::infinity()};
-    f_t l2_primal_res{0};
-    f_t repaired_obj{std::numeric_limits<f_t>::infinity()};
-    bool published{false};
-    int iters{0};
-    double time{0};
-    std::vector<f_t> primal, dual;  // phase-A (PID) fixed-LP primal/dual
-    std::vector<f_t> repaired_assignment;
-    f_t pushed_lp_obj{std::numeric_limits<f_t>::infinity()};
-    f_t pushed_l2_primal_res{-1};
-    double push_time{0};
-    bool cannot_beat_incumbent{false};  // stopped after stage 1
-  };
-  pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
-                                    f_t tol,
-                                    f_t tlimit,
-                                    const std::vector<f_t>* warm_primal,
-                                    const std::vector<f_t>* warm_dual,
-                                    bool repair,
-                                    f_t repair_tlimit,
-                                    f_t repair_below  = std::numeric_limits<f_t>::infinity(),
-                                    f_t max_push_time = 11.);
+  // LP-guided CPU fix-and-propagate on the root LP point (fix_and_propagate_t), called once from
+  // local search before the GPU rounding of the same point
+  void run_root_fix_and_propagate();
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring
