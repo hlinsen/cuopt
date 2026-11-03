@@ -195,15 +195,15 @@ void diversity_manager_t<i_t, f_t>::generate_solution(f_t time_limit, bool rando
 template <typename i_t, typename f_t>
 void diversity_manager_t<i_t, f_t>::run_root_fix_and_propagate()
 {
-  fix_and_propagate_t<i_t, f_t> fpc(context,
-                                    problem_ptr,
-                                    population,
-                                    ls,
-                                    timer,
-                                    lp_optimal_solution,
-                                    lp_dual_optimal_solution,
-                                    [this]() { return check_b_b_preemption(); });
-  fpc.run();
+  fix_and_propagate_t<i_t, f_t> fix_and_propagate(context,
+                                                  problem_ptr,
+                                                  population,
+                                                  ls,
+                                                  timer,
+                                                  lp_optimal_solution,
+                                                  lp_dual_optimal_solution,
+                                                  [this]() { return check_b_b_preemption(); });
+  fix_and_propagate.run();
 }
 
 template <typename i_t, typename f_t>

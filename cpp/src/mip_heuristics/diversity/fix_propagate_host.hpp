@@ -49,7 +49,7 @@ namespace cuopt::mathematical_optimization::mip {
 
 // Variable strategy: integers with a larger key are fixed first.
 // The integer values are the settings values (mip_hyper_heuristic_fix_propagate_*_strategy).
-enum class fp_variable_strategy_t {
+enum class fix_propagate_variable_strategy_t {
   FRACTIONALITY = 0,  // closest to integral first; same measure as [KK] Frac
   LP_VALUE_DESC = 1,  // largest reference value first; not in [KK]
   REDUCED_COST  = 2,  // most negative reduced cost first; [KK] RedCost orders by |red. cost|
@@ -63,7 +63,7 @@ enum class fp_variable_strategy_t {
 
 // Value strategy: the value an integer is fixed to (fix_and_propagate clamps it to the current
 // domain).
-enum class fp_value_strategy_t {
+enum class fix_propagate_value_strategy_t {
   UPPER_BOUND              = 0,  // LP-free
   LOWER_BOUND              = 1,  // LP-free
   ROUND_UP                 = 2,  // round any fractional reference value up
@@ -81,89 +81,111 @@ enum class fp_value_strategy_t {
                              // that can still be violated: [SRF] loosedyn
 };
 
-inline bool fp_dynamic_locks(fp_value_strategy_t s)
+inline bool fix_propagate_dynamic_locks(fix_propagate_value_strategy_t strategy)
 {
-  return s == fp_value_strategy_t::FEWER_LOCKS_DYNAMIC;
+  return strategy == fix_propagate_value_strategy_t::FEWER_LOCKS_DYNAMIC;
 }
 
 // value strategies that draw one uniform number per integer
-inline bool fp_randomized(fp_value_strategy_t s)
+inline bool fix_propagate_randomized(fix_propagate_value_strategy_t strategy)
 {
-  return s == fp_value_strategy_t::LP_RANDOMIZED || s == fp_value_strategy_t::RANDOM_BOUND;
+  return strategy == fix_propagate_value_strategy_t::LP_RANDOMIZED ||
+         strategy == fix_propagate_value_strategy_t::RANDOM_BOUND;
 }
 
 // Type grouping ([SRF]: the first step of every order but LR): binaries before general integers,
 // the order key deciding within each group. Only TYPE groups.
-inline bool fp_groups_by_type(fp_variable_strategy_t s)
+inline bool fix_propagate_groups_by_type(fix_propagate_variable_strategy_t strategy)
 {
-  return s == fp_variable_strategy_t::TYPE;
+  return strategy == fix_propagate_variable_strategy_t::TYPE;
 }
 
 template <typename i_t, typename f_t>
-f_t fp_order_key(fp_variable_strategy_t s, f_t x, f_t red, i_t uplocks, i_t downlocks = 0)
+f_t fix_propagate_order_key(fix_propagate_variable_strategy_t strategy,
+                            f_t reference_value,
+                            f_t reduced_cost,
+                            i_t uplocks,
+                            i_t downlocks = 0)
 {
-  switch (s) {
-    case fp_variable_strategy_t::FRACTIONALITY: return std::abs(x - std::floor(x) - f_t(0.5));
-    case fp_variable_strategy_t::LP_VALUE_DESC: return x;
-    case fp_variable_strategy_t::REDUCED_COST: return -red;
-    case fp_variable_strategy_t::UPLOCKS: return -(f_t)uplocks + f_t(1e-3) * x;
-    case fp_variable_strategy_t::LOCKS: return (f_t)(uplocks + downlocks) + f_t(1e-3) * x;
-    case fp_variable_strategy_t::REDUCED_COST_ABS: return std::abs(red);
-    case fp_variable_strategy_t::TYPE: return 0;  // formulation order within each type group
+  switch (strategy) {
+    case fix_propagate_variable_strategy_t::FRACTIONALITY:
+      return std::abs(reference_value - std::floor(reference_value) - f_t(0.5));
+    case fix_propagate_variable_strategy_t::LP_VALUE_DESC: return reference_value;
+    case fix_propagate_variable_strategy_t::REDUCED_COST: return -reduced_cost;
+    case fix_propagate_variable_strategy_t::UPLOCKS:
+      return -(f_t)uplocks + f_t(1e-3) * reference_value;
+    case fix_propagate_variable_strategy_t::LOCKS:
+      return (f_t)(uplocks + downlocks) + f_t(1e-3) * reference_value;
+    case fix_propagate_variable_strategy_t::REDUCED_COST_ABS: return std::abs(reduced_cost);
+    case fix_propagate_variable_strategy_t::TYPE:
+      return 0;  // formulation order within each type group
   }
-  return x;
+  return reference_value;
 }
 
 // Preferred value of one integer. For the dynamic-locks strategies this is the value taken on a
-// lock tie; fix_and_propagate decides the direction at fixing time (see fp_dynamic_lock_values).
-// The LP-free bound strategies fall back to rounding the reference value up when the chosen bound
-// is infinite ([SRF] assumes finite bounds).
+// lock tie; fix_and_propagate decides the direction at fixing time (see
+// fix_propagate_dynamic_lock_values). The LP-free bound strategies fall back to rounding the
+// reference value up when the chosen bound is infinite ([SRF] assumes finite bounds).
 template <typename f_t>
-f_t fp_preferred_value(fp_value_strategy_t s,
-                       f_t x,
-                       f_t lb,
-                       f_t ub,
-                       f_t red,
-                       f_t param,
-                       f_t int_tol,
-                       f_t u         = 0,
-                       int uplocks   = 0,
-                       int downlocks = 0,
-                       f_t obj       = 0)
+f_t fix_propagate_preferred_value(fix_propagate_value_strategy_t strategy,
+                                  f_t reference_value,
+                                  f_t lb,
+                                  f_t ub,
+                                  f_t reduced_cost,
+                                  f_t value_param,
+                                  f_t integrality_tolerance,
+                                  f_t uniform_draw          = 0,
+                                  int uplocks               = 0,
+                                  int downlocks             = 0,
+                                  f_t objective_coefficient = 0)
 {
-  const f_t fl       = std::floor(x + int_tol);
-  const f_t fr       = x - fl;
-  const f_t round_up = fr > int_tol ? fl + 1 : fl;
-  auto bound         = [&](f_t b) { return std::isfinite(b) ? b : round_up; };
-  switch (s) {
-    case fp_value_strategy_t::UPPER_BOUND: return bound(ub);
-    case fp_value_strategy_t::LOWER_BOUND: return bound(lb);
-    case fp_value_strategy_t::ROUND_UP: return round_up;
-    case fp_value_strategy_t::ROUND_UP_OR_NEG_REDCOST:
-      return (fr > int_tol || red < -param) ? std::min(fl + 1, ub) : fl;
-    case fp_value_strategy_t::ROUND_UP_ABOVE_THRESHOLD: return fr > param ? fl + 1 : fl;
-    case fp_value_strategy_t::LP_RANDOMIZED: return u < fr ? fl + 1 : fl;  // u ~ U(0,1)
-    case fp_value_strategy_t::FEWER_LOCKS:
-      if (uplocks != downlocks) { return uplocks < downlocks ? std::min(fl + 1, ub) : fl; }
+  const f_t floor_value     = std::floor(reference_value + integrality_tolerance);
+  const f_t fractional_part = reference_value - floor_value;
+  const f_t round_up = fractional_part > integrality_tolerance ? floor_value + 1 : floor_value;
+  auto bound = [&](f_t bound_value) { return std::isfinite(bound_value) ? bound_value : round_up; };
+  switch (strategy) {
+    case fix_propagate_value_strategy_t::UPPER_BOUND: return bound(ub);
+    case fix_propagate_value_strategy_t::LOWER_BOUND: return bound(lb);
+    case fix_propagate_value_strategy_t::ROUND_UP: return round_up;
+    case fix_propagate_value_strategy_t::ROUND_UP_OR_NEG_REDCOST:
+      return (fractional_part > integrality_tolerance || reduced_cost < -value_param)
+               ? std::min(floor_value + 1, ub)
+               : floor_value;
+    case fix_propagate_value_strategy_t::ROUND_UP_ABOVE_THRESHOLD:
+      return fractional_part > value_param ? floor_value + 1 : floor_value;
+    case fix_propagate_value_strategy_t::LP_RANDOMIZED:
+      return uniform_draw < fractional_part ? floor_value + 1
+                                            : floor_value;  // uniform_draw ~ U(0,1)
+    case fix_propagate_value_strategy_t::FEWER_LOCKS:
+      if (uplocks != downlocks) {
+        return uplocks < downlocks ? std::min(floor_value + 1, ub) : floor_value;
+      }
       return round_up;
-    case fp_value_strategy_t::GOOD_OBJ: return bound(obj < 0 ? ub : lb);
-    case fp_value_strategy_t::BAD_OBJ: return bound(obj > 0 ? ub : lb);
-    case fp_value_strategy_t::RANDOM_BOUND: return bound(u < f_t(0.5) ? ub : lb);
-    case fp_value_strategy_t::FEWER_LOCKS_DYNAMIC: return round_up;
+    case fix_propagate_value_strategy_t::GOOD_OBJ:
+      return bound(objective_coefficient < 0 ? ub : lb);
+    case fix_propagate_value_strategy_t::BAD_OBJ: return bound(objective_coefficient > 0 ? ub : lb);
+    case fix_propagate_value_strategy_t::RANDOM_BOUND:
+      return bound(uniform_draw < f_t(0.5) ? ub : lb);
+    case fix_propagate_value_strategy_t::FEWER_LOCKS_DYNAMIC: return round_up;
   }
-  return fl;
+  return floor_value;
 }
 
 // Values of a dynamic-locks variable when its up-locks (first) or down-locks (second) are fewer at
 // fixing time; false when the strategy does not use dynamic locks.
 template <typename f_t>
-bool fp_dynamic_lock_values(
-  fp_value_strategy_t s, f_t x, f_t ub, f_t int_tol, f_t& up_value, f_t& down_value)
+bool fix_propagate_dynamic_lock_values(fix_propagate_value_strategy_t strategy,
+                                       f_t reference_value,
+                                       f_t ub,
+                                       f_t integrality_tolerance,
+                                       f_t& up_value,
+                                       f_t& down_value)
 {
-  if (s == fp_value_strategy_t::FEWER_LOCKS_DYNAMIC) {
-    const f_t fl = std::floor(x + int_tol);
-    up_value     = std::min(fl + 1, ub);
-    down_value   = fl;
+  if (strategy == fix_propagate_value_strategy_t::FEWER_LOCKS_DYNAMIC) {
+    const f_t floor_value = std::floor(reference_value + integrality_tolerance);
+    up_value              = std::min(floor_value + 1, ub);
+    down_value            = floor_value;
     return true;
   }
   return false;
@@ -173,33 +195,38 @@ bool fp_dynamic_lock_values(
 // the <= side while the maximum activity exceeds the right-hand side, the >= side while the minimum
 // activity is below the left-hand side. Sides already redundant stop counting ([SRF] loosedyn).
 template <typename f_t>
-void fp_active_sides(
-  f_t min_act, f_t max_act, f_t row_lb, f_t row_ub, f_t tol, bool& le_active, bool& ge_active)
+void fix_propagate_active_sides(f_t min_activity,
+                                f_t max_activity,
+                                f_t row_lb,
+                                f_t row_ub,
+                                f_t tolerance,
+                                bool& le_active,
+                                bool& ge_active)
 {
-  le_active = std::isfinite(row_ub) && !(max_act <= row_ub + tol);
-  ge_active = std::isfinite(row_lb) && !(min_act >= row_lb - tol);
+  le_active = std::isfinite(row_ub) && !(max_activity <= row_ub + tolerance);
+  ge_active = std::isfinite(row_lb) && !(min_activity >= row_lb - tolerance);
 }
 
 template <typename i_t, typename f_t>
-struct host_fix_propagate_t {
+struct h_fix_propagate_t {
   // integer rows (rows with at least one integer var) in the original numbering: used by the
   // callers for reduced costs, up-locks and logging, not for propagation
   std::vector<i_t> row_offsets;  // size n_rows+1
-  std::vector<i_t> row_cols;
-  std::vector<f_t> row_vals;
+  std::vector<i_t> row_columns;
+  std::vector<f_t> row_values;
   std::vector<f_t> row_lb, row_ub;
-  std::vector<i_t> row_orig;
+  std::vector<i_t> row_original;
   // per integer var: list of (row, coef) in the integer rows (indexed by var id, n+1)
-  std::vector<i_t> var_offsets;
-  std::vector<i_t> var_rows;
-  std::vector<f_t> var_vals;
-  std::vector<char> is_int;
+  std::vector<i_t> variable_offsets;
+  std::vector<i_t> variable_rows;
+  std::vector<f_t> variable_values;
+  std::vector<char> is_integer;
   // values of the last pass (integer entries are the fixings)
-  std::vector<f_t> col_lb;
+  std::vector<f_t> pass_values;
   std::vector<char> row_dead;
-  f_t abs_tol  = 1e-6;
-  f_t int_tol  = 1e-5;
-  int64_t work = 0;
+  f_t absolute_tolerance    = 1e-6;
+  f_t integrality_tolerance = 1e-5;
+  int64_t work              = 0;
   // propagation work budget of one pass (nonzeros processed); exceeding it ends the pass like a
   // conflict, so one pass cannot hold local search for long on models with very dense rows
   int64_t work_limit     = std::numeric_limits<int64_t>::max();
@@ -217,78 +244,78 @@ struct host_fix_propagate_t {
   std::unique_ptr<simplex::lp_problem_t<i_t, f_t>> lp;
   csr_matrix_t<i_t, f_t> Arow{1, 1, 0};
   std::vector<simplex::variable_type_t> var_types;
-  std::vector<f_t> lp_lower0, lp_upper0;
+  std::vector<f_t> initial_lower, initial_upper;
   simplex::domain_t<i_t, f_t> domain;
-  i_t n_orig_cols = 0;
+  i_t n_original_columns = 0;
 
-  void build(i_t n_vars,
-             i_t n_cstrs,
-             const std::vector<i_t>& offsets,
-             const std::vector<i_t>& cols,
-             const std::vector<f_t>& vals,
-             const std::vector<f_t>& clb,
-             const std::vector<f_t>& cub,
+  void build(i_t n_variables,
+             i_t n_constraints,
+             const std::vector<i_t>& constraint_offsets,
+             const std::vector<i_t>& constraint_columns,
+             const std::vector<f_t>& constraint_coefficients,
+             const std::vector<f_t>& constraint_lower_bounds,
+             const std::vector<f_t>& constraint_upper_bounds,
              const std::vector<f_t>&,
              const std::vector<f_t>&,
              const std::vector<i_t>& integer_indices)
   {
-    is_int.assign(n_vars, 0);
-    for (auto v : integer_indices) {
-      is_int[v] = 1;
+    is_integer.assign(n_variables, 0);
+    for (auto variable : integer_indices) {
+      is_integer[variable] = 1;
     }
     row_offsets.assign(1, 0);
-    row_cols.clear();
-    row_vals.clear();
+    row_columns.clear();
+    row_values.clear();
     row_lb.clear();
     row_ub.clear();
-    row_orig.clear();
+    row_original.clear();
     n_binary_only_rows = 0;
     n_mixed_rows       = 0;
-    for (i_t r = 0; r < n_cstrs; ++r) {
-      bool has_int = false, has_cont = false;
-      for (i_t k = offsets[r]; k < offsets[r + 1]; ++k) {
-        if (is_int[cols[k]]) {
-          has_int = true;
+    for (i_t row = 0; row < n_constraints; ++row) {
+      bool has_integer = false, has_continuous = false;
+      for (i_t k = constraint_offsets[row]; k < constraint_offsets[row + 1]; ++k) {
+        if (is_integer[constraint_columns[k]]) {
+          has_integer = true;
         } else {
-          has_cont = true;
+          has_continuous = true;
         }
       }
-      if (!has_int) continue;
-      if (has_cont) {
+      if (!has_integer) continue;
+      if (has_continuous) {
         n_mixed_rows++;
       } else {
         n_binary_only_rows++;
       }
-      for (i_t k = offsets[r]; k < offsets[r + 1]; ++k) {
-        row_cols.push_back(cols[k]);
-        row_vals.push_back(vals[k]);
+      for (i_t k = constraint_offsets[row]; k < constraint_offsets[row + 1]; ++k) {
+        row_columns.push_back(constraint_columns[k]);
+        row_values.push_back(constraint_coefficients[k]);
       }
-      row_offsets.push_back((i_t)row_cols.size());
-      row_lb.push_back(clb[r]);
-      row_ub.push_back(cub[r]);
-      row_orig.push_back(r);
+      row_offsets.push_back((i_t)row_columns.size());
+      row_lb.push_back(constraint_lower_bounds[row]);
+      row_ub.push_back(constraint_upper_bounds[row]);
+      row_original.push_back(row);
     }
     const i_t n_rows = (i_t)row_lb.size();
-    std::vector<i_t> cnt(n_vars + 1, 0);
-    for (i_t r = 0; r < n_rows; ++r) {
-      for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
-        if (is_int[row_cols[k]]) cnt[row_cols[k] + 1]++;
+    std::vector<i_t> count(n_variables + 1, 0);
+    for (i_t row = 0; row < n_rows; ++row) {
+      for (i_t k = row_offsets[row]; k < row_offsets[row + 1]; ++k) {
+        if (is_integer[row_columns[k]]) count[row_columns[k] + 1]++;
       }
     }
-    for (i_t v = 0; v < n_vars; ++v) {
-      cnt[v + 1] += cnt[v];
+    for (i_t variable = 0; variable < n_variables; ++variable) {
+      count[variable + 1] += count[variable];
     }
-    var_offsets = cnt;
-    var_rows.assign(var_offsets[n_vars], 0);
-    var_vals.assign(var_offsets[n_vars], 0);
-    std::vector<i_t> pos(var_offsets.begin(), var_offsets.end() - 1);
-    for (i_t r = 0; r < n_rows; ++r) {
-      for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
-        i_t c = row_cols[k];
-        if (is_int[c]) {
-          var_rows[pos[c]] = r;
-          var_vals[pos[c]] = row_vals[k];
-          pos[c]++;
+    variable_offsets = count;
+    variable_rows.assign(variable_offsets[n_variables], 0);
+    variable_values.assign(variable_offsets[n_variables], 0);
+    std::vector<i_t> position(variable_offsets.begin(), variable_offsets.end() - 1);
+    for (i_t row = 0; row < n_rows; ++row) {
+      for (i_t k = row_offsets[row]; k < row_offsets[row + 1]; ++k) {
+        i_t column = row_columns[k];
+        if (is_integer[column]) {
+          variable_rows[position[column]]   = row;
+          variable_values[position[column]] = row_values[k];
+          position[column]++;
         }
       }
     }
@@ -301,41 +328,42 @@ struct host_fix_propagate_t {
     settings.log.log     = false;
     settings.barrier     = false;
     settings.dualize     = 0;
-    settings.primal_tol  = abs_tol;
-    settings.integer_tol = int_tol;
+    settings.primal_tol  = absolute_tolerance;
+    settings.integer_tol = integrality_tolerance;
     lp = std::make_unique<simplex::lp_problem_t<i_t, f_t>>(user_problem.handle_ptr, 1, 1, 1);
     std::vector<i_t> new_slacks;
     simplex::dualize_info_t<i_t, f_t> dualize_info;
     simplex::convert_user_problem(user_problem, settings, *lp, new_slacks, dualize_info);
-    n_orig_cols = user_problem.num_cols;
-    var_types   = user_problem.var_types;
+    n_original_columns = user_problem.num_cols;
+    var_types          = user_problem.var_types;
     var_types.resize(lp->num_cols, simplex::variable_type_t::CONTINUOUS);
     lp->A.to_compressed_row(Arow);
-    lp_lower0 = lp->lower;
-    lp_upper0 = lp->upper;
-    simplex::domain_params params;
-    params.min_relative_improvement = continuous_min_improvement;
-    domain.set_params(params);
+    initial_lower = lp->lower;
+    initial_upper = lp->upper;
+    simplex::domain_params domain_parameters;
+    domain_parameters.min_relative_improvement = continuous_min_improvement;
+    domain.set_params(domain_parameters);
     domain.implied_bounds = nullptr;
     domain.clique_table   = clique_table;
   }
 
   i_t n_rows() const { return (i_t)row_lb.size(); }
 
-  // fix var v to val and propagate; false (state restored) on conflict
-  bool try_fix(i_t v, f_t val)
+  // fix variable to value and propagate; false (state restored) on conflict
+  bool try_fix(i_t variable, f_t value)
   {
-    simplex::bound_change_t<i_t, f_t> change{.var       = v,
-                                             .new_upper = val,
-                                             .new_lower = val,
+    simplex::bound_change_t<i_t, f_t> change{.var       = variable,
+                                             .new_upper = value,
+                                             .new_lower = value,
                                              .origin    = simplex::bound_change_origin_t::BRANCH};
-    const bool ok = domain.apply_and_propagate(Arow, var_types, settings, change, *lp);
+    const bool propagated = domain.apply_and_propagate(Arow, var_types, settings, change, *lp);
     work += (int64_t)domain.last_nnz_processed;
-    if (ok) {
+    if (propagated) {
       for (size_t k = 0; k < domain.size(); ++k) {
-        const i_t j = domain[k].var;
+        const i_t changed_variable = domain[k].var;
         if (domain[k].origin == simplex::bound_change_origin_t::BOUND_PROPAGATION &&
-            j < n_orig_cols && var_types[j] == simplex::variable_type_t::CONTINUOUS) {
+            changed_variable < n_original_columns &&
+            var_types[changed_variable] == simplex::variable_type_t::CONTINUOUS) {
           n_continuous_tightenings++;
         }
       }
@@ -346,46 +374,55 @@ struct host_fix_propagate_t {
     return false;
   }
 
-  // up- and down-locks of integer var v over the rows that can still be violated under the current
-  // bounds (fp_active_sides); the scan counts toward the pass's work
-  void dynamic_locks(i_t v, i_t& uplocks, i_t& downlocks)
+  // up- and down-locks of the integer variable over the rows that can still be violated under the
+  // current bounds (fix_propagate_active_sides); the scan counts toward the pass's work
+  void dynamic_locks(i_t variable, i_t& uplocks, i_t& downlocks)
   {
     uplocks = downlocks = 0;
-    for (i_t kk = var_offsets[v]; kk < var_offsets[v + 1]; ++kk) {
-      const i_t r = var_rows[kk];
-      f_t min_act = 0, max_act = 0;
-      for (i_t k = row_offsets[r]; k < row_offsets[r + 1]; ++k) {
-        const i_t c = row_cols[k];
-        const f_t a = row_vals[k];
-        min_act += a > 0 ? a * lp->lower[c] : a * lp->upper[c];
-        max_act += a > 0 ? a * lp->upper[c] : a * lp->lower[c];
+    for (i_t entry = variable_offsets[variable]; entry < variable_offsets[variable + 1]; ++entry) {
+      const i_t row    = variable_rows[entry];
+      f_t min_activity = 0, max_activity = 0;
+      for (i_t k = row_offsets[row]; k < row_offsets[row + 1]; ++k) {
+        const i_t column      = row_columns[k];
+        const f_t coefficient = row_values[k];
+        min_activity +=
+          coefficient > 0 ? coefficient * lp->lower[column] : coefficient * lp->upper[column];
+        max_activity +=
+          coefficient > 0 ? coefficient * lp->upper[column] : coefficient * lp->lower[column];
       }
-      work += row_offsets[r + 1] - row_offsets[r];
+      work += row_offsets[row + 1] - row_offsets[row];
       bool le_active, ge_active;
-      fp_active_sides<f_t>(min_act, max_act, row_lb[r], row_ub[r], abs_tol, le_active, ge_active);
-      const f_t a = var_vals[kk];
-      if ((a > 0 && le_active) || (a < 0 && ge_active)) { uplocks++; }
-      if ((a > 0 && ge_active) || (a < 0 && le_active)) { downlocks++; }
+      fix_propagate_active_sides<f_t>(min_activity,
+                                      max_activity,
+                                      row_lb[row],
+                                      row_ub[row],
+                                      absolute_tolerance,
+                                      le_active,
+                                      ge_active);
+      const f_t coefficient = variable_values[entry];
+      if ((coefficient > 0 && le_active) || (coefficient < 0 && ge_active)) { uplocks++; }
+      if ((coefficient > 0 && ge_active) || (coefficient < 0 && le_active)) { downlocks++; }
     }
   }
 
-  // fix-and-propagate pass: order = integer vars in processing order, pref = preferred value per
-  // var (indexed by var id). One-level backtrack: on a conflict the other end of the domain is
-  // tried; if both conflict, the remaining integers get their preferred values without propagation
-  // (the pattern is reported as conflicting), as when the pass exceeds work_limit. Returns the
-  // number of conflicts; values in col_lb.
-  // dyn (optional, by var id): variables whose value is decided at fixing time by their dynamic
-  // locks: dyn_up when they have fewer up-locks, dyn_down when fewer down-locks, pref on a tie.
+  // fix-and-propagate pass: order = integer vars in processing order, preferred_values = preferred
+  // value per var (indexed by var id). One-level backtrack: on a conflict the other end of the
+  // domain is tried; if both conflict, the remaining integers get their preferred values without
+  // propagation (the pattern is reported as conflicting), as when the pass exceeds work_limit.
+  // Returns the number of conflicts; values in pass_values. dynamic_variables (optional, by var
+  // id): variables whose value is decided at fixing time by their dynamic locks: dynamic_up_values
+  // when they have fewer up-locks, dynamic_down_values when fewer down-locks, preferred_values on a
+  // tie.
   i_t fix_and_propagate(const std::vector<i_t>& order,
-                        const std::vector<f_t>& pref,
+                        const std::vector<f_t>& preferred_values,
                         i_t& n_flipped,
                         i_t& n_implied,
-                        const std::vector<char>* dyn     = nullptr,
-                        const std::vector<f_t>* dyn_up   = nullptr,
-                        const std::vector<f_t>* dyn_down = nullptr)
+                        const std::vector<char>* dynamic_variables  = nullptr,
+                        const std::vector<f_t>* dynamic_up_values   = nullptr,
+                        const std::vector<f_t>* dynamic_down_values = nullptr)
   {
-    lp->lower = lp_lower0;
-    lp->upper = lp_upper0;
+    lp->lower = initial_lower;
+    lp->upper = initial_upper;
     domain.clear();
     work                     = 0;
     n_continuous_tightenings = 0;
@@ -398,43 +435,43 @@ struct host_fix_propagate_t {
     work += (int64_t)domain.last_nnz_processed;
     domain.clear();
     bool propagate = n_conflicts == 0;
-    for (auto v : order) {
-      const f_t lb = lp->lower[v], ub = lp->upper[v];
+    for (auto variable : order) {
+      const f_t lb = lp->lower[variable], ub = lp->upper[variable];
       if (lb == ub) {
-        if (lb != pref[v]) n_implied++;
+        if (lb != preferred_values[variable]) n_implied++;
         continue;
       }
-      f_t pv = pref[v];
-      if (propagate && dyn != nullptr && (*dyn)[v]) {
-        i_t up = 0, down = 0;
-        dynamic_locks(v, up, down);
-        if (up < down) {
-          pv = (*dyn_up)[v];
-        } else if (down < up) {
-          pv = (*dyn_down)[v];
+      f_t preferred = preferred_values[variable];
+      if (propagate && dynamic_variables != nullptr && (*dynamic_variables)[variable]) {
+        i_t up_locks = 0, down_locks = 0;
+        dynamic_locks(variable, up_locks, down_locks);
+        if (up_locks < down_locks) {
+          preferred = (*dynamic_up_values)[variable];
+        } else if (down_locks < up_locks) {
+          preferred = (*dynamic_down_values)[variable];
         }
       }
-      const f_t p = std::min(std::max(pv, lb), ub);
+      const f_t value = std::min(std::max(preferred, lb), ub);
       if (propagate && work > work_limit) {
         work_limit_hit = true;
         n_conflicts++;
         propagate = false;
       }
       if (!propagate) {
-        lp->lower[v] = lp->upper[v] = p;
+        lp->lower[variable] = lp->upper[variable] = value;
         continue;
       }
-      if (try_fix(v, p)) { continue; }
-      const f_t q = (p == lb) ? ub : lb;
-      if (try_fix(v, q)) {
+      if (try_fix(variable, value)) { continue; }
+      const f_t other_value = (value == lb) ? ub : lb;
+      if (try_fix(variable, other_value)) {
         n_flipped++;
         continue;
       }
       n_conflicts++;
-      propagate    = false;
-      lp->lower[v] = lp->upper[v] = p;
+      propagate           = false;
+      lp->lower[variable] = lp->upper[variable] = value;
     }
-    col_lb.assign(lp->lower.begin(), lp->lower.begin() + n_orig_cols);
+    pass_values.assign(lp->lower.begin(), lp->lower.begin() + n_original_columns);
     return n_conflicts;
   }
 };

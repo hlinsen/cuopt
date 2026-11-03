@@ -33,7 +33,7 @@ class fix_and_propagate_t {
   fix_and_propagate_t(mip_solver_context_t<i_t, f_t>& context,
                       problem_t<i_t, f_t>* problem_ptr,
                       population_t<i_t, f_t>& population,
-                      local_search_t<i_t, f_t>& ls,
+                      local_search_t<i_t, f_t>& local_search,
                       cuopt::timer_t& timer,
                       const rmm::device_uvector<f_t>& lp_primal,
                       const rmm::device_uvector<f_t>& lp_dual,
@@ -48,37 +48,37 @@ class fix_and_propagate_t {
   struct fj_repair_t {
     bool feasible{false};
     bool published{false};  // the population took it as its new best
-    f_t obj{std::numeric_limits<f_t>::infinity()};
+    f_t objective{std::numeric_limits<f_t>::infinity()};
     std::vector<f_t> assignment;
     double time{0};
   };
-  fj_repair_t fj_repair_pattern(const std::vector<f_t>& assign, f_t time_limit);
+  fj_repair_t fj_repair_pattern(const std::vector<f_t>& assignment, f_t time_limit);
   // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
   // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
   // full objective of the LP point, optional objective-free repair and publish
   struct pattern_eval_t {
     bool usable{false};
     bool optimal{false};
-    f_t lp_obj{std::numeric_limits<f_t>::infinity()};
-    f_t l2_primal_res{0};
-    f_t repaired_obj{std::numeric_limits<f_t>::infinity()};
+    f_t lp_objective{std::numeric_limits<f_t>::infinity()};
+    f_t l2_primal_residual{0};
+    f_t repaired_objective{std::numeric_limits<f_t>::infinity()};
     bool published{false};
-    int iters{0};
+    int iterations{0};
     double time{0};
     std::vector<f_t> primal, dual;  // phase-A (PID) fixed-LP primal/dual
     std::vector<f_t> repaired_assignment;
-    f_t pushed_lp_obj{std::numeric_limits<f_t>::infinity()};
-    f_t pushed_l2_primal_res{-1};
+    f_t pushed_lp_objective{std::numeric_limits<f_t>::infinity()};
+    f_t pushed_l2_primal_residual{-1};
     double push_time{0};
     bool cannot_beat_incumbent{false};  // stopped after stage 1
   };
-  pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
-                                    f_t tol,
-                                    f_t tlimit,
+  pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assignment,
+                                    f_t tolerance,
+                                    f_t time_limit,
                                     const std::vector<f_t>* warm_primal,
                                     const std::vector<f_t>* warm_dual,
                                     bool repair,
-                                    f_t repair_tlimit,
+                                    f_t repair_time_limit,
                                     f_t repair_below  = std::numeric_limits<f_t>::infinity(),
                                     f_t max_push_time = 11.);
   bool check_b_b_preemption() { return preempted(); }
@@ -86,7 +86,7 @@ class fix_and_propagate_t {
   mip_solver_context_t<i_t, f_t>& context;
   problem_t<i_t, f_t>* problem_ptr;
   population_t<i_t, f_t>& population;
-  local_search_t<i_t, f_t>& ls;
+  local_search_t<i_t, f_t>& local_search;
   cuopt::timer_t& timer;
   const rmm::device_uvector<f_t>& lp_optimal_solution;
   const rmm::device_uvector<f_t>& lp_dual_optimal_solution;

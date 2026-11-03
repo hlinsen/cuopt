@@ -43,9 +43,9 @@ struct mip_heuristics_hyper_params_t {
   f_t related_vars_time_limit            = 2.0;     // time for related-variable structure build
 
   // CPU fix-and-propagate (mip_heuristics/diversity/fix_propagate_host.hpp)
-  i_t fix_propagate                   = 1;     // LP-guided dive in local search (0 off, 1 on)
-  i_t fix_propagate_variable_strategy = 1;     // fp_variable_strategy_t (1 = LP value desc)
-  i_t fix_propagate_value_strategy    = 2;     // fp_value_strategy_t (2 = round up)
+  i_t fix_propagate                   = 1;  // LP-guided dive in local search (0 off, 1 on)
+  i_t fix_propagate_variable_strategy = 1;  // fix_propagate_variable_strategy_t (1 = LP value desc)
+  i_t fix_propagate_value_strategy    = 2;  // fix_propagate_value_strategy_t (2 = round up)
   f_t fix_propagate_value_param       = 0.0;   // reduced-cost / fraction threshold of the value
   f_t fix_propagate_time_ratio        = 0.1;   // per-call share of the time limit
   f_t fix_propagate_max_time          = 60.0;  // per-call cap in seconds

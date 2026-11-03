@@ -11,54 +11,69 @@
 
 namespace cuopt::mathematical_optimization::test {
 namespace {
-using mip::fp_preferred_value;
-using mip::fp_value_strategy_t;
+using mip::fix_propagate_preferred_value;
+using mip::fix_propagate_value_strategy_t;
 
-constexpr double int_tol = 1e-6;
-constexpr double inf     = std::numeric_limits<double>::infinity();
+constexpr double integrality_tolerance = 1e-6;
+constexpr double infinity              = std::numeric_limits<double>::infinity();
 
-double value(fp_value_strategy_t s, double x, double u = 0., double param = 0.)
+double value(fix_propagate_value_strategy_t strategy,
+             double reference_value,
+             double uniform_draw = 0.,
+             double value_param  = 0.)
 {
-  return fp_preferred_value<double>(s, x, 0., inf, 0., param, int_tol, u);
+  return fix_propagate_preferred_value<double>(
+    strategy, reference_value, 0., infinity, 0., value_param, integrality_tolerance, uniform_draw);
 }
 
-double locks_value(double x, int uplocks, int downlocks, double ub = inf)
+double locks_value(double reference_value, int uplocks, int downlocks, double ub = infinity)
 {
-  return fp_preferred_value<double>(
-    fp_value_strategy_t::FEWER_LOCKS, x, 0., ub, 0., 0., int_tol, 0., uplocks, downlocks);
+  return fix_propagate_preferred_value<double>(fix_propagate_value_strategy_t::FEWER_LOCKS,
+                                               reference_value,
+                                               0.,
+                                               ub,
+                                               0.,
+                                               0.,
+                                               integrality_tolerance,
+                                               0.,
+                                               uplocks,
+                                               downlocks);
 }
 }  // namespace
 
 TEST(FixPropagateValue, RoundUp)
 {
-  EXPECT_EQ(value(fp_value_strategy_t::ROUND_UP, 2.3), 3.);
-  EXPECT_EQ(value(fp_value_strategy_t::ROUND_UP, 2.0), 2.);
-  EXPECT_EQ(value(fp_value_strategy_t::ROUND_UP, 2.0 - 1e-9), 2.);
+  EXPECT_EQ(value(fix_propagate_value_strategy_t::ROUND_UP, 2.3), 3.);
+  EXPECT_EQ(value(fix_propagate_value_strategy_t::ROUND_UP, 2.0), 2.);
+  EXPECT_EQ(value(fix_propagate_value_strategy_t::ROUND_UP, 2.0 - 1e-9), 2.);
 }
 
 TEST(FixPropagateValue, LpRandomizedUsesTheFractionalPart)
 {
-  const auto s = fp_value_strategy_t::LP_RANDOMIZED;
-  EXPECT_EQ(value(s, 2.3, 0.29), 3.);
-  EXPECT_EQ(value(s, 2.3, 0.31), 2.);
+  const auto strategy = fix_propagate_value_strategy_t::LP_RANDOMIZED;
+  EXPECT_EQ(value(strategy, 2.3, 0.29), 3.);
+  EXPECT_EQ(value(strategy, 2.3, 0.31), 2.);
   // integral reference values are never moved
-  for (double u : {0., 0.5, 0.999}) {
-    EXPECT_EQ(value(s, 4.0, u), 4.);
-    EXPECT_EQ(value(s, 4.0 - 1e-9, u), 4.);
+  for (double uniform_draw : {0., 0.5, 0.999}) {
+    EXPECT_EQ(value(strategy, 4.0, uniform_draw), 4.);
+    EXPECT_EQ(value(strategy, 4.0 - 1e-9, uniform_draw), 4.);
   }
 }
 
 TEST(FixPropagateValue, LpRandomizedRoundsUpWithTheFractionalProbability)
 {
-  std::mt19937 g(7);
-  std::uniform_real_distribution<double> U(0., 1.);
-  for (double frac : {0.05, 0.25, 0.5, 0.9}) {
-    const int n = 20000;
-    int ups     = 0;
-    for (int i = 0; i < n; ++i) {
-      ups += value(fp_value_strategy_t::LP_RANDOMIZED, 1. + frac, U(g)) == 2.;
+  std::mt19937 generator(7);
+  std::uniform_real_distribution<double> uniform(0., 1.);
+  for (double fractional_part : {0.05, 0.25, 0.5, 0.9}) {
+    const int n_draws = 20000;
+    int n_rounded_up  = 0;
+    for (int i = 0; i < n_draws; ++i) {
+      n_rounded_up += value(fix_propagate_value_strategy_t::LP_RANDOMIZED,
+                            1. + fractional_part,
+                            uniform(generator)) == 2.;
     }
-    EXPECT_NEAR(double(ups) / n, frac, 0.015) << "fractional part " << frac;
+    EXPECT_NEAR(double(n_rounded_up) / n_draws, fractional_part, 0.015)
+      << "fractional part " << fractional_part;
   }
 }
 
@@ -73,83 +88,114 @@ TEST(FixPropagateValue, FewerLocksRoundsTowardTheSideWithFewerLocks)
 
 TEST(FixPropagateValue, LocksOrderFixesTheMostLockedVariablesFirst)
 {
-  using mip::fp_order_key;
-  using mip::fp_variable_strategy_t;
-  const auto s = fp_variable_strategy_t::LOCKS;
-  EXPECT_GT((fp_order_key<int, double>(s, 0.1, 0., 3, 4)),
-            (fp_order_key<int, double>(s, 0.9, 0., 2, 4)));
+  using mip::fix_propagate_order_key;
+  using mip::fix_propagate_variable_strategy_t;
+  const auto strategy = fix_propagate_variable_strategy_t::LOCKS;
+  EXPECT_GT((fix_propagate_order_key<int, double>(strategy, 0.1, 0., 3, 4)),
+            (fix_propagate_order_key<int, double>(strategy, 0.9, 0., 2, 4)));
   // equal locks: the larger reference value comes first
-  EXPECT_GT((fp_order_key<int, double>(s, 0.9, 0., 2, 2)),
-            (fp_order_key<int, double>(s, 0.1, 0., 2, 2)));
+  EXPECT_GT((fix_propagate_order_key<int, double>(strategy, 0.9, 0., 2, 2)),
+            (fix_propagate_order_key<int, double>(strategy, 0.1, 0., 2, 2)));
 }
 
 TEST(FixPropagateValue, AbsoluteReducedCostOrderRanksBothSigns)
 {
-  using mip::fp_order_key;
-  using mip::fp_variable_strategy_t;
-  const auto s = fp_variable_strategy_t::REDUCED_COST_ABS;
-  EXPECT_GT((fp_order_key<int, double>(s, 0.5, 5., 0)),
-            (fp_order_key<int, double>(s, 0.5, -1., 0)));
-  EXPECT_GT((fp_order_key<int, double>(s, 0.5, -5., 0)),
-            (fp_order_key<int, double>(s, 0.5, 1., 0)));
+  using mip::fix_propagate_order_key;
+  using mip::fix_propagate_variable_strategy_t;
+  const auto strategy = fix_propagate_variable_strategy_t::REDUCED_COST_ABS;
+  EXPECT_GT((fix_propagate_order_key<int, double>(strategy, 0.5, 5., 0)),
+            (fix_propagate_order_key<int, double>(strategy, 0.5, -1., 0)));
+  EXPECT_GT((fix_propagate_order_key<int, double>(strategy, 0.5, -5., 0)),
+            (fix_propagate_order_key<int, double>(strategy, 0.5, 1., 0)));
   // TYPE keeps the formulation order (equal keys, stable sort)
-  EXPECT_EQ((fp_order_key<int, double>(fp_variable_strategy_t::TYPE, 0.2, 3., 1)),
-            (fp_order_key<int, double>(fp_variable_strategy_t::TYPE, 0.9, -3., 4)));
+  EXPECT_EQ(
+    (fix_propagate_order_key<int, double>(fix_propagate_variable_strategy_t::TYPE, 0.2, 3., 1)),
+    (fix_propagate_order_key<int, double>(fix_propagate_variable_strategy_t::TYPE, 0.9, -3., 4)));
 }
 
 TEST(FixPropagateValue, ObjectiveAndRandomBoundValues)
 {
-  auto v = [](fp_value_strategy_t s, double obj, double u = 0., double ub = 4.) {
-    return fp_preferred_value<double>(s, 1.5, 0., ub, 0., 0., int_tol, u, 0, 0, obj);
+  auto preferred = [](fix_propagate_value_strategy_t strategy,
+                      double objective_coefficient,
+                      double uniform_draw = 0.,
+                      double ub           = 4.) {
+    return fix_propagate_preferred_value<double>(strategy,
+                                                 1.5,
+                                                 0.,
+                                                 ub,
+                                                 0.,
+                                                 0.,
+                                                 integrality_tolerance,
+                                                 uniform_draw,
+                                                 0,
+                                                 0,
+                                                 objective_coefficient);
   };
-  EXPECT_EQ(v(fp_value_strategy_t::GOOD_OBJ, -2.), 4.);  // a negative cost is better at the top
-  EXPECT_EQ(v(fp_value_strategy_t::GOOD_OBJ, 2.), 0.);
-  EXPECT_EQ(v(fp_value_strategy_t::GOOD_OBJ, 0.), 0.);  // no objective: the lower bound
-  EXPECT_EQ(v(fp_value_strategy_t::BAD_OBJ, 2.), 4.);
-  EXPECT_EQ(v(fp_value_strategy_t::BAD_OBJ, -2.), 0.);
-  EXPECT_EQ(v(fp_value_strategy_t::RANDOM_BOUND, 0., 0.2), 4.);
-  EXPECT_EQ(v(fp_value_strategy_t::RANDOM_BOUND, 0., 0.7), 0.);
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::GOOD_OBJ, -2.),
+            4.);  // a negative cost is better at the top
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::GOOD_OBJ, 2.), 0.);
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::GOOD_OBJ, 0.),
+            0.);  // no objective: the lower bound
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::BAD_OBJ, 2.), 4.);
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::BAD_OBJ, -2.), 0.);
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::RANDOM_BOUND, 0., 0.2), 4.);
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::RANDOM_BOUND, 0., 0.7), 0.);
   // an infinite chosen bound falls back to rounding the reference value up
-  EXPECT_EQ(v(fp_value_strategy_t::GOOD_OBJ, -2., 0., inf), 2.);
-  EXPECT_EQ(v(fp_value_strategy_t::UPPER_BOUND, 0., 0., inf), 2.);
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::GOOD_OBJ, -2., 0., infinity), 2.);
+  EXPECT_EQ(preferred(fix_propagate_value_strategy_t::UPPER_BOUND, 0., 0., infinity), 2.);
 }
 
 TEST(FixPropagateValue, DynamicLocksDirections)
 {
-  double up = -1, down = -1;
-  EXPECT_TRUE(mip::fp_dynamic_lock_values<double>(
-    fp_value_strategy_t::FEWER_LOCKS_DYNAMIC, 2.4, 5., int_tol, up, down));
-  EXPECT_EQ(up, 3.);
-  EXPECT_EQ(down, 2.);
+  double up_value = -1, down_value = -1;
+  EXPECT_TRUE(mip::fix_propagate_dynamic_lock_values<double>(
+    fix_propagate_value_strategy_t::FEWER_LOCKS_DYNAMIC,
+    2.4,
+    5.,
+    integrality_tolerance,
+    up_value,
+    down_value));
+  EXPECT_EQ(up_value, 3.);
+  EXPECT_EQ(down_value, 2.);
   // the upper bound caps the up value
-  EXPECT_TRUE(mip::fp_dynamic_lock_values<double>(
-    fp_value_strategy_t::FEWER_LOCKS_DYNAMIC, 2.0, 2., int_tol, up, down));
-  EXPECT_EQ(up, 2.);
-  EXPECT_EQ(down, 2.);
+  EXPECT_TRUE(mip::fix_propagate_dynamic_lock_values<double>(
+    fix_propagate_value_strategy_t::FEWER_LOCKS_DYNAMIC,
+    2.0,
+    2.,
+    integrality_tolerance,
+    up_value,
+    down_value));
+  EXPECT_EQ(up_value, 2.);
+  EXPECT_EQ(down_value, 2.);
   // static strategies do not use dynamic locks
-  EXPECT_FALSE(mip::fp_dynamic_lock_values<double>(
-    fp_value_strategy_t::FEWER_LOCKS, 2.4, 5., int_tol, up, down));
+  EXPECT_FALSE(
+    mip::fix_propagate_dynamic_lock_values<double>(fix_propagate_value_strategy_t::FEWER_LOCKS,
+                                                   2.4,
+                                                   5.,
+                                                   integrality_tolerance,
+                                                   up_value,
+                                                   down_value));
 }
 
 TEST(FixPropagateValue, RowSidesStopLockingOnceRedundant)
 {
-  bool le = false, ge = false;
+  bool le_active = false, ge_active = false;
   // x1 + x2 + x3 <= 1 with x1 fixed to 1 and x2, x3 fixed to 0: activity range [1, 1]
-  mip::fp_active_sides<double>(1., 1., -inf, 1., 1e-6, le, ge);
-  EXPECT_FALSE(le);
-  EXPECT_FALSE(ge);
+  mip::fix_propagate_active_sides<double>(1., 1., -infinity, 1., 1e-6, le_active, ge_active);
+  EXPECT_FALSE(le_active);
+  EXPECT_FALSE(ge_active);
   // nothing fixed yet: maximum activity 3 can violate the <= side
-  mip::fp_active_sides<double>(0., 3., -inf, 1., 1e-6, le, ge);
-  EXPECT_TRUE(le);
-  EXPECT_FALSE(ge);
+  mip::fix_propagate_active_sides<double>(0., 3., -infinity, 1., 1e-6, le_active, ge_active);
+  EXPECT_TRUE(le_active);
+  EXPECT_FALSE(ge_active);
   // equality row 2 <= a.x <= 2 with activity range [0, 3]: both sides still lock
-  mip::fp_active_sides<double>(0., 3., 2., 2., 1e-6, le, ge);
-  EXPECT_TRUE(le);
-  EXPECT_TRUE(ge);
+  mip::fix_propagate_active_sides<double>(0., 3., 2., 2., 1e-6, le_active, ge_active);
+  EXPECT_TRUE(le_active);
+  EXPECT_TRUE(ge_active);
   // an infinite activity bound keeps the side active
-  mip::fp_active_sides<double>(-inf, inf, 0., 1., 1e-6, le, ge);
-  EXPECT_TRUE(le);
-  EXPECT_TRUE(ge);
+  mip::fix_propagate_active_sides<double>(-infinity, infinity, 0., 1., 1e-6, le_active, ge_active);
+  EXPECT_TRUE(le_active);
+  EXPECT_TRUE(ge_active);
 }
 
 }  // namespace cuopt::mathematical_optimization::test
