@@ -1345,7 +1345,9 @@ mip_settings:
     - fix_propagate_variable_strategy:
         param_name: mip_hyper_heuristic_fix_propagate_variable_strategy
         description: >-
-          Fixing order: 0 fractionality, 1 LP value, 2 reduced cost, 3 up-locks.
+          Fixing order: 0 fractionality, 1 LP value, 2 reduced cost, 3 up-locks,
+          4 most locks, 5 largest absolute reduced cost, 6 type (binaries first,
+          formulation order).
         default: "1"
         field_num: 56
         type: int32
@@ -1353,9 +1355,11 @@ mip_settings:
     - fix_propagate_value_strategy:
         param_name: mip_hyper_heuristic_fix_propagate_value_strategy
         description: >-
-          Fixing value: 2 round up, 3 round up or negative reduced cost,
-          4 round up above a fraction threshold, 5 round up with probability
-          equal to the fractional part.
+          Fixing value: 0 upper bound, 1 lower bound, 2 round up, 3 round up or
+          negative reduced cost, 4 round up above a fraction threshold, 5 round up
+          with probability equal to the fractional part, 6 round toward fewer
+          locks, 7 toward the objective, 8 against the objective, 9 random bound,
+          10 fewer dynamic locks.
         default: "2"
         field_num: 57
         type: int32

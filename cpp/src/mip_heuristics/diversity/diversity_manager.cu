@@ -465,7 +465,8 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
   auto h_obj  = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
   auto h_dual = cuopt::host_copy(lp_dual_optimal_solution, stream);
   std::vector<f_t> red(n_vars, 0);
-  std::vector<i_t> uplocks(n_vars, 0);
+  std::vector<i_t> uplocks(n_vars, 0), downlocks(n_vars, 0);
+  std::vector<char> is_binary(n_vars, 0);
   for (auto v : h_int) {
     f_t aty = 0;
     for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
@@ -476,15 +477,20 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
           (a < 0 && std::isfinite(fp_host.row_lb[r]))) {
         uplocks[v]++;
       }
+      if ((a > 0 && std::isfinite(fp_host.row_lb[r])) ||
+          (a < 0 && std::isfinite(fp_host.row_ub[r]))) {
+        downlocks[v]++;
+      }
     }
-    red[v] = h_obj[v] - aty;
+    red[v]       = h_obj[v] - aty;
+    is_binary[v] = h_vlb[v] == 0 && h_vub[v] == 1;
   }
   struct cand_t {
     std::string name;  // log name
     fp_variable_strategy_t var_strategy;
     fp_value_strategy_t value_strategy;
     f_t value_param;  // reduced-cost or fraction threshold of the value strategy
-    unsigned seed;    // LP-randomized value strategy
+    unsigned seed;    // randomized value strategies (fp_randomized)
   };
   std::vector<std::vector<f_t>> seen;
   f_t best_lp = std::numeric_limits<f_t>::infinity();
@@ -507,20 +513,47 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(f_t max_budget)
     std::mt19937 g(c.seed);
     std::uniform_real_distribution<double> U(0., 1.);
     for (auto v : h_int) {
-      key[v] = fp_order_key<i_t, f_t>(c.var_strategy, x[v], red[v], uplocks[v]);
+      key[v] = fp_order_key<i_t, f_t>(c.var_strategy, x[v], red[v], uplocks[v], downlocks[v]);
     }
-    std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
+    const bool group = fp_groups_by_type(c.var_strategy);
+    std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) {
+      if (group && is_binary[a] != is_binary[b]) { return is_binary[a] > is_binary[b]; }
+      return key[a] > key[b];
+    });
     std::vector<f_t> pref(n_vars, 0.);
-    const bool randomized = c.value_strategy == fp_value_strategy_t::LP_RANDOMIZED;
+    const bool randomized = fp_randomized(c.value_strategy);
+    const bool dynamic    = fp_dynamic_locks(c.value_strategy);
+    std::vector<char> dyn;
+    std::vector<f_t> dyn_up, dyn_down;
+    if (dynamic) {
+      dyn.assign(n_vars, 0);
+      dyn_up.assign(n_vars, 0);
+      dyn_down.assign(n_vars, 0);
+    }
     for (auto v : h_int) {
       const f_t u = randomized ? f_t(U(g)) : f_t(0);
-      pref[v]     = fp_preferred_value<f_t>(
-        c.value_strategy, x[v], h_vlb[v], h_vub[v], red[v], c.value_param, int_tol, u);
+      pref[v]     = fp_preferred_value<f_t>(c.value_strategy,
+                                        x[v],
+                                        h_vlb[v],
+                                        h_vub[v],
+                                        red[v],
+                                        c.value_param,
+                                        int_tol,
+                                        u,
+                                        uplocks[v],
+                                        downlocks[v],
+                                        h_obj[v]);
+      if (dynamic) {
+        dyn[v] = fp_dynamic_lock_values<f_t>(
+          c.value_strategy, x[v], h_vub[v], int_tol, dyn_up[v], dyn_down[v]);
+      }
     }
     const double t_fp = timer.elapsed_time();
     i_t n_flipped = 0, n_implied = 0;
-    fp_host.work    = 0;
-    i_t n_conflicts = fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
+    fp_host.work = 0;
+    i_t n_conflicts =
+      dynamic ? fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied, &dyn, &dyn_up, &dyn_down)
+                   : fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
     std::vector<f_t> pat(h_int.size());
     f_t int_cost = 0;
     i_t n_ones   = 0;
