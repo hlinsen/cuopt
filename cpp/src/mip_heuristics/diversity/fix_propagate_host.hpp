@@ -209,30 +209,25 @@ void fix_propagate_active_sides(f_t min_activity,
 
 template <typename i_t, typename f_t>
 struct h_fix_propagate_t {
-  // integer rows (rows with at least one integer var) in the original numbering: used by the
-  // callers for reduced costs, up-locks and logging, not for propagation
-  std::vector<i_t> row_offsets;  // size n_rows+1
+  // the constraint matrix on the host, row-wise and column-wise (problem_t's offsets / variables /
+  // coefficients and reverse_* views), and the constraint bounds: used for reduced costs, locks and
+  // dynamic locks, not for propagation
+  std::vector<i_t> row_offsets;  // size n_constraints + 1
   std::vector<i_t> row_columns;
   std::vector<f_t> row_values;
   std::vector<f_t> row_lb, row_ub;
-  std::vector<i_t> row_original;
-  // per integer var: list of (row, coef) in the integer rows (indexed by var id, n+1)
-  std::vector<i_t> variable_offsets;
-  std::vector<i_t> variable_rows;
-  std::vector<f_t> variable_values;
-  std::vector<char> is_integer;
+  std::vector<i_t> column_offsets;  // size n_variables + 1
+  std::vector<i_t> column_rows;
+  std::vector<f_t> column_values;
   // values of the last pass (integer entries are the fixings)
   std::vector<f_t> pass_values;
-  std::vector<char> row_dead;
   f_t absolute_tolerance    = 1e-6;
   f_t integrality_tolerance = 1e-5;
   int64_t work              = 0;
   // propagation work budget of one pass (nonzeros processed); exceeding it ends the pass like a
   // conflict, so one pass cannot hold local search for long on models with very dense rows
-  int64_t work_limit     = std::numeric_limits<int64_t>::max();
-  bool work_limit_hit    = false;
-  i_t n_binary_only_rows = 0;
-  i_t n_mixed_rows       = 0;
+  int64_t work_limit  = std::numeric_limits<int64_t>::max();
+  bool work_limit_hit = false;
   // a continuous tightening is kept if it shrinks the domain by at least continuous_min_improvement
   // of its width (0 keeps every tightening, above 1 none; infinite bounds becoming finite are kept)
   f_t continuous_min_improvement   = 0.3;
@@ -247,79 +242,6 @@ struct h_fix_propagate_t {
   std::vector<f_t> initial_lower, initial_upper;
   simplex::domain_t<i_t, f_t> domain;
   i_t n_original_columns = 0;
-
-  void build(i_t n_variables,
-             i_t n_constraints,
-             const std::vector<i_t>& constraint_offsets,
-             const std::vector<i_t>& constraint_columns,
-             const std::vector<f_t>& constraint_coefficients,
-             const std::vector<f_t>& constraint_lower_bounds,
-             const std::vector<f_t>& constraint_upper_bounds,
-             const std::vector<f_t>&,
-             const std::vector<f_t>&,
-             const std::vector<i_t>& integer_indices)
-  {
-    is_integer.assign(n_variables, 0);
-    for (auto variable : integer_indices) {
-      is_integer[variable] = 1;
-    }
-    row_offsets.assign(1, 0);
-    row_columns.clear();
-    row_values.clear();
-    row_lb.clear();
-    row_ub.clear();
-    row_original.clear();
-    n_binary_only_rows = 0;
-    n_mixed_rows       = 0;
-    for (i_t row = 0; row < n_constraints; ++row) {
-      bool has_integer = false, has_continuous = false;
-      for (i_t k = constraint_offsets[row]; k < constraint_offsets[row + 1]; ++k) {
-        if (is_integer[constraint_columns[k]]) {
-          has_integer = true;
-        } else {
-          has_continuous = true;
-        }
-      }
-      if (!has_integer) continue;
-      if (has_continuous) {
-        n_mixed_rows++;
-      } else {
-        n_binary_only_rows++;
-      }
-      for (i_t k = constraint_offsets[row]; k < constraint_offsets[row + 1]; ++k) {
-        row_columns.push_back(constraint_columns[k]);
-        row_values.push_back(constraint_coefficients[k]);
-      }
-      row_offsets.push_back((i_t)row_columns.size());
-      row_lb.push_back(constraint_lower_bounds[row]);
-      row_ub.push_back(constraint_upper_bounds[row]);
-      row_original.push_back(row);
-    }
-    const i_t n_rows = (i_t)row_lb.size();
-    std::vector<i_t> count(n_variables + 1, 0);
-    for (i_t row = 0; row < n_rows; ++row) {
-      for (i_t k = row_offsets[row]; k < row_offsets[row + 1]; ++k) {
-        if (is_integer[row_columns[k]]) count[row_columns[k] + 1]++;
-      }
-    }
-    for (i_t variable = 0; variable < n_variables; ++variable) {
-      count[variable + 1] += count[variable];
-    }
-    variable_offsets = count;
-    variable_rows.assign(variable_offsets[n_variables], 0);
-    variable_values.assign(variable_offsets[n_variables], 0);
-    std::vector<i_t> position(variable_offsets.begin(), variable_offsets.end() - 1);
-    for (i_t row = 0; row < n_rows; ++row) {
-      for (i_t k = row_offsets[row]; k < row_offsets[row + 1]; ++k) {
-        i_t column = row_columns[k];
-        if (is_integer[column]) {
-          variable_rows[position[column]]   = row;
-          variable_values[position[column]] = row_values[k];
-          position[column]++;
-        }
-      }
-    }
-  }
 
   // Builds the propagation domain from the problem (same conversion as branch and bound).
   void build_domain(const simplex::user_problem_t<i_t, f_t>& user_problem,
@@ -346,8 +268,6 @@ struct h_fix_propagate_t {
     domain.implied_bounds = nullptr;
     domain.clique_table   = clique_table;
   }
-
-  i_t n_rows() const { return (i_t)row_lb.size(); }
 
   // fix variable to value and propagate; false (state restored) on conflict
   bool try_fix(i_t variable, f_t value)
@@ -379,8 +299,8 @@ struct h_fix_propagate_t {
   void dynamic_locks(i_t variable, i_t& uplocks, i_t& downlocks)
   {
     uplocks = downlocks = 0;
-    for (i_t entry = variable_offsets[variable]; entry < variable_offsets[variable + 1]; ++entry) {
-      const i_t row    = variable_rows[entry];
+    for (i_t entry = column_offsets[variable]; entry < column_offsets[variable + 1]; ++entry) {
+      const i_t row    = column_rows[entry];
       f_t min_activity = 0, max_activity = 0;
       for (i_t k = row_offsets[row]; k < row_offsets[row + 1]; ++k) {
         const i_t column      = row_columns[k];
@@ -399,7 +319,7 @@ struct h_fix_propagate_t {
                                       absolute_tolerance,
                                       le_active,
                                       ge_active);
-      const f_t coefficient = variable_values[entry];
+      const f_t coefficient = column_values[entry];
       if ((coefficient > 0 && le_active) || (coefficient < 0 && ge_active)) { uplocks++; }
       if ((coefficient > 0 && ge_active) || (coefficient < 0 && le_active)) { downlocks++; }
     }
@@ -426,11 +346,10 @@ struct h_fix_propagate_t {
     domain.clear();
     work                     = 0;
     n_continuous_tightenings = 0;
-    row_dead.assign(n_rows(), 0);
-    n_flipped       = 0;
-    n_implied       = 0;
-    work_limit_hit  = false;
-    i_t n_conflicts = 0;
+    n_flipped                = 0;
+    n_implied                = 0;
+    work_limit_hit           = false;
+    i_t n_conflicts          = 0;
     if (!domain.propagate_full(Arow, var_types, settings, *lp)) { n_conflicts++; }
     work += (int64_t)domain.last_nnz_processed;
     domain.clear();

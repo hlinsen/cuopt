@@ -256,33 +256,25 @@ bool fix_and_propagate_t<i_t, f_t>::run()
   const double build_start_time   = timer.elapsed_time();
 
   // host copies of the model and the LP optimum
-  const i_t n_variables          = problem_ptr->n_variables;
-  const i_t n_constraints        = problem_ptr->n_constraints;
-  auto h_row_offsets             = cuopt::host_copy(problem_ptr->offsets, stream);
-  auto h_column_indices          = cuopt::host_copy(problem_ptr->variables, stream);
-  auto h_coefficients            = cuopt::host_copy(problem_ptr->coefficients, stream);
-  auto h_constraint_lower_bounds = cuopt::host_copy(problem_ptr->constraint_lower_bounds, stream);
-  auto h_constraint_upper_bounds = cuopt::host_copy(problem_ptr->constraint_upper_bounds, stream);
-  auto h_integer_indices         = cuopt::host_copy(problem_ptr->integer_indices, stream);
+  const i_t n_variables  = problem_ptr->n_variables;
+  auto h_integer_indices = cuopt::host_copy(problem_ptr->integer_indices, stream);
   auto [h_variable_lower_bounds, h_variable_upper_bounds] =
     cuopt::extract_host_bounds<f_t>(problem_ptr->variable_bounds, handle_ptr);
   // reference point: the root LP optimum
   auto h_lp_solution = cuopt::host_copy(lp_optimal_solution, stream);
   h_fix_propagate_t<i_t, f_t> h_fix_propagate;
-  h_fix_propagate.absolute_tolerance = problem_ptr->tolerances.absolute_tolerance;
+  h_fix_propagate.row_offsets    = cuopt::host_copy(problem_ptr->offsets, stream);
+  h_fix_propagate.row_columns    = cuopt::host_copy(problem_ptr->variables, stream);
+  h_fix_propagate.row_values     = cuopt::host_copy(problem_ptr->coefficients, stream);
+  h_fix_propagate.row_lb         = cuopt::host_copy(problem_ptr->constraint_lower_bounds, stream);
+  h_fix_propagate.row_ub         = cuopt::host_copy(problem_ptr->constraint_upper_bounds, stream);
+  h_fix_propagate.column_offsets = cuopt::host_copy(problem_ptr->reverse_offsets, stream);
+  h_fix_propagate.column_rows    = cuopt::host_copy(problem_ptr->reverse_constraints, stream);
+  h_fix_propagate.column_values  = cuopt::host_copy(problem_ptr->reverse_coefficients, stream);
+  h_fix_propagate.absolute_tolerance    = problem_ptr->tolerances.absolute_tolerance;
+  h_fix_propagate.integrality_tolerance = problem_ptr->tolerances.integrality_tolerance;
   h_fix_propagate.continuous_min_improvement =
     heuristic_params.fix_propagate_continuous_min_improvement;
-  h_fix_propagate.build(n_variables,
-                        n_constraints,
-                        h_row_offsets,
-                        h_column_indices,
-                        h_coefficients,
-                        h_constraint_lower_bounds,
-                        h_constraint_upper_bounds,
-                        h_variable_lower_bounds,
-                        h_variable_upper_bounds,
-                        h_integer_indices);
-  h_fix_propagate.integrality_tolerance = problem_ptr->tolerances.integrality_tolerance;
   {
     simplex::user_problem_t<i_t, f_t> user_problem(problem_ptr->handle_ptr);
     problem_ptr->get_host_user_problem(user_problem);
@@ -304,16 +296,12 @@ bool fix_and_propagate_t<i_t, f_t>::run()
     if (reference_value >= 1. - integrality_tolerance) n_at_one++;
   }
   CUOPT_LOG_DEBUG(
-    "Fix-and-propagate setup: budget=%.1fs n_int=%zu lp_fractional=%d lp_ge_one=%d int_rows=%d "
-    "(int_only=%d mixed=%d) int_row_nnz=%zu build=%.2fs elapsed=%.2f",
+    "Fix-and-propagate setup: budget=%.1fs n_int=%zu lp_fractional=%d lp_ge_one=%d build=%.2fs "
+    "elapsed=%.2f",
     budget,
     h_integer_indices.size(),
     n_fractional,
     n_at_one,
-    h_fix_propagate.n_rows(),
-    h_fix_propagate.n_binary_only_rows,
-    h_fix_propagate.n_mixed_rows,
-    h_fix_propagate.row_columns.size(),
     timer.elapsed_time() - build_start_time,
     timer.elapsed_time());
 
@@ -328,12 +316,12 @@ bool fix_and_propagate_t<i_t, f_t>::run()
   std::vector<char> is_binary(n_variables, 0);
   for (auto variable : h_integer_indices) {
     f_t dual_activity = 0;
-    for (i_t entry = h_fix_propagate.variable_offsets[variable];
-         entry < h_fix_propagate.variable_offsets[variable + 1];
+    for (i_t entry = h_fix_propagate.column_offsets[variable];
+         entry < h_fix_propagate.column_offsets[variable + 1];
          ++entry) {
-      const i_t row         = h_fix_propagate.variable_rows[entry];
-      const f_t coefficient = h_fix_propagate.variable_values[entry];
-      dual_activity += coefficient * h_lp_dual_solution[h_fix_propagate.row_original[row]];
+      const i_t row         = h_fix_propagate.column_rows[entry];
+      const f_t coefficient = h_fix_propagate.column_values[entry];
+      dual_activity += coefficient * h_lp_dual_solution[row];
       if ((coefficient > 0 && std::isfinite(h_fix_propagate.row_ub[row])) ||
           (coefficient < 0 && std::isfinite(h_fix_propagate.row_lb[row]))) {
         uplocks[variable]++;
