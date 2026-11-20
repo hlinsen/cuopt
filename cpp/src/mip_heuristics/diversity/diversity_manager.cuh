@@ -90,7 +90,8 @@ class diversity_manager_t {
     bool published{false};
     int iters{0};
     double time{0};
-    std::vector<f_t> primal, dual;  // phase-A (PID) fixed-LP primal/dual
+    std::vector<f_t> primal, dual;   // phase-A (PID) fixed-LP primal/dual
+    std::vector<f_t> lp_assignment;  // full assignment at the phase-A LP point (integers fixed)
     std::vector<f_t> repaired_assignment;
     f_t pushed_lp_obj{std::numeric_limits<f_t>::infinity()};
     f_t pushed_l2_primal_res{-1};

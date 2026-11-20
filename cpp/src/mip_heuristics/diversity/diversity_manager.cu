@@ -658,8 +658,9 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
   sol.unfix_variables(fixed_assignment, variable_map);
   // full objective (fixed integers included) of the (slightly infeasible) LP point
-  res.lp_obj = sol.get_user_objective();
-  res.usable = std::isfinite(res.lp_obj);
+  res.lp_obj        = sol.get_user_objective();
+  res.usable        = std::isfinite(res.lp_obj);
+  res.lp_assignment = sol.get_host_assignment();
   if (repair && res.usable && res.lp_obj < repair_below) {
     // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
@@ -1080,9 +1081,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // t0 + ext_budget
   bool published       = false;
   const bool extended  = n_pair_links > 0;
-  const f_t ext_budget = std::max<f_t>(
-    budget, std::min<f_t>(0.7 * context.settings.time_limit, timer.remaining_time() - 60.));
-  auto remaining = [&]() {
+  const f_t ext_budget = std::max<f_t>(budget, timer.remaining_time() - 40.);
+  auto remaining       = [&]() {
     return t0 + (published || extended ? ext_budget : budget) - timer.elapsed_time();
   };
   auto stop = [&]() {
@@ -1091,15 +1091,29 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   };
   std::vector<std::vector<f_t>> seen;
   int n_evals = 0;
-  // pattern of the current point: the linked binaries with y = usage / scale >= thr are opened,
-  // the other integers rounded; fix-and-propagate (most used first), then fixed LP, push, repair,
-  // publish. Returns 0 evaluated, 1 duplicate, 2 conflict, 3 no time.
-  auto eval_pattern = [&](f_t thr) -> int {
+  // binaries opened by flip repairs; kept open in later patterns
+  std::vector<char> forced_open(n_vars, 0);
+  i_t n_forced      = 0;
+  f_t last_eval_obj = std::numeric_limits<f_t>::infinity();  // repaired objective of the last eval
+  // pattern of the current point, then fix-and-propagate (most used first), fixed LP, push,
+  // repair, publish. mode 0: the slope-scaling point, the linked binaries with y = usage / scale
+  // >= thr opened; mode 1: the used-link pattern of the current (published) point, every link
+  // carrying flow open and every other link closed. The other integers are rounded and the
+  // binaries of forced_open opened. Returns 0 evaluated, 1 duplicate, 2 conflict, 3 no time.
+  auto eval_pattern = [&](f_t thr, int mode) -> int {
     if (stop() || remaining() < 0.1 * budget) { return 3; }
     std::vector<f_t> key(n_vars, 0), pref(n_vars, 0);
     for (auto v : h_int) {
       const i_t k = link_of[v];
-      if (k >= 0) {
+      if (forced_open[v]) {
+        key[v]  = 3;
+        pref[v] = 1;
+      } else if (k >= 0 && mode == 1) {
+        // used link: flow on its row, and for a pair binary also open at the point
+        const bool o = u[k] > open_tol(k) && (!vub[k].pair || cur_x[v] > 0.5);
+        key[v]       = o ? 2 : 0;
+        pref[v]      = o ? f_t(1) : f_t(0);
+      } else if (k >= 0) {
         // a pair binary is opened by its own LP value (the LP chooses between the two binaries)
         const f_t yk = vub[k].pair ? std::max<f_t>(cur_x[v], 0) : std::max<f_t>(u[k], 0) / scale[k];
         const bool o = is_open[k] && yk >= thr;
@@ -1160,9 +1174,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       if (s == pat) { dup = true; }
     }
     CUOPT_LOG_INFO(
-      "Slope scaling pattern thr=%g: fix-and-propagate time=%.3fs conflicts=%d promoted=%zu "
-      "flipped=%d implied_off_pref=%d pref_ones=%d ones=%d dup=%d elapsed=%.2f",
+      "Slope scaling pattern mode=%d thr=%g forced=%d: fix-and-propagate time=%.3fs conflicts=%d "
+      "promoted=%zu flipped=%d implied_off_pref=%d pref_ones=%d ones=%d dup=%d elapsed=%.2f",
+      mode,
       (double)thr,
+      n_forced,
       timer.elapsed_time() - t_fp,
       n_conflicts,
       promoted.size(),
@@ -1200,7 +1216,38 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  repair_below,
                                  11.);
     n_evals++;
-    published = published || ev.published;
+    published     = published || ev.published;
+    last_eval_obj = ev.published ? ev.repaired_obj : std::numeric_limits<f_t>::infinity();
+    // flip repair: the fixed-LP point of a pattern below the incumbent that could not be repaired
+    // violates rows whose closed binaries are opened (forced_open) for the next patterns
+    i_t n_new_forced = 0;
+    if (!ev.published && ev.usable && ev.lp_obj < repair_below &&
+        ev.lp_assignment.size() == (size_t)n_vars) {
+      const auto& x = ev.lp_assignment;
+      for (i_t r = 0; r < n_cstrs; ++r) {
+        double act = 0, mag = 0;
+        for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+          act += (double)h_vals[p] * (double)x[h_cols[p]];
+          mag = std::max(mag, std::abs((double)h_vals[p] * (double)x[h_cols[p]]));
+        }
+        const double tol = 10. * abs_tol * std::max(1., mag);
+        const bool viol  = (std::isfinite(h_clb[r]) && act < h_clb[r] - tol) ||
+                          (std::isfinite(h_cub[r]) && act > h_cub[r] + tol);
+        if (!viol) { continue; }
+        for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+          const i_t v = h_cols[p];
+          if (link_of[v] >= 0 && !forced_open[v] && x[v] < 0.5) {
+            forced_open[v] = 1;
+            n_new_forced++;
+          }
+        }
+      }
+      n_forced += n_new_forced;
+      CUOPT_LOG_INFO("Slope scaling flip repair: newly forced open=%d total=%d elapsed=%.2f",
+                     n_new_forced,
+                     n_forced,
+                     timer.elapsed_time());
+    }
     if (ev.published && ev.repaired_assignment.size() == (size_t)n_vars &&
         ev.dual.size() == (size_t)n_cstrs) {
       cur_x = ev.repaired_assignment;
@@ -1232,7 +1279,20 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       (int)ev.published,
       repair_below,
       timer.elapsed_time());
-    return 0;
+    return n_new_forced > 0 ? 4 : 0;  // 4: flip-repaired, worth evaluating the point again
+  };
+  // one evaluation of the slope-scaling point at thr: retried once after a flip repair; each new
+  // incumbent is followed by evaluations of its used-link pattern while they gain 0.5% or more
+  auto run_eval = [&](f_t thr) -> int {
+    int r = eval_pattern(thr, 0);
+    if (r == 4) { r = eval_pattern(thr, 0); }
+    while (r != 3 && std::isfinite(last_eval_obj)) {
+      const f_t before = last_eval_obj;
+      const int r1     = eval_pattern(f_t(0), 1);
+      if (r1 == 3) { return 3; }
+      if (r1 != 0 || !(last_eval_obj < before - f_t(0.005) * std::abs(before))) { break; }
+    }
+    return r == 4 ? 0 : r;
   };
 
   // ---- slope-scaling rounds; a pattern is evaluated after every round from round 3 on
@@ -1334,12 +1394,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     prev_open         = is_open;
     const bool due    = round >= first_eval_round && (round - first_eval_round) % eval_every == 0;
     if (due || (stable && round >= 2)) {
-      const int r = eval_pattern(eval_thresholds[n_attempts++ % 3]);
+      const int r = run_eval(eval_thresholds[n_attempts++ % 3]);
       if (stable && r == 1) { break; }
       if (r == 3) { break; }
     }
   }
-  if (n_evals == 0 && rounds_done > 0) { eval_pattern(eval_thresholds[0]); }
+  if (n_evals == 0 && rounds_done > 0) { run_eval(eval_thresholds[0]); }
   CUOPT_LOG_INFO("Slope scaling end: rounds=%d evaluated=%d published=%d time=%.2fs elapsed=%.2f",
                  rounds_done,
                  n_evals,
