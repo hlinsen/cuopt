@@ -1303,6 +1303,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     last_eval_obj = std::numeric_limits<f_t>::infinity();
     int r         = eval_pattern(thr, 0);
     if (r == 4) { r = eval_pattern(thr, 0); }
+    // fallback when the threshold pattern published nothing: the same point with every link that
+    // carries flow open (the point's flows stay feasible); the used-link re-evaluations and drop
+    // steps below then close the links the fixed LP does not need
+    if (r == 0 && !std::isfinite(last_eval_obj)) { r = eval_pattern(f_t(1e-3), 0); }
     std::fill(forced_open.begin(), forced_open.end(), 0);
     n_forced = 0;
     if (r == 3 || !std::isfinite(last_eval_obj)) { return r == 4 ? 0 : r; }
