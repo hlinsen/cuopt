@@ -892,28 +892,50 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     is_int[v] = 1;
   }
 
-  // ---- detection: rows with exactly one integer (a binary) and at least one continuous column,
-  // one-sided, where the binary at 1 relaxes the row
+  // ---- detection: rows with one or two integers (binaries) and at least one continuous column,
+  // one-sided, where each binary at 1 relaxes the row (pair rows: usage <= cap1 * y1 + cap2 * y2)
   struct link_t {
     i_t row;
     i_t var;
-    i_t pos;   // nnz position of the binary's coefficient
-    f_t cap;   // |coefficient|: usage <= cap * y
-    f_t sign;  // usage = sign * (cont activity) - rhs_term
-    f_t rhs;   // usage = sign * act - rhs
+    i_t pos;    // nnz position of the binary's coefficient
+    f_t cap;    // |coefficient|: usage <= cap * y
+    f_t sign;   // usage = sign * (cont activity) - rhs_term
+    f_t rhs;    // usage = sign * act - rhs
+    bool pair;  // one of the two binaries of a pair row
   };
   std::vector<link_t> links;
   std::vector<i_t> n_links(n_vars, 0);
-  i_t n_single_int_rows = 0, n_single_int_other = 0;
+  i_t n_single_int_rows = 0, n_single_int_other = 0, n_pair_rows = 0;
   for (i_t r = 0; r < n_cstrs; ++r) {
-    i_t n_i = 0, n_c = 0, pos = -1;
+    i_t n_i = 0, n_c = 0, pos = -1, pos2 = -1;
     for (i_t k = h_offsets[r]; k < h_offsets[r + 1]; ++k) {
       if (is_int[h_cols[k]]) {
         n_i++;
-        pos = k;
+        pos2 = pos;
+        pos  = k;
       } else {
         n_c++;
       }
+    }
+    if (n_i == 2 && n_c > 0) {
+      const i_t y1 = h_cols[pos2], y2 = h_cols[pos];
+      const f_t b1 = h_vals[pos2], b2 = h_vals[pos];
+      const bool bin = h_vlb[y1] == 0 && h_vub[y1] == 1 && h_vlb[y2] == 0 && h_vub[y2] == 1;
+      const bool le  = std::isfinite(h_cub[r]) && !std::isfinite(h_clb[r]);
+      const bool ge  = std::isfinite(h_clb[r]) && !std::isfinite(h_cub[r]);
+      if (bin && le && b1 < 0 && b2 < 0) {
+        links.push_back({r, y1, pos2, -b1, f_t(1), h_cub[r], true});
+        links.push_back({r, y2, pos, -b2, f_t(1), h_cub[r], true});
+      } else if (bin && ge && b1 > 0 && b2 > 0) {
+        links.push_back({r, y1, pos2, b1, f_t(-1), -h_clb[r], true});
+        links.push_back({r, y2, pos, b2, f_t(-1), -h_clb[r], true});
+      } else {
+        continue;
+      }
+      n_links[y1]++;
+      n_links[y2]++;
+      n_pair_rows++;
+      continue;
     }
     if (n_i != 1 || n_c == 0) { continue; }
     n_single_int_rows++;
@@ -923,10 +945,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     const bool le     = std::isfinite(h_cub[r]) && !std::isfinite(h_clb[r]);
     const bool ge     = std::isfinite(h_clb[r]) && !std::isfinite(h_cub[r]);
     if (binary && le && b < 0) {
-      links.push_back({r, y, pos, -b, f_t(1), h_cub[r]});
+      links.push_back({r, y, pos, -b, f_t(1), h_cub[r], false});
       n_links[y]++;
     } else if (binary && ge && b > 0) {
-      links.push_back({r, y, pos, b, f_t(-1), -h_clb[r]});
+      links.push_back({r, y, pos, b, f_t(-1), -h_clb[r], false});
       n_links[y]++;
     } else {
       n_single_int_other++;
@@ -934,8 +956,19 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   }
   // binaries with exactly one link are scaled
   std::vector<link_t> vub;
-  for (auto& l : links) {
-    if (n_links[l.var] == 1) { vub.push_back(l); }
+  for (size_t q = 0; q < links.size(); ++q) {
+    const auto& l = links[q];
+    if (n_links[l.var] != 1) { continue; }
+    if (l.pair) {
+      const auto& o =
+        (q + 1 < links.size() && links[q + 1].row == l.row) ? links[q + 1] : links[q - 1];
+      if (n_links[o.var] != 1) { continue; }
+    }
+    vub.push_back(l);
+  }
+  i_t n_pair_links = 0;
+  for (auto& l : vub) {
+    n_pair_links += l.pair;
   }
   i_t n_bins = 0, n_multi = 0, n_bin_cost = 0;
   for (auto v : h_int) {
@@ -986,6 +1019,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     q(1),
     timer.elapsed_time() - t0,
     timer.elapsed_time());
+  CUOPT_LOG_INFO("Slope scaling detect: pair_rows=%d pair_links=%d single_links=%d",
+                 n_pair_rows,
+                 n_pair_links,
+                 (int)vub.size() - n_pair_links);
   if (vub.empty()) { return false; }
 
   // ---- slope-scaling rounds
@@ -1000,7 +1037,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     const auto& l = vub[k];
     double act    = 0;
     for (i_t p = h_offsets[l.row]; p < h_offsets[l.row + 1]; ++p) {
-      if (p == l.pos) { continue; }
+      if (is_int[h_cols[p]]) { continue; }
       act += (double)h_vals[p] * (double)x[h_cols[p]];
     }
     return (f_t)(l.sign * act - l.rhs);
@@ -1038,13 +1075,17 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   for (size_t k = 0; k < L; ++k) {
     link_of[vub[k].var] = (i_t)k;
   }
-  // phase 1 ends at t0 + budget; once a pattern was published the rounds and evaluations go on
-  // up to t0 + ext_budget (more patterns of the converging point)
+  // phase 1 ends at t0 + budget; once a pattern was published, or from the start when pair rows
+  // are scaled (their patterns need more rounds), the rounds and evaluations go on up to
+  // t0 + ext_budget
   bool published       = false;
+  const bool extended  = n_pair_links > 0;
   const f_t ext_budget = std::max<f_t>(
     budget, std::min<f_t>(0.7 * context.settings.time_limit, timer.remaining_time() - 60.));
-  auto remaining = [&]() { return t0 + (published ? ext_budget : budget) - timer.elapsed_time(); };
-  auto stop      = [&]() {
+  auto remaining = [&]() {
+    return t0 + (published || extended ? ext_budget : budget) - timer.elapsed_time();
+  };
+  auto stop = [&]() {
     return remaining() <= 0 || timer.check_time_limit() || check_b_b_preemption() ||
            timer.remaining_time() < 30.;
   };
@@ -1059,7 +1100,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     for (auto v : h_int) {
       const i_t k = link_of[v];
       if (k >= 0) {
-        const f_t yk = std::max<f_t>(u[k], 0) / scale[k];
+        // a pair binary is opened by its own LP value (the LP chooses between the two binaries)
+        const f_t yk = vub[k].pair ? std::max<f_t>(cur_x[v], 0) : std::max<f_t>(u[k], 0) / scale[k];
         const bool o = is_open[k] && yk >= thr;
         key[v]       = o ? 1 + yk : 0;
         pref[v]      = o ? f_t(1) : f_t(0);
@@ -1069,11 +1111,25 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         pref[v]     = std::clamp<f_t>(std::floor(x + 0.5), h_vlb[v], h_vub[v]);
       }
     }
-    std::vector<i_t> ord(h_int.begin(), h_int.end());
-    std::stable_sort(ord.begin(), ord.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
+    std::vector<i_t> ord0(h_int.begin(), h_int.end());
+    std::stable_sort(ord0.begin(), ord0.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
     const double t_fp = timer.elapsed_time();
-    i_t n_flipped = 0, n_implied = 0;
-    i_t n_conflicts = fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
+    i_t n_flipped = 0, n_implied = 0, n_conflicts = 0;
+    // conflict promotion: a variable whose fixing conflicted is fixed first in the next attempt
+    std::vector<i_t> promoted;
+    std::vector<char> is_promoted(n_vars, 0);
+    constexpr int max_attempts = 3;
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+      std::vector<i_t> ord(promoted);
+      for (auto v : ord0) {
+        if (!is_promoted[v]) { ord.push_back(v); }
+      }
+      n_conflicts  = fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
+      const i_t cv = fp_host.last_conflict_var;
+      if (n_conflicts == 0 || cv < 0 || is_promoted[cv]) { break; }
+      promoted.push_back(cv);
+      is_promoted[cv] = 1;
+    }
     std::vector<f_t> pat(h_int.size());
     i_t n_ones = 0, n_pref_ones = 0;
     for (size_t qq = 0; qq < h_int.size(); ++qq) {
@@ -1086,11 +1142,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       if (s == pat) { dup = true; }
     }
     CUOPT_LOG_INFO(
-      "Slope scaling pattern thr=%g: fix-and-propagate time=%.3fs conflicts=%d flipped=%d "
-      "implied_off_pref=%d pref_ones=%d ones=%d dup=%d elapsed=%.2f",
+      "Slope scaling pattern thr=%g: fix-and-propagate time=%.3fs conflicts=%d promoted=%zu "
+      "flipped=%d implied_off_pref=%d pref_ones=%d ones=%d dup=%d elapsed=%.2f",
       (double)thr,
       timer.elapsed_time() - t_fp,
       n_conflicts,
+      promoted.size(),
       n_flipped,
       n_implied,
       n_pref_ones,

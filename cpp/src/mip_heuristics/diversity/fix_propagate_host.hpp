@@ -123,6 +123,8 @@ struct host_fix_propagate_t {
   // of its width (0 keeps every tightening, above 1 none; infinite bounds becoming finite are kept)
   f_t continuous_min_improvement   = 0.3;
   int64_t n_continuous_tightenings = 0;
+  // first variable of the last pass whose two values both conflicted (-1: none)
+  i_t last_conflict_var = -1;
 
   // propagation engine: the branch-and-bound bound propagation (simplex::domain_t) on the problem
   // in its LP form (equality rows with slack columns appended after the original columns)
@@ -274,9 +276,10 @@ struct host_fix_propagate_t {
     work                     = 0;
     n_continuous_tightenings = 0;
     row_dead.assign(n_rows(), 0);
-    n_flipped       = 0;
-    n_implied       = 0;
-    i_t n_conflicts = 0;
+    n_flipped         = 0;
+    n_implied         = 0;
+    last_conflict_var = -1;
+    i_t n_conflicts   = 0;
     if (!domain.propagate_full(Arow, var_types, settings, *lp)) { n_conflicts++; }
     work += (int64_t)domain.last_nnz_processed;
     domain.clear();
@@ -299,6 +302,7 @@ struct host_fix_propagate_t {
         continue;
       }
       n_conflicts++;
+      if (last_conflict_var < 0) { last_conflict_var = v; }
       propagate    = false;
       lp->lower[v] = lp->upper[v] = p;
     }
