@@ -1126,6 +1126,20 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       n_conflicts  = fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
       const i_t cv = fp_host.last_conflict_var;
+      if (n_conflicts > 0 && cv >= 0) {
+        const i_t ck = link_of[cv];
+        CUOPT_LOG_INFO(
+          "Slope scaling conflict attempt %d: var=%d kind=%s pref=%g lp=%g key=%g usage=%g "
+          "scale=%g",
+          attempt,
+          cv,
+          ck < 0 ? "other" : (vub[ck].pair ? "pair" : "single"),
+          (double)pref[cv],
+          (double)cur_x[cv],
+          (double)key[cv],
+          ck < 0 ? 0. : (double)u[ck],
+          ck < 0 ? 0. : (double)scale[ck]);
+      }
       if (n_conflicts == 0 || cv < 0 || is_promoted[cv]) { break; }
       promoted.push_back(cv);
       is_promoted[cv] = 1;
@@ -1222,7 +1236,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   constexpr int max_rounds       = 60;
   constexpr int first_eval_round = 3;
   constexpr int eval_every       = 1;
-  const f_t eval_thresholds[]    = {f_t(0.5), f_t(0.3), f_t(0.7)};
+  const f_t eval_thresholds[]    = {f_t(0.7), f_t(0.5), f_t(0.3)};
+  int n_attempts                 = 0;
   const double round_cap         = std::min<double>(60., 0.15 * budget);
   const f_t eval_reserve         = 0.3 * budget;
   std::vector<var_t> h_types(n_vars, var_t::CONTINUOUS);
@@ -1315,7 +1330,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     prev_open         = is_open;
     const bool due    = round >= first_eval_round && (round - first_eval_round) % eval_every == 0;
     if (due || (stable && round >= 2)) {
-      const int r = eval_pattern(eval_thresholds[n_evals % 3]);
+      const int r = eval_pattern(eval_thresholds[n_attempts++ % 3]);
       if (stable && r == 1) { break; }
       if (r == 3) { break; }
     }
