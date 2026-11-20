@@ -1076,6 +1076,26 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   for (size_t k = 0; k < L; ++k) {
     link_of[vub[k].var] = (i_t)k;
   }
+  // links by continuous column (CSR): the links whose row holds the column, i.e. whose binary
+  // gives that flow its capacity
+  std::vector<i_t> col_link_off(n_vars + 1, 0), col_link;
+  for (size_t k = 0; k < L; ++k) {
+    for (i_t p = h_offsets[vub[k].row]; p < h_offsets[vub[k].row + 1]; ++p) {
+      if (!is_int[h_cols[p]]) { col_link_off[h_cols[p] + 1]++; }
+    }
+  }
+  for (i_t j = 0; j < n_vars; ++j) {
+    col_link_off[j + 1] += col_link_off[j];
+  }
+  col_link.resize(col_link_off[n_vars]);
+  {
+    std::vector<i_t> fill(col_link_off.begin(), col_link_off.end() - 1);
+    for (size_t k = 0; k < L; ++k) {
+      for (i_t p = h_offsets[vub[k].row]; p < h_offsets[vub[k].row + 1]; ++p) {
+        if (!is_int[h_cols[p]]) { col_link[fill[h_cols[p]]++] = (i_t)k; }
+      }
+    }
+  }
   // phase 1 ends at t0 + budget; once a pattern was published, or from the start when pair rows
   // are scaled (their patterns need more rounds), the rounds and evaluations go on up to
   // t0 + ext_budget
@@ -1091,7 +1111,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   };
   std::vector<std::vector<f_t>> seen;
   int n_evals = 0;
-  // binaries opened by flip repairs; kept open in later patterns
+  // binaries opened by a flip repair, for the retry of the same point only
   std::vector<char> forced_open(n_vars, 0);
   i_t n_forced      = 0;
   f_t last_eval_obj = std::numeric_limits<f_t>::infinity();  // repaired objective of the last eval
@@ -1219,11 +1239,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     published     = published || ev.published;
     last_eval_obj = ev.published ? ev.repaired_obj : std::numeric_limits<f_t>::infinity();
     // flip repair: the fixed-LP point of a pattern below the incumbent that could not be repaired
-    // violates rows whose closed binaries are opened (forced_open) for the next patterns
+    // violates rows; in each (largest violation first) the closed link binaries of the row are
+    // opened, and also those whose continuous columns appear in the row (a violated flow row is
+    // relieved by opening the links that carry its flows). The opened binaries (forced_open) are
+    // used for one more evaluation of the same point.
     i_t n_new_forced = 0;
     if (!ev.published && ev.usable && ev.lp_obj < repair_below &&
         ev.lp_assignment.size() == (size_t)n_vars) {
       const auto& x = ev.lp_assignment;
+      std::vector<std::pair<double, i_t>> viol_rows;
       for (i_t r = 0; r < n_cstrs; ++r) {
         double act = 0, mag = 0;
         for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
@@ -1231,22 +1255,45 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           mag = std::max(mag, std::abs((double)h_vals[p] * (double)x[h_cols[p]]));
         }
         const double tol = 10. * abs_tol * std::max(1., mag);
-        const bool viol  = (std::isfinite(h_clb[r]) && act < h_clb[r] - tol) ||
-                          (std::isfinite(h_cub[r]) && act > h_cub[r] + tol);
-        if (!viol) { continue; }
+        double v         = 0;
+        if (std::isfinite(h_clb[r]) && act < h_clb[r] - tol) { v = h_clb[r] - act; }
+        if (std::isfinite(h_cub[r]) && act > h_cub[r] + tol) { v = act - h_cub[r]; }
+        if (v > 0) { viol_rows.push_back({v, r}); }
+      }
+      std::sort(viol_rows.begin(), viol_rows.end(), [](const auto& a, const auto& b) {
+        return a.first > b.first;
+      });
+      constexpr i_t max_new_forced = 500;
+      i_t n_direct = 0, n_via_flow = 0;
+      auto open_link = [&](i_t v, i_t& counter) {
+        if (forced_open[v] || x[v] >= 0.5 || n_new_forced >= max_new_forced) { return; }
+        forced_open[v] = 1;
+        n_new_forced++;
+        counter++;
+      };
+      for (const auto& [v, r] : viol_rows) {
+        if (n_new_forced >= max_new_forced) { break; }
         for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
-          const i_t v = h_cols[p];
-          if (link_of[v] >= 0 && !forced_open[v] && x[v] < 0.5) {
-            forced_open[v] = 1;
-            n_new_forced++;
+          const i_t c = h_cols[p];
+          if (link_of[c] >= 0) {
+            open_link(c, n_direct);
+          } else if (!is_int[c]) {
+            for (i_t q = col_link_off[c]; q < col_link_off[c + 1]; ++q) {
+              open_link(vub[col_link[q]].var, n_via_flow);
+            }
           }
         }
       }
       n_forced += n_new_forced;
-      CUOPT_LOG_INFO("Slope scaling flip repair: newly forced open=%d total=%d elapsed=%.2f",
-                     n_new_forced,
-                     n_forced,
-                     timer.elapsed_time());
+      CUOPT_LOG_INFO(
+        "Slope scaling flip repair: violated_rows=%zu max_violation=%g opened direct=%d "
+        "via_flow=%d "
+        "elapsed=%.2f",
+        viol_rows.size(),
+        viol_rows.empty() ? 0. : viol_rows[0].first,
+        n_direct,
+        n_via_flow,
+        timer.elapsed_time());
     }
     if (ev.published && ev.repaired_assignment.size() == (size_t)n_vars &&
         ev.dual.size() == (size_t)n_cstrs) {
@@ -1284,8 +1331,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // one evaluation of the slope-scaling point at thr: retried once after a flip repair; each new
   // incumbent is followed by evaluations of its used-link pattern while they gain 0.5% or more
   auto run_eval = [&](f_t thr) -> int {
-    int r = eval_pattern(thr, 0);
+    last_eval_obj = std::numeric_limits<f_t>::infinity();
+    int r         = eval_pattern(thr, 0);
     if (r == 4) { r = eval_pattern(thr, 0); }
+    std::fill(forced_open.begin(), forced_open.end(), 0);  // for the retry of this point only
+    n_forced = 0;
     while (r != 3 && std::isfinite(last_eval_obj)) {
       const f_t before = last_eval_obj;
       const int r1     = eval_pattern(f_t(0), 1);
@@ -2226,14 +2276,15 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       lp_result.get_primal_solution().size() == lp_optimal_solution.size() &&
       lp_result.get_dual_solution().size() == lp_dual_optimal_solution.size() &&
       lp_result.get_reduced_cost().size() == lp_optimal_solution.size();
-    CUOPT_LOG_INFO("GPU root LP status %s, budget %.2f s, elapsed %.2f s, iterations %d, "
-                   "hit_time_limit %d, usable_point %d",
-                   lp_result.get_termination_status_string().c_str(),
-                   lp_time_limit,
-                   lp_timer.elapsed_time(),
-                   lp_result.get_additional_termination_information().number_of_steps_taken,
-                   root_lp_status == pdlp_termination_status_t::TimeLimit ? 1 : 0,
-                   root_lp_usable ? 1 : 0);
+    CUOPT_LOG_INFO(
+      "GPU root LP status %s, budget %.2f s, elapsed %.2f s, iterations %d, "
+      "hit_time_limit %d, usable_point %d",
+      lp_result.get_termination_status_string().c_str(),
+      lp_time_limit,
+      lp_timer.elapsed_time(),
+      lp_result.get_additional_termination_information().number_of_steps_taken,
+      root_lp_status == pdlp_termination_status_t::TimeLimit ? 1 : 0,
+      root_lp_usable ? 1 : 0);
 
     bool use_staged_simplex_solution = false;
     {
@@ -2324,15 +2375,14 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
       auto iterations = lp_result.get_additional_termination_information().number_of_steps_taken;
       auto method     = lp_result.get_additional_termination_information().solved_by;
       // Set for the B&B (param4 expects solver space, param5 expects user space)
-      problem_ptr->set_root_relaxation_solution_callback(
-        host_primal,
-        host_dual,
-        host_reduced_costs,
-        solver_obj,
-        user_obj,
-        iterations,
-        method,
-        root_lp_status);
+      problem_ptr->set_root_relaxation_solution_callback(host_primal,
+                                                         host_dual,
+                                                         host_reduced_costs,
+                                                         solver_obj,
+                                                         user_obj,
+                                                         iterations,
+                                                         method,
+                                                         root_lp_status);
     }
 
     if (!use_staged_simplex_solution && root_lp_usable) {
