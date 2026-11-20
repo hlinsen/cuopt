@@ -1093,6 +1093,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   int n_evals = 0;
   // binaries opened by flip repairs; kept open in later patterns
   std::vector<char> forced_open(n_vars, 0);
+  // drop step (mode 2): links of the current point closed in addition to its used-link pattern
+  std::vector<char> drop(n_vars, 0);
   i_t n_forced      = 0;
   f_t last_eval_obj = std::numeric_limits<f_t>::infinity();  // repaired objective of the last eval
   // pattern of the current point, then fix-and-propagate (most used first), fixed LP, push,
@@ -1105,10 +1107,13 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     std::vector<f_t> key(n_vars, 0), pref(n_vars, 0);
     for (auto v : h_int) {
       const i_t k = link_of[v];
-      if (forced_open[v]) {
+      if (mode == 2 && drop[v]) {
+        key[v]  = 4;
+        pref[v] = 0;
+      } else if (forced_open[v]) {
         key[v]  = 3;
         pref[v] = 1;
-      } else if (k >= 0 && mode == 1) {
+      } else if (k >= 0 && mode >= 1) {
         // used link: flow on its row, and for a pair binary also open at the point
         const bool o = u[k] > open_tol(k) && (!vub[k].pair || cur_x[v] > 0.5);
         key[v]       = o ? 2 : 0;
@@ -1283,14 +1288,54 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   };
   // one evaluation of the slope-scaling point at thr: retried once after a flip repair; each new
   // incumbent is followed by evaluations of its used-link pattern while they gain 0.5% or more
+  // Drop steps follow on the incumbent (cur_x right after the publish): the open links with the
+  // highest objective cost per unit of flow are closed, a share drop_frac of the open links at a
+  // time (halved after a step without gain).
   auto run_eval = [&](f_t thr) -> int {
-    int r = eval_pattern(thr, 0);
+    last_eval_obj = std::numeric_limits<f_t>::infinity();
+    int r         = eval_pattern(thr, 0);
     if (r == 4) { r = eval_pattern(thr, 0); }
-    while (r != 3 && std::isfinite(last_eval_obj)) {
-      const f_t before = last_eval_obj;
-      const int r1     = eval_pattern(f_t(0), 1);
+    if (r == 3 || !std::isfinite(last_eval_obj)) { return r == 4 ? 0 : r; }
+    f_t inc_obj = last_eval_obj;
+    while (true) {
+      const int r1 = eval_pattern(f_t(0), 1);
       if (r1 == 3) { return 3; }
-      if (r1 != 0 || !(last_eval_obj < before - f_t(0.005) * std::abs(before))) { break; }
+      if (r1 != 0 || !(last_eval_obj < inc_obj - f_t(0.005) * std::abs(inc_obj))) { break; }
+      inc_obj = last_eval_obj;
+    }
+    if (std::isfinite(last_eval_obj)) { inc_obj = std::min(inc_obj, last_eval_obj); }
+    double drop_frac = 0.05;
+    while (drop_frac * L >= 1.) {
+      std::vector<std::pair<f_t, i_t>> cand;
+      for (size_t k = 0; k < L; ++k) {
+        const i_t v = vub[k].var;
+        if (forced_open[v] || cur_x[v] < 0.5 || h_obj[v] <= 0) { continue; }
+        cand.push_back({h_obj[v] / std::max<f_t>(u[k], open_tol(k)), v});
+      }
+      const size_t n_drop = std::min(cand.size(), (size_t)(drop_frac * cand.size()) + 1);
+      if (n_drop == 0) { break; }
+      std::partial_sort(
+        cand.begin(), cand.begin() + n_drop, cand.end(), [](const auto& a, const auto& b) {
+          return a.first > b.first;
+        });
+      std::fill(drop.begin(), drop.end(), 0);
+      for (size_t q = 0; q < n_drop; ++q) {
+        drop[cand[q].second] = 1;
+      }
+      CUOPT_LOG_INFO(
+        "Slope scaling drop step: closing %zu of %zu open links (frac=%g) elapsed=%.2f",
+        n_drop,
+        cand.size(),
+        drop_frac,
+        timer.elapsed_time());
+      last_eval_obj = std::numeric_limits<f_t>::infinity();
+      const int r2  = eval_pattern(f_t(0), 2);
+      if (r2 == 3) { return 3; }
+      if (r2 == 0 && last_eval_obj < inc_obj - f_t(0.001) * std::abs(inc_obj)) {
+        inc_obj = last_eval_obj;
+      } else {
+        drop_frac *= 0.5;
+      }
     }
     return r == 4 ? 0 : r;
   };
