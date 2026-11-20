@@ -1091,7 +1091,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   };
   std::vector<std::vector<f_t>> seen;
   int n_evals = 0;
-  // binaries opened by flip repairs; kept open in later patterns
+  // binaries opened by a flip repair, for the retry of the same point only
   std::vector<char> forced_open(n_vars, 0);
   // drop step (mode 2): links of the current point closed in addition to its used-link pattern
   std::vector<char> drop(n_vars, 0);
@@ -1224,7 +1224,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     published     = published || ev.published;
     last_eval_obj = ev.published ? ev.repaired_obj : std::numeric_limits<f_t>::infinity();
     // flip repair: the fixed-LP point of a pattern below the incumbent that could not be repaired
-    // violates rows whose closed binaries are opened (forced_open) for the next patterns
+    // violates link rows; in each, the closed link binary with the largest capacity is opened
+    // (forced_open) for one more evaluation of the same point
     i_t n_new_forced = 0;
     if (!ev.published && ev.usable && ev.lp_obj < repair_below &&
         ev.lp_assignment.size() == (size_t)n_vars) {
@@ -1239,12 +1240,19 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         const bool viol  = (std::isfinite(h_clb[r]) && act < h_clb[r] - tol) ||
                           (std::isfinite(h_cub[r]) && act > h_cub[r] + tol);
         if (!viol) { continue; }
+        i_t best_v = -1;
+        f_t best_c = 0;
         for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
           const i_t v = h_cols[p];
-          if (link_of[v] >= 0 && !forced_open[v] && x[v] < 0.5) {
-            forced_open[v] = 1;
-            n_new_forced++;
+          const i_t k = link_of[v];
+          if (k >= 0 && vub[k].row == r && !forced_open[v] && x[v] < 0.5 && vub[k].cap > best_c) {
+            best_v = v;
+            best_c = vub[k].cap;
           }
+        }
+        if (best_v >= 0) {
+          forced_open[best_v] = 1;
+          n_new_forced++;
         }
       }
       n_forced += n_new_forced;
@@ -1295,6 +1303,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     last_eval_obj = std::numeric_limits<f_t>::infinity();
     int r         = eval_pattern(thr, 0);
     if (r == 4) { r = eval_pattern(thr, 0); }
+    std::fill(forced_open.begin(), forced_open.end(), 0);
+    n_forced = 0;
     if (r == 3 || !std::isfinite(last_eval_obj)) { return r == 4 ? 0 : r; }
     f_t inc_obj = last_eval_obj;
     while (true) {
