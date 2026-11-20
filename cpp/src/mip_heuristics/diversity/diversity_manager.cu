@@ -587,7 +587,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                                   f_t repair_tlimit,
                                                   const char* origin,
                                                   f_t repair_below,
-                                                  f_t max_push_time)
+                                                  f_t max_push_time,
+                                                  bool require_optimal)
 {
   raft::common::nvtx::range fun_scope("eval_fixed_pattern");
   pattern_eval_t res;
@@ -661,7 +662,9 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   res.lp_obj        = sol.get_user_objective();
   res.usable        = std::isfinite(res.lp_obj);
   res.lp_assignment = sol.get_host_assignment();
-  if (repair && res.usable && res.lp_obj < repair_below) {
+  // require_optimal: a fixed LP that did not converge within its time limit is not pushed or
+  // repaired (on slope-scaling patterns such an LP is infeasible and the repair never succeeds)
+  if (repair && res.usable && res.lp_obj < repair_below && (res.optimal || !require_optimal)) {
     // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
     // (the ranking objective above stays the phase-A one)
@@ -1204,7 +1207,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       assign[h_int[qq]] = pat[qq];
     }
     const f_t rem          = remaining();
-    const f_t rank_tlimit  = std::min<f_t>(60., 0.45 * rem);
+    const f_t rank_tlimit  = std::min<f_t>(30., 0.45 * rem);
     const f_t repair_limit = std::min<f_t>(40., 0.35 * rem);
     // no repair for patterns whose fixed LP is not below the incumbent
     const f_t repair_below = population.is_feasible()
@@ -1219,7 +1222,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  repair_limit,
                                  "slope_scaling",
                                  repair_below,
-                                 11.);
+                                 11.,
+                                 true);
     n_evals++;
     published     = published || ev.published;
     last_eval_obj = ev.published ? ev.repaired_obj : std::numeric_limits<f_t>::infinity();
@@ -1303,10 +1307,6 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     last_eval_obj = std::numeric_limits<f_t>::infinity();
     int r         = eval_pattern(thr, 0);
     if (r == 4) { r = eval_pattern(thr, 0); }
-    // fallback when the threshold pattern published nothing: the same point with every link that
-    // carries flow open (the point's flows stay feasible); the used-link re-evaluations and drop
-    // steps below then close the links the fixed LP does not need
-    if (r == 0 && !std::isfinite(last_eval_obj)) { r = eval_pattern(f_t(1e-3), 0); }
     std::fill(forced_open.begin(), forced_open.end(), 0);
     n_forced = 0;
     if (r == 3 || !std::isfinite(last_eval_obj)) { return r == 4 ? 0 : r; }

@@ -105,8 +105,9 @@ class diversity_manager_t {
                                     bool repair,
                                     f_t repair_tlimit,
                                     const char* origin,
-                                    f_t repair_below  = std::numeric_limits<f_t>::infinity(),
-                                    f_t max_push_time = 11.);
+                                    f_t repair_below     = std::numeric_limits<f_t>::infinity(),
+                                    f_t max_push_time    = 11.,
+                                    bool require_optimal = false);
   // strict host-side feasibility check of a full assignment against the model rows and bounds
   // (compensated activities, validator-style relative term, half the absolute tolerance) so
   // that published LP-derived points keep a margin over the external validator
