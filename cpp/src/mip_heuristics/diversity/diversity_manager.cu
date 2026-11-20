@@ -1115,16 +1115,19 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     std::stable_sort(ord0.begin(), ord0.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
     const double t_fp = timer.elapsed_time();
     i_t n_flipped = 0, n_implied = 0, n_conflicts = 0;
-    // conflict promotion: a variable whose fixing conflicted is fixed first in the next attempt
+    // conflict promotion: a variable whose two values both conflicted is fixed first, at the
+    // other end of its domain, in the next attempt (a closed binary of an infeasible cluster is
+    // opened before its neighbours are fixed)
     std::vector<i_t> promoted;
     std::vector<char> is_promoted(n_vars, 0);
-    constexpr int max_attempts = 3;
+    std::vector<f_t> pref_try  = pref;
+    constexpr int max_attempts = 8;
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
       std::vector<i_t> ord(promoted);
       for (auto v : ord0) {
         if (!is_promoted[v]) { ord.push_back(v); }
       }
-      n_conflicts  = fp_host.fix_and_propagate(ord, pref, n_flipped, n_implied);
+      n_conflicts  = fp_host.fix_and_propagate(ord, pref_try, n_flipped, n_implied);
       const i_t cv = fp_host.last_conflict_var;
       if (n_conflicts > 0 && cv >= 0) {
         const i_t ck = link_of[cv];
@@ -1143,6 +1146,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       if (n_conflicts == 0 || cv < 0 || is_promoted[cv]) { break; }
       promoted.push_back(cv);
       is_promoted[cv] = 1;
+      pref_try[cv]    = pref_try[cv] > h_vlb[cv] ? h_vlb[cv] : h_vub[cv];
     }
     std::vector<f_t> pat(h_int.size());
     i_t n_ones = 0, n_pref_ones = 0;
