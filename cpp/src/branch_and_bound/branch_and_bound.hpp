@@ -33,6 +33,7 @@
 #include <utilities/work_unit_scheduler.hpp>
 
 #include <cuopt/mathematical_optimization/pdlp/solver_settings.hpp>
+#include <cuopt/mathematical_optimization/pdlp/solver_solution.hpp>
 
 #include <mip_heuristics/presolve/third_party_presolve.hpp>
 #include <mip_heuristics/root_heuristics.hpp>
@@ -103,7 +104,8 @@ class branch_and_bound_t {
                      f_t start_time,
                      const probing_implied_bound_t<i_t, f_t>& probing_implied_bound,
                      std::shared_ptr<mip::clique_table_t<i_t, f_t>> clique_table = nullptr,
-                     mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr);
+                     mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr,
+                     const raft::handle_t* root_cut_pdlp_handle                  = nullptr);
 
   // Set an initial guess based on the user_problem. This should be called before solve.
   void set_initial_guess(const std::vector<f_t>& user_guess) { guess_ = user_guess; }
@@ -124,7 +126,8 @@ class branch_and_bound_t {
                                     f_t objective,
                                     f_t user_objective,
                                     i_t iterations,
-                                    method_t method)
+                                    method_t method,
+                                    pdlp_termination_status_t termination)
   {
     if (!is_root_solution_set) {
       root_crossover_soln_.x              = primal;
@@ -135,6 +138,7 @@ class branch_and_bound_t {
       root_crossover_soln_.user_objective = user_objective;
       root_crossover_soln_.iterations     = iterations;
       root_relax_solved_by                = method;
+      root_gpu_lp_termination_            = termination;
       root_crossover_solution_set_.store(true, std::memory_order_release);
     }
   }
@@ -144,6 +148,11 @@ class branch_and_bound_t {
 
   // Apply a solution found by a CPU FJ worker.
   void set_solution_from_cpu_fj(f_t obj, const std::vector<f_t>& assignment, double work_units);
+
+  // Apply a CPU FJ solution from a private PDLP cut model after removing its cut slacks.
+  void set_solution_from_pdlp_cpu_fj(f_t obj,
+                                     const std::vector<f_t>& assignment,
+                                     double work_units);
 
   // This queues the solution to be processed at the correct work unit timestamp
   void queue_external_solution_deterministic(const std::vector<f_t>& solution, double work_unit_ts);
@@ -183,7 +192,10 @@ class branch_and_bound_t {
     std::vector<i_t>& basic_list,
     std::vector<i_t>& nonbasic_list,
     std::vector<f_t>& edge_norms,
-    f_t& work_estimate);
+    f_t& work_estimate,
+    variable_bounds_t<i_t, f_t>& variable_bounds,
+    cut_pool_t<i_t, f_t>& cut_pool,
+    root_heuristics_t<i_t, f_t>& root_heuristics);
 
   // The main entry routine. Returns the solver status and populates solution with the incumbent.
   mip_status_t solve(simplex::mip_solution_t<i_t, f_t>& solution);
@@ -198,7 +210,9 @@ class branch_and_bound_t {
   const simplex::simplex_solver_settings_t<i_t, f_t> settings_;
   const probing_implied_bound_t<i_t, f_t>& probing_implied_bound_;
   std::shared_ptr<mip::clique_table_t<i_t, f_t>> clique_table_;
+  const raft::handle_t* root_cut_pdlp_handle_;
   omp_atomic_t<bool> signal_extend_cliques_{false};
+  omp_atomic_t<bool> clique_table_complete_{false};
   mip_symmetry_t<i_t, f_t>* symmetry_;
 
   work_limit_context_t work_unit_context_{"B&B"};
@@ -252,6 +266,7 @@ class branch_and_bound_t {
   method_t root_relax_solved_by{Unset};
   f_t root_relax_work_estimate_;
   f_t root_integer_pivot_work_{0.0};
+  pdlp_termination_status_t root_gpu_lp_termination_{pdlp_termination_status_t::NoTermination};
   std::vector<f_t> edge_norms_;
   std::atomic<bool> root_crossover_solution_set_{false};
   omp_atomic_t<f_t> root_lp_current_lower_bound_;
@@ -319,8 +334,13 @@ class branch_and_bound_t {
   void halt_solver();
 
   enum class cut_pass_action_t { CONTINUE, BREAK, RETURN };
+  struct cut_pass_result_t {
+    cut_pass_action_t action{cut_pass_action_t::CONTINUE};
+    mip_status_t status{mip_status_t::UNSET};
+  };
+  enum class cut_pass_mode_t { GENERATE_AND_APPLY, APPLY_EXISTING_POOL };
 
-  cut_pass_action_t do_cut_pass(i_t cut_pass,
+  cut_pass_result_t do_cut_pass(i_t cut_pass,
                                 simplex::mip_solution_t<i_t, f_t>& solution,
                                 i_t& num_fractional,
                                 std::vector<i_t>& fractional,
@@ -338,7 +358,8 @@ class branch_and_bound_t {
                                 f_t root_relax_objective,
                                 reduced_cost_bounds_t<i_t, f_t>& reduced_cost_bounds,
                                 i_t& cut_pool_size,
-                                const std::vector<f_t>& saved_solution);
+                                const std::vector<f_t>& saved_solution,
+                                cut_pass_mode_t mode = cut_pass_mode_t::GENERATE_AND_APPLY);
 
   // Set the solution when found at the root node
   void set_solution_at_root(simplex::mip_solution_t<i_t, f_t>& solution,
@@ -401,13 +422,19 @@ class branch_and_bound_t {
                     submip_stats_t& submip_stats,
                     f_t fixrate,
                     i_t simplex_iter_used,
-                    simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
+                    simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
+                    i_t thread_budget = 1);
 
   void mutation(diving_worker_t<i_t, f_t>* worker,
                 simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
   // Creates and solves the RINS/RENS sub-MIP.
   void recursive_submip(diving_worker_t<i_t, f_t>* worker,
                         simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
+
+  // Solve a classic RENS neighborhood built directly from an early PDLP root solution.
+  void solve_pdlp_rens(diving_worker_t<i_t, f_t>* worker,
+                       simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
+                       i_t cut_pass);
 
   void launch_root_heuristics(const simplex::lp_problem_t<i_t, f_t>& lp,
                               const simplex::lp_solution_t<i_t, f_t>& lp_solution,

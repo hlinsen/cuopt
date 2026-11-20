@@ -278,7 +278,8 @@ class problem_t {
                      f_t,
                      f_t,
                      i_t,
-                     method_t)>
+                     method_t,
+                     pdlp_termination_status_t)>
     set_root_relaxation_solution_callback;
   // Valid lower bound on the root LP (solver space) found while it is being solved
   std::function<void(f_t)> set_root_lower_bound_callback;
