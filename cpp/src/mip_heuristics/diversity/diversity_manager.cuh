@@ -110,6 +110,18 @@ class diversity_manager_t {
   // (compensated activities, validator-style relative term, half the absolute tolerance) so
   // that published LP-derived points keep a margin over the external validator
   bool strict_point_ok(const std::vector<f_t>& x, f_t& max_excess);
+  // the point lifted to the user's model (post-processing + PaPILO postsolve) satisfies the
+  // original rows and bounds with half the absolute tolerance (true without PaPILO presolve)
+  bool original_point_ok(const std::vector<f_t>& x);
+  // Dynamic slope scaling on detected variable-upper-bound links (a row holding one binary y and
+  // continuous columns, where y = 1 relaxes the row: usage(x) <= cap * y). Each round re-solves
+  // the LP (binaries relaxed, warm-started PDLP) with every linked binary's coefficient scaled to
+  // the usage of the previous point, so that a linked binary costs (objective and every other row
+  // it appears in) its full amount per unit of the previous usage instead of 1/cap. Then the
+  // binaries with positive usage are opened, the pattern is fix-and-propagated, evaluated by a
+  // fixed LP, repaired and published. No-op without such rows.
+  bool run_slope_scaling();
+  bool slope_scaling_done{false};
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring
