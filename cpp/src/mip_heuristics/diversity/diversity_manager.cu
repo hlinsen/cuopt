@@ -1473,8 +1473,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   std::vector<f_t> anchor_x, anchor_y;
   // near miss: a round pattern whose fixed LP ends just above the incumbent (within near_frac)
   // is repaired anyway; its point (and fixed-LP duals) is the anchor of one safe chain, whose
-  // first steps gain 1-2% after a round pattern (late round patterns end 0.9-1.4% above)
-  constexpr f_t near_frac = f_t(0.015);
+  // first step gains 0.7-1.9% after a round pattern (late round patterns end 0.9-2.8% above;
+  // a fire that cannot reach the incumbent is cut off in the step's fixed LP)
+  constexpr f_t near_frac = f_t(0.025);
   f_t near_obj            = std::numeric_limits<f_t>::infinity();
   std::vector<f_t> near_x, near_y;
   // mode 2 pattern (neighbourhood of the anchored point): preferred value and order key per
