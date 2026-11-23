@@ -2569,6 +2569,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // that refused openings by their number of terms (2, 3, 4-10, more), and the most frequent
     i_t n_blk[2][2] = {}, blk_len[4] = {};
     std::unordered_map<i_t, i_t> blk_rows;
+    // openings refused by rows with continuous columns: with a single-row continuous column (at
+    // its bound) or without, and the most frequent rows
+    i_t n_mix_single = 0;
+    std::unordered_map<i_t, i_t> mix_rows;
     for (const auto& [g, v] : cand) {
       if ((i_t)last_safe.size() >= max_safe_flips) { break; }
       if (moved[v]) { continue; }
@@ -2597,6 +2601,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           const i_t len = fp_host.row_offsets[mv_block + 1] - fp_host.row_offsets[mv_block];
           blk_len[len <= 2 ? 0 : len == 3 ? 1 : len <= 10 ? 2 : 3]++;
           blk_rows[mv_block]++;
+        }
+        if (m == 2 && up && mv_block >= 0) {
+          bool single = false;
+          for (i_t p = fp_host.row_offsets[mv_block]; p < fp_host.row_offsets[mv_block + 1]; ++p) {
+            const i_t j = fp_host.row_cols[p];
+            single      = single || (!is_int[j] && col_nrows[j] == 1);
+          }
+          n_mix_single += single;
+          mix_rows[mv_block]++;
         }
         continue;
       }
@@ -2659,6 +2672,37 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         blk_len[3],
         blk_rows.size(),
         tops.c_str());
+      std::vector<std::pair<i_t, i_t>> mtop(mix_rows.begin(), mix_rows.end());
+      const size_t nm = std::min<size_t>(3, mtop.size());
+      std::partial_sort(mtop.begin(), mtop.begin() + nm, mtop.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second || (a.second == b.second && a.first < b.first);
+      });
+      std::string mtops;
+      for (size_t t = 0; t < nm; ++t) {
+        const i_t r = mtop[t].first;
+        i_t ni = 0, nc = 0, mincr = std::numeric_limits<i_t>::max();
+        for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1]; ++p) {
+          const i_t j = fp_host.row_cols[p];
+          if (is_int[j]) {
+            ni++;
+          } else {
+            nc++;
+            mincr = std::min(mincr, col_nrows[j]);
+          }
+        }
+        mtops += " row" + std::to_string(fp_host.row_orig[r]) + "(int=" + std::to_string(ni) +
+                 " cont=" + std::to_string(nc) + " min_cont_rows=" + std::to_string(mincr) +
+                 " lb=" + std::to_string((double)fp_host.row_lb[r]) +
+                 " ub=" + std::to_string((double)fp_host.row_ub[r]) +
+                 " act=" + std::to_string(mv_act[r]) + ")x" + std::to_string(mtop[t].second);
+      }
+      CUOPT_LOG_INFO(
+        "Slope scaling safe step refusals: open mixed rows with_single_row_col=%d without=%d "
+        "distinct_rows=%zu top:%s",
+        n_mix_single,
+        n_blk[1][1] - n_mix_single,
+        mix_rows.size(),
+        mtops.c_str());
     }
     if (n_kept == 0 && n_close == 0) { return 5; }
     safe_warm     = true;
