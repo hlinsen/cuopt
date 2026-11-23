@@ -661,6 +661,10 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     // an infeasible fixed LP (a pattern without the capacity some rows need) stops after a few
     // thousand iterations instead of running into the time limit
     lp_settings.divergence_stop_checks = 3;
+    // a fixed LP whose objectives stall (seen as a frozen dual objective with a primal residual of
+    // ~10-200 for 100k+ iterations, up to the time limit) ends like at the time limit: the pushes
+    // drive its residual down at the same objective
+    lp_settings.stall_stop_checks = 3;
     // the fixed problem's user objective lacks the cost of the fixed integers (fixing moves their
     // columns into the row bounds only); full_shift turns it into the full user objective
     const f_t scale       = problem_ptr->presolve_data.objective_scaling_factor;
@@ -677,14 +681,17 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     }
     // a fixed LP whose optimum is provably above repair_below (a pattern that can be neither
     // repaired nor published) stops once the Lagrangian bound of a dual iterate, in the full
-    // objective, exceeds it
+    // objective, exceeds it. A bound beyond 10x the incumbent is the dual of an infeasible LP
+    // growing along its Farkas ray: that LP runs on to the divergence verdict, whose dual is ray-
+    // dominated enough for the certificate (at the bound's first crossing it often is not)
     if (stop_above && std::isfinite(repair_below)) {
+      const double ray_like = 10. * std::max(1., std::abs((double)repair_below));
       lp_settings.dual_bound_frequency = 1000;
-      lp_settings.dual_bound_callback  = [&local_halt, &res, full_shift, repair_below](
+      lp_settings.dual_bound_callback  = [&local_halt, &res, full_shift, repair_below, ray_like](
                                           f_t user_bound) {
         const double b = (double)user_bound + full_shift;
         if (b > res.lp_bound) { res.lp_bound = b; }
-        if (b > (double)repair_below) { local_halt.store(1); }
+        if (b > (double)repair_below && b <= ray_like) { local_halt.store(1); }
       };
     }
     // ... or, warm started, once its primal and dual objectives agree on an optimum clearly above
@@ -762,12 +769,17 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
     // (the ranking objective above stays the phase-A one)
     const double t_push = timer.elapsed_time();
+    // each push ends at its time cap or once its l2 primal residual reaches its target: the first
+    // cuts the residual by orders of magnitude within ~1000 iterations and then creeps (~0.07 to
+    // ~0.03 over its last 10k iterations), the second reaches 5e-3 within ~1000 iterations; the
+    // repair needs about the same time from 5e-3 as from 5e-4
     struct push_t {
       double weight;
       double cap;
+      double target;
     };
     const double push_scale = std::clamp<double>(max_push_time / 11., 0., 1.);
-    const push_t pushes[]   = {{1e4, 6. * push_scale}, {1e5, 5. * push_scale}};
+    const push_t pushes[]   = {{1e4, 6. * push_scale, 5e-2}, {1e5, 5. * push_scale, 5e-3}};
     auto cur_p              = cuopt::device_copy(res.primal, stream);
     auto cur_d              = cuopt::device_copy(res.dual, stream);
     bool pushed             = false;
@@ -784,7 +796,10 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       auto snapshot = make_root_lp_snapshot(fixed_problem);
       pdlp_solver_settings_t<i_t, f_t> lp_settings{};
       lp_settings.set_optimality_tolerance(1e-7);
-      lp_settings.time_limit = ps.cap;
+      lp_settings.tolerances.absolute_primal_tolerance = ps.target;
+      lp_settings.tolerances.relative_primal_tolerance = 0;
+      lp_settings.first_primal_feasible                = true;
+      lp_settings.time_limit                           = ps.cap;
       lp_settings.method     = method_t::PDLP;
       lp_settings.presolver  = presolver_t::None;
       std::atomic<int> local_halt{0};
