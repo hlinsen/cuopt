@@ -184,6 +184,12 @@ class branch_and_bound_t {
   bool enable_concurrent_lp_root_solve() const { return enable_concurrent_lp_root_solve_; }
   std::atomic<int>* get_root_concurrent_halt() { return &root_concurrent_halt_; }
   void set_root_concurrent_halt(int value) { root_concurrent_halt_ = value; }
+  // While set, the pre-basis PDLP cut loop leaves the GPU to a primal heuristic: a running pass
+  // is halted (its point is kept) and the next pass waits until the flag is cleared.
+  void set_pdlp_cut_yield(bool value)
+  {
+    pdlp_cut_yield_.store(value ? 1 : 0, std::memory_order_release);
+  }
   simplex::lp_status_t solve_root_relaxation(
     simplex::simplex_solver_settings_t<i_t, f_t> const& lp_settings,
     simplex::lp_solution_t<i_t, f_t>& root_relax_soln,
@@ -276,6 +282,7 @@ class branch_and_bound_t {
   f_t root_lower_bound_log_time_{-1};
   bool enable_concurrent_lp_root_solve_{false};
   std::atomic<int> root_concurrent_halt_{0};
+  std::atomic<int> pdlp_cut_yield_{0};
   std::atomic<int> node_concurrent_halt_{0};
   bool is_root_solution_set{false};
   bool has_initial_pseudocost_{false};
