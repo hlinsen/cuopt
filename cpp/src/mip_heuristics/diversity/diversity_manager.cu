@@ -1377,18 +1377,22 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // phase 1 ends at t0 + budget; once a pattern was published, or from the start when pair rows
   // are scaled (their patterns need more rounds), the rounds and evaluations go on up to
   // t0 + ext_budget
-  bool published       = false;
-  const bool extended  = n_pair_links > 0;
-  const f_t ext_budget = std::max<f_t>(budget, timer.remaining_time() - 40.);
-  auto remaining       = [&]() {
+  // t0 + ext_budget, end_margin before the time limit: left to the publication of the last
+  // result and the solver's shutdown
+  constexpr f_t end_margin = 20.;
+  bool published           = false;
+  const bool extended      = n_pair_links > 0;
+  const f_t ext_budget     = std::max<f_t>(budget, timer.remaining_time() - end_margin);
+  auto remaining           = [&]() {
     return t0 + (published || extended ? ext_budget : budget) - timer.elapsed_time();
   };
   auto stop = [&]() {
     return remaining() <= 0 || timer.check_time_limit() || check_b_b_preemption() ||
-           timer.remaining_time() < 30.;
+           timer.remaining_time() < end_margin;
   };
   std::vector<std::vector<f_t>> seen;
   int n_evals = 0;
+  std::vector<double> eval_times;  // durations of the pattern evaluations, for the end rule
   // binaries opened by a flip repair, for the retry of the same point only
   std::vector<char> forced_open(n_vars, 0);
   i_t n_forced      = 0;
@@ -2097,6 +2101,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         ev.time);
     }
     n_evals++;
+    eval_times.push_back(ev.time);
     published     = published || ev.published;
     last_eval_obj = ev.published ? ev.repaired_obj : std::numeric_limits<f_t>::infinity();
     // flip repair: the fixed-LP point of a pattern below the incumbent that could not be repaired
@@ -2783,12 +2788,34 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // the round LPs hold the GPU alone (the cut loop yields), so half the former cap gives them as
   // many iterations as before and twice the rounds and pattern attempts
   const double round_cap         = std::min<double>(30., 0.075 * budget);
-  const f_t eval_reserve         = 0.3 * budget;
+  // a round starts while it, the evaluation of its pattern and the publication of the result fit
+  // in the time left: the last round's time, the longest of the last three evaluations (0.3 budget
+  // before the first one, and at most that) and a publish margin
+  constexpr f_t publish_margin = 10.;
+  double last_round_time       = round_cap;
+  auto eval_reserve            = [&]() -> f_t {
+    if (eval_times.empty()) { return 0.3 * budget; }
+    double longest = 0;
+    for (size_t i = eval_times.size() > 3 ? eval_times.size() - 3 : 0; i < eval_times.size(); ++i) {
+      longest = std::max(longest, eval_times[i]);
+    }
+    return std::min<f_t>(0.3 * budget, (f_t)longest + publish_margin);
+  };
   std::vector<var_t> h_types(n_vars, var_t::CONTINUOUS);
   int rounds_done = 0;
   for (int round = 1; round <= max_rounds; ++round) {
-    if (stop() || remaining() < eval_reserve) { break; }
-    const double t_round = timer.elapsed_time();
+    if (stop()) { break; }
+    if (remaining() < last_round_time + eval_reserve()) {
+      CUOPT_LOG_INFO(
+        "Slope scaling rounds end: remaining=%.1fs round=%.1fs eval_reserve=%.1fs elapsed=%.2f",
+        (double)remaining(),
+        last_round_time,
+        (double)eval_reserve(),
+        timer.elapsed_time());
+      break;
+    }
+    const double t_round       = timer.elapsed_time();
+    const double t_round_start = t_round;
     for (size_t k = 0; k < L; ++k) {
       if (u[k] > open_tol(k)) {
         scale[k] = std::clamp<f_t>(u[k], floor_rel * vub[k].cap, vub[k].cap);
@@ -2819,7 +2846,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     pdlp_solver_settings_t<i_t, f_t> lp_settings{};
     lp_settings.set_optimality_tolerance(1e-4);
     lp_settings.time_limit =
-      std::max<double>(1., std::min<double>(round_cap, remaining() - eval_reserve));
+      std::max<double>(1., std::min<double>(round_cap, remaining() - eval_reserve()));
     lp_settings.method = method_t::PDLP;
     std::atomic<int> local_halt{0};
     lp_settings.concurrent_halt = &local_halt;
@@ -2842,6 +2869,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     cur_x = cuopt::host_copy(lp_result.get_primal_solution(), stream);
     cur_y = cuopt::host_copy(lp_result.get_dual_solution(), stream);
     rounds_done++;
+    last_round_time = timer.elapsed_time() - t_round_start;
     i_t n_open = 0, n_opened = 0, n_closed = 0, n_full = 0;
     double ysum = 0;
     for (size_t k = 0; k < L; ++k) {
@@ -3601,10 +3629,18 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     return population.best_feasible();
   }
 
-  population.timer        = timer;
-  const f_t time_limit    = timer.remaining_time();
-  const auto& hp          = context.settings.heuristic_params;
-  const f_t lp_time_limit = std::min(hp.root_lp_max_time, time_limit * hp.root_lp_time_ratio);
+  population.timer     = timer;
+  const f_t time_limit = timer.remaining_time();
+  const auto& hp       = context.settings.heuristic_params;
+  const bool slope_scaling_ahead =
+    hp.fix_propagate != 0 && !fj_only_run && has_slope_scaling_links();
+  // with slope scaling ahead the root LP point is only its starting point (its first round
+  // re-solves the LP from it) and PDLP sits on a residual plateau long before 60 s on large models
+  constexpr f_t slope_scaling_root_lp_time = 30.;
+  const f_t lp_time_limit =
+    std::min({hp.root_lp_max_time,
+              time_limit * hp.root_lp_time_ratio,
+              slope_scaling_ahead ? slope_scaling_root_lp_time : std::numeric_limits<f_t>::infinity()});
   // after every change to the problem, we should resize all the relevant vars
   // we need to encapsulate that to prevent repetitions
   recombine_stats.reset();
@@ -3652,8 +3688,6 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   // delay them (tens of seconds on large models).
   if (lp_free_fp && !fj_only_run && !simplex_solution_exists.load() && !check_b_b_preemption()) {
     population.add_external_solutions_to_population();
-    const bool slope_scaling_ahead =
-      context.settings.heuristic_params.fix_propagate != 0 && has_slope_scaling_links();
     if (slope_scaling_ahead) {
       CUOPT_LOG_INFO("Early polish skipped: slope scaling links found, elapsed=%.2f",
                      timer.elapsed_time());
