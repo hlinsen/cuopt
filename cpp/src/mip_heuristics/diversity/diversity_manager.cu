@@ -1485,27 +1485,39 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   std::vector<f_t> mv_x;
   struct move_t {
     i_t col, row;
-    double coef, value;
+    double coef, value, old;
   };
   std::vector<move_t> mv_cols;
   bool safe_warm = false;  // the pattern's fixed LP starts from the moved point (a safe step)
   i_t mv_block   = -1;  // the row (fp_host numbering) that blocked the last move refused
   // moves integer v by d at the moved point unless that takes the point out of one of v's rows
   // (other than skip_row): 0 moved, 1 an integer-only row, 2 a row with continuous columns that
-  // no single-row continuous column absorbs
-  auto try_move = [&](i_t v, double d, i_t skip_row) -> int {
+  // no single-row continuous column absorbs. With viol_int, the integer-only rows the move takes
+  // out are listed there instead of refusing it (the first move of a compound move). A row already
+  // out (inside a compound move) may stay out if the move does not take it further.
+  auto try_move = [&](i_t v, double d, i_t skip_row, std::vector<i_t>* viol_int) -> int {
     mv_cols.clear();
     mv_block = -1;
+    if (viol_int != nullptr) { viol_int->clear(); }
     for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
       const i_t r = fp_host.var_rows[kk];
       if (fp_host.row_orig[r] == skip_row) { continue; }
-      const double na = mv_act[r] + (double)fp_host.var_vals[kk] * d;
+      const double a0 = mv_act[r];
+      const double na = a0 + (double)fp_host.var_vals[kk] * d;
       const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r];
       const double tol =
         1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
       if (na <= hi + tol && na >= lo - tol) { continue; }
+      const double out0 = std::max({0., a0 - hi, lo - a0});
+      const double out1 = std::max({0., na - hi, lo - na});
+      if (out0 > tol && out1 <= out0 + tol) { continue; }
       mv_block = r;
-      if (!frow_mixed[r]) { return 1; }
+      if (!frow_mixed[r]) {
+        if (viol_int == nullptr) { return 1; }
+        viol_int->push_back(r);
+        mv_block = -1;
+        continue;
+      }
       const double need = na > hi + tol ? hi - na : lo - na;
       bool absorbed     = false;
       for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1] && !absorbed; ++p) {
@@ -1513,7 +1525,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         if (is_int[j] || col_nrows[j] != 1 || fp_host.row_vals[p] == 0) { continue; }
         const double nx = (double)mv_x[j] + need / (double)fp_host.row_vals[p];
         if (nx >= h_vlb[j] - 1e-9 && nx <= h_vub[j] + 1e-9) {
-          mv_cols.push_back({j, r, (double)fp_host.row_vals[p], nx});
+          mv_cols.push_back({j, r, (double)fp_host.row_vals[p], nx, (double)mv_x[j]});
           absorbed = true;
         }
       }
@@ -1528,6 +1540,16 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       mv_x[m.col] = (f_t)m.value;
     }
     return 0;
+  };
+  // takes back an accepted move of v by d whose absorbing columns were cols
+  auto undo_move = [&](i_t v, double d, const std::vector<move_t>& cols) {
+    for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
+      mv_act[fp_host.var_rows[kk]] -= (double)fp_host.var_vals[kk] * d;
+    }
+    for (auto it = cols.rbegin(); it != cols.rend(); ++it) {
+      mv_act[it->row] -= it->coef * (it->value - it->old);
+      mv_x[it->col] = (f_t)it->old;
+    }
   };
   auto set_link_keep = [&]() {
     mv_act.assign(fp_host.n_rows(), 0);
@@ -1550,7 +1572,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         continue;
       }
       if (!(anchor_x[v] > 0.5)) { continue; }
-      const int m = try_move(v, -(double)anchor_x[v], vub[k].row);
+      const int m = try_move(v, -(double)anchor_x[v], vub[k].row, nullptr);
       if (m != 0) {
         link_keep[v] = 1;
         n_keep_int_rows += m == 1;
@@ -2416,6 +2438,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   std::vector<i_t> last_safe;
   i_t n_tabu   = 0;
   f_t tabu_obj = std::numeric_limits<f_t>::infinity();  // the anchored point the tabu is for
+  std::vector<f_t> rc_of(n_vars, 0);  // reduced costs of the binaries at the anchored point
+  std::vector<char> moved(n_vars, 0);  // binaries the step moves
   auto safe_step = [&]() -> int {
     last_safe.clear();
     if (anchor_y.size() != (size_t)n_cstrs || anchor_x.size() != (size_t)n_vars ||
@@ -2446,22 +2470,121 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         if (frow_mixed[r]) { aty += (double)fp_host.var_vals[kk] * anchor_y[fp_host.row_orig[r]]; }
       }
       const f_t rc   = (f_t)((double)h_obj[v] - aty);
+      rc_of[v]       = rc;
       const f_t gain = nb_pref[v] > 0.5 ? rc : -rc;
       if (gain > eps) { cand.push_back({gain, v}); }
     }
     std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) {
       return a.first > b.first || (a.first == b.first && a.second < b.second);
     });
-    i_t n_rej_int = 0, n_rej_rows = 0, n_open = 0;
+    i_t n_rej_int = 0, n_rej_rows = 0, n_open = 0, n_pairs = 0, n_partners = 0;
     double gain_kept = 0;
+    std::fill(moved.begin(), moved.end(), 0);
+    // compound move: a move of v by d that only integer-only rows refuse (at most
+    // max_compound_rows of them) is made anyway, and each row it takes out is put back by the move
+    // of one of its other binaries (the one that gains the most by its reduced cost, among those
+    // whose move puts the row back and keeps the point within its other rows), if all of them
+    // together gain. On failure every move is taken back.
+    constexpr size_t max_compound_rows = 3;
+    struct comp_move_t {
+      i_t var;
+      double d;
+      std::vector<move_t> cols;
+    };
+    std::vector<comp_move_t> comp;
+    std::vector<i_t> comp_rows;
+    std::vector<std::pair<f_t, i_t>> partners;
+    auto row_in = [&](i_t r) {
+      const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r], a = mv_act[r];
+      const double tol =
+        1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
+      return a <= hi + tol && a >= lo - tol;
+    };
+    auto undo_comp = [&]() {
+      for (auto it = comp.rbegin(); it != comp.rend(); ++it) {
+        undo_move(it->var, it->d, it->cols);
+        moved[it->var] = 0;
+      }
+      comp.clear();
+    };
+    auto try_compound = [&](i_t v, double d, f_t g) -> bool {
+      comp.clear();
+      if (try_move(v, d, -1, &comp_rows) != 0) { return false; }
+      comp.push_back({v, d, mv_cols});
+      moved[v] = 1;
+      if (comp_rows.size() > max_compound_rows) {
+        undo_comp();
+        return false;
+      }
+      double gsum = g;
+      for (const i_t r : comp_rows) {
+        if (row_in(r)) { continue; }
+        partners.clear();
+        const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r];
+        const double tol =
+          1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
+        for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1]; ++p) {
+          const i_t w = fp_host.row_cols[p];
+          if (moved[w] || safe_tabu[w] || h_vlb[w] != 0 || h_vub[w] != 1) { continue; }
+          const double dw = nb_pref[w] > 0.5 ? -1. : 1.;
+          const double na = mv_act[r] + (double)fp_host.row_vals[p] * dw;
+          if (na > hi + tol || na < lo - tol) { continue; }
+          partners.push_back({-(f_t)dw * rc_of[w], w});
+        }
+        std::sort(partners.begin(), partners.end(), [](const auto& a, const auto& b) {
+          return a.first > b.first || (a.first == b.first && a.second < b.second);
+        });
+        bool ok = false;
+        for (const auto& [gw, w] : partners) {
+          const double dw = nb_pref[w] > 0.5 ? -1. : 1.;
+          if (try_move(w, dw, -1, nullptr) != 0) { continue; }
+          comp.push_back({w, dw, mv_cols});
+          moved[w] = 1;
+          gsum += gw;
+          ok = true;
+          break;
+        }
+        if (!ok) {
+          undo_comp();
+          return false;
+        }
+      }
+      for (const i_t r : comp_rows) {
+        if (!row_in(r)) {
+          undo_comp();
+          return false;
+        }
+      }
+      if (!(gsum > eps)) {
+        undo_comp();
+        return false;
+      }
+      return true;
+    };
     // refused moves: [opening][int-only row, row with continuous columns]; the integer-only rows
     // that refused openings by their number of terms (2, 3, 4-10, more), and the most frequent
     i_t n_blk[2][2] = {}, blk_len[4] = {};
     std::unordered_map<i_t, i_t> blk_rows;
     for (const auto& [g, v] : cand) {
       if ((i_t)last_safe.size() >= max_safe_flips) { break; }
+      if (moved[v]) { continue; }
       const bool up = nb_pref[v] < 0.5;
-      const int m   = try_move(v, up ? 1. : -1., -1);
+      const int m   = try_move(v, up ? 1. : -1., -1, nullptr);
+      if (m == 1 && mv_block >= 0) {
+        const i_t r = mv_block;
+        if (try_compound(v, up ? 1. : -1., g)) {
+          for (const auto& c : comp) {
+            last_safe.push_back(c.var);
+            n_open += c.d > 0;
+            gain_kept += c.var == v ? (double)g : -(double)c.d * (double)rc_of[c.var];
+          }
+          n_pairs++;
+          n_partners += (i_t)comp.size() - 1;
+          comp.clear();
+          continue;
+        }
+        mv_block = r;
+      }
       n_rej_int += m == 1;
       n_rej_rows += m == 2;
       if (m != 0) {
@@ -2473,6 +2596,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         }
         continue;
       }
+      moved[v] = 1;
       last_safe.push_back(v);
       n_open += up;
       gain_kept += g;
@@ -2485,8 +2609,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     }
     CUOPT_LOG_INFO(
       "Slope scaling safe step: used=%d closed=%d kept_by_rows=%d kept_by_int_rows=%d "
-      "candidates=%zu tabu=%d flipped=%zu opened=%d closed_by_flip=%d rejected_int_rows=%d "
-      "rejected_rows=%d est_gain_top=%g est_gain_kept=%g elapsed=%.2f",
+      "candidates=%zu tabu=%d flipped=%zu (compound=%d partners=%d) opened=%d closed_by_flip=%d "
+      "rejected_int_rows=%d rejected_rows=%d est_gain_top=%g est_gain_kept=%g elapsed=%.2f",
       n_keep_used,
       n_close,
       n_keep_rows,
@@ -2494,6 +2618,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       cand.size(),
       n_tabu,
       n_kept,
+      n_pairs,
+      n_partners,
       n_open,
       (int)n_kept - n_open,
       n_rej_int,
