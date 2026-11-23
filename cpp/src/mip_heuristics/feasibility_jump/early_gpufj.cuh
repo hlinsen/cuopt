@@ -40,8 +40,12 @@ class early_gpufj_t : public early_heuristic_t<i_t, f_t, early_gpufj_t<i_t, f_t>
   friend class early_heuristic_t<i_t, f_t, early_gpufj_t<i_t, f_t>>;
 
   std::vector<f_t> to_user_assignment(const std::vector<f_t>& assignment);
+  void prepare_and_solve();
 
   int device_id_{0};
+  bool started_{false};
+  // Dependence object of the solver task.
+  char task_token_{0};
 
   // handle_ must be declared before problem_ptr_/solution_ptr_ so it outlives them
   // (C++ destroys members in reverse declaration order)
