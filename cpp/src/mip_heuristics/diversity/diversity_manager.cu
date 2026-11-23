@@ -2726,11 +2726,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     clear_moves();  // for the retries of this point only
     return r == 4 ? 0 : r;
   };
-  // safe steps on the anchored point while each gains at least min_safe_gain (relative); the
-  // flips of a step that gains less become tabu, and the chain ends so that the next
-  // slope-scaling round gets its turn (until_time: go on while slope scaling has time). Returns 3
-  // when no time is left, 5 when the step would not move the point.
-  constexpr f_t min_safe_gain = f_t(1e-4);
+  // safe steps on the anchored point while each gains at least min_safe_gain (relative; later
+  // steps gave ~0.1% per 40 s, a round pattern that hits -0.3..-3.4%); the flips of a step that
+  // gains less become tabu, and the chain ends so that the slope-scaling rounds get their turn
+  // (until_time: go on while slope scaling has time). Returns 3 when no time is left, 5 when the
+  // step would not move the point.
+  constexpr f_t min_safe_gain = f_t(3e-3);
   int n_safe_steps            = 0;
   double safe_time = 0, round_time = 0;  // time in safe steps / in rounds and their evaluations
   auto safe_chain  = [&](bool until_time) -> int {
@@ -2861,15 +2862,18 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (due || (stable && round >= 2)) {
       // the highest threshold first; the lower ones (more links opened, which the binary rows
       // turn into fix-and-propagate conflicts far more often) only when it repeats a pattern
-      int r = 1;
+      int r                 = 1;
+      const f_t before_eval = anchor_obj;
       for (int t = 0; t < 3 && r == 1; ++t) {
         r = run_eval(eval_thresholds[t]);
       }
       round_time += timer.elapsed_time() - t_round;
       if (r == 3) { break; }
       if (stable && r == 1) { break; }
-      // then safe steps on the anchored point while they gain, and the next round
-      if (std::isfinite(anchor_obj) && safe_chain(false) == 3) { break; }
+      // a published round pattern is followed by safe steps while they gain, then the next round.
+      // Without a publish the rounds go on undisturbed: a safe step's publish restarts them from
+      // its point, and the round patterns of the leader runs hit after a few undisturbed rounds
+      if (anchor_obj < before_eval && safe_chain(false) == 3) { break; }
     } else {
       round_time += timer.elapsed_time() - t_round;
     }
