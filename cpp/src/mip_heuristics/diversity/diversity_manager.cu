@@ -3623,6 +3623,14 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit, timer_t global_
     CUOPT_LOG_INFO("Probing-cache step disabled via %s=false", CUOPT_MIP_PROBING);
     run_probing_cache = false;
   }
+  // with slope-scaling links the solution comes from slope scaling, which does not read the
+  // probing cache (only branch and bound and the FJ / rounding heuristics do); on large models
+  // the probing costs tens of seconds before the root LP
+  if (run_probing_cache && hp.fix_propagate != 0 && has_slope_scaling_links()) {
+    CUOPT_LOG_INFO("Probing-cache step skipped: slope scaling links found, presolve_elapsed=%.2f",
+                   presolve_timer.elapsed_time());
+    run_probing_cache = false;
+  }
   const bool remap_cache_ids           = true;
   problem_ptr->related_vars_time_limit = context.settings.heuristic_params.related_vars_time_limit;
 
