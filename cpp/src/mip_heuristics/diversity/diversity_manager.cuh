@@ -99,7 +99,10 @@ class diversity_manager_t {
     f_t pushed_l2_primal_res{-1};
     double push_time{0};
     bool aborted{false};  // no push and repair: the phase-A residual ended above abort_above_res
-    bool cutoff{false};   // the fixed LP stopped with its optimum clearly above lp_cutoff
+    // the fixed LP stopped with its optimum above repair_below: 1 on the Lagrangian bound of a
+    // dual iterate (lp_bound, full user objective), 2 on primal/dual agreement above lp_cutoff
+    int cutoff{0};
+    double lp_bound{-std::numeric_limits<double>::infinity()};
   };
   pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
                                     f_t tol,

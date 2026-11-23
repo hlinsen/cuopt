@@ -598,6 +598,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   const i_t n_cstrs = problem_ptr->n_constraints;
   const f_t abs_tol = problem_ptr->tolerances.absolute_tolerance;
   const double t0   = timer.elapsed_time();
+  double full_shift = 0;
   solution_t<i_t, f_t> sol(*problem_ptr);
   sol.copy_new_assignment(assign);
   auto [fixed_problem, fixed_assignment, variable_map] =
@@ -636,13 +637,36 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     // an infeasible fixed LP (a pattern without the capacity some rows need) stops after a few
     // thousand iterations instead of running into the time limit
     lp_settings.divergence_stop_checks = 3;
-    // a fixed LP whose optimum is clearly above lp_cutoff (a pattern that cannot beat the
-    // incumbent) stops once its primal and dual objectives agree on it; the PDLP objectives are
-    // the user objective (fixed integers in the offset) without LP presolve, a minimization when
-    // the scaling factor is positive
-    if (warm && std::isfinite(lp_cutoff) &&
-        problem_ptr->presolve_data.objective_scaling_factor > 0) {
-      lp_settings.objective_cutoff = lp_cutoff;
+    // the fixed problem's user objective lacks the cost of the fixed integers (fixing moves their
+    // columns into the row bounds only); full_shift turns it into the full user objective
+    const f_t scale       = problem_ptr->presolve_data.objective_scaling_factor;
+    const bool stop_above = scale > 0 && (std::isfinite(repair_below) || std::isfinite(lp_cutoff));
+    if (stop_above) {
+      auto h_obj  = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
+      auto h_ints = cuopt::host_copy(problem_ptr->integer_indices, stream);
+      double int_obj = 0;
+      for (auto j : h_ints) {
+        int_obj += (double)h_obj[j] * (double)assign[j];
+      }
+      full_shift = (double)scale * (int_obj + (double)problem_ptr->presolve_data.objective_offset -
+                                    (double)fixed_problem.presolve_data.objective_offset);
+    }
+    // a fixed LP whose optimum is provably above repair_below (a pattern that can be neither
+    // repaired nor published) stops once the Lagrangian bound of a dual iterate, in the full
+    // objective, exceeds it
+    if (stop_above && std::isfinite(repair_below)) {
+      lp_settings.dual_bound_frequency = 1000;
+      lp_settings.dual_bound_callback  = [&local_halt, &res, full_shift, repair_below](
+                                          f_t user_bound) {
+        const double b = (double)user_bound + full_shift;
+        if (b > res.lp_bound) { res.lp_bound = b; }
+        if (b > (double)repair_below) { local_halt.store(1); }
+      };
+    }
+    // ... or, warm started, once its primal and dual objectives agree on an optimum clearly above
+    // lp_cutoff (a heuristic rule: the dual objective only bounds the optimum for a feasible dual)
+    if (warm && stop_above && std::isfinite(lp_cutoff)) {
+      lp_settings.objective_cutoff = lp_cutoff - full_shift;
     }
     std::vector<var_t> h_types(fixed_problem.n_variables, var_t::CONTINUOUS);
     snapshot.set_variable_types(h_types.data(), fixed_problem.n_variables);
@@ -663,19 +687,27 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     res.optimal         = lp_result.get_termination_status() == pdlp_termination_status_t::Optimal;
     res.infeasible =
       lp_result.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible;
-    res.cutoff = std::isfinite(lp_settings.objective_cutoff) &&
-                 lp_result.get_termination_status() == pdlp_termination_status_t::IterationLimit;
+    // 1: stopped on the Lagrangian bound (valid), 2: on the primal/dual agreement rule
+    if (lp_result.get_termination_status() == pdlp_termination_status_t::ConcurrentLimit &&
+        res.lp_bound > (double)repair_below) {
+      res.cutoff = 1;
+    } else if (std::isfinite(lp_settings.objective_cutoff) &&
+               lp_result.get_termination_status() == pdlp_termination_status_t::IterationLimit) {
+      res.cutoff = 2;
+    }
     if (res.cutoff) {
       CUOPT_LOG_INFO(
-        "Fixed-pattern LP cutoff (%s): iters=%d primal_obj=%g dual_obj=%g rel_primal_res=%g "
-        "rel_dual_res=%g cutoff=%g lp_time=%.2fs time_limit=%.0fs",
+        "Fixed-pattern LP cutoff (%s): rule=%s iters=%d lagrangian_bound=%g primal_obj=%g "
+        "dual_obj=%g rel_primal_res=%g rel_dual_res=%g cutoff=%g lp_time=%.2fs time_limit=%.0fs",
         origin,
+        res.cutoff == 1 ? "bound" : "pd",
         lp_info.number_of_steps_taken,
-        (double)lp_info.primal_objective,
-        (double)lp_info.dual_objective,
+        res.lp_bound,
+        (double)lp_info.primal_objective + full_shift,
+        (double)lp_info.dual_objective + full_shift,
         (double)lp_info.l2_relative_primal_residual,
         (double)lp_info.l2_relative_dual_residual,
-        (double)lp_cutoff,
+        (double)(std::isfinite(lp_cutoff) ? lp_cutoff : repair_below),
         timer.elapsed_time() - t0,
         (double)lp_settings.time_limit);
     }
@@ -1780,7 +1812,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // the fixed LP cannot serve stays on the rows it cannot serve).
     i_t n_new_forced = 0;
     if (mode == 0 && n_forced == 0 && n_cert == 0 && !ev.published && ev.usable &&
-        !ev.infeasible && ev.lp_obj < repair_below && ev.lp_assignment.size() == (size_t)n_vars) {
+        !ev.infeasible && !ev.cutoff && ev.lp_obj < repair_below &&
+        ev.lp_assignment.size() == (size_t)n_vars) {
       const auto& x =
         ev.pushed_assignment.size() == (size_t)n_vars ? ev.pushed_assignment : ev.lp_assignment;
       std::vector<std::pair<double, i_t>> viol_rows;
@@ -2454,7 +2487,7 @@ bool diversity_manager_t<i_t, f_t>::run_fix_propagate_complete(bool use_lp, f_t 
                                    best_lp,
                                    push_tlimit);
       n_eval++;
-      const bool better = ev.usable && ev.lp_obj < best_lp;
+      const bool better = ev.usable && !ev.cutoff && ev.lp_obj < best_lp;
       CUOPT_LOG_INFO(
         "Pattern rank %s: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g time=%.2fs "
              "better=%d pushed_lp_obj=%g pushed_res=%g push_time=%.2fs repaired=%g published=%d "
