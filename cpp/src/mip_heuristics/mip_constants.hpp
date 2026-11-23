@@ -44,8 +44,10 @@
  * they slow Papilo through memory bandwidth and caches more than they search. */
 #define CUOPT_MIP_EARLY_CPUFJ_LANE_NNZ_BUDGET 100000000
 
-/* @brief Maximum Papilo arena concurrency, including the calling solver thread. */
-#define CUOPT_MIP_PAPILO_THREAD_LIMIT 4
+/* @brief Maximum Papilo arena concurrency, including the calling solver thread. Papilo applies
+ * its reductions in a fixed order, so the presolved model does not depend on it; with the early
+ * CPUFJ lanes capped by model size, most of the team would otherwise idle through presolve. */
+#define CUOPT_MIP_PAPILO_THREAD_LIMIT 12
 
 /* @brief Upper bound on the persistent root CPUFJ lane set. Every lane holds its own host copy of
  * the root LP and occupies an OMP task for the whole of the cut loop. */
