@@ -1773,11 +1773,17 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // in this pattern is dropped for this pattern. Round patterns (mode 0) only: the
     // neighbourhood patterns keep the anchored point's design, which the promotions learned on
     // round patterns contradict (carried into them, half of the flip patterns conflicted).
+    // A pattern that still conflicts teaches nothing: its promotions are not learned. One that
+    // carried learned promotions is retried once without them (promotions that served earlier
+    // patterns can make a later one infeasible at every attempt, and once learned they were
+    // carried into every later pattern); when the retry succeeds, its promotions replace the
+    // learned ones.
     std::vector<i_t> promoted;
     std::vector<char> is_promoted(n_vars, 0), carried(n_vars, 0);
     std::vector<f_t> pref_try;
     size_t n_carried        = 0;
-    auto fix_with_promotion = [&]() {
+    size_t n_carried0       = 0;  // learned promotions carried into the attempt
+    auto fix_with_promotion = [&](bool with_learned) {
       std::vector<i_t> ord0(h_int.begin(), h_int.end());
       std::stable_sort(
         ord0.begin(), ord0.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
@@ -1787,7 +1793,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       pref_try  = pref;
       n_carried = 0;
       for (const auto& [v, val] : learned) {
-        if (mode != 0) { break; }
+        if (mode != 0 || !with_learned) { break; }
         if ((forced_open[v] && val < pref[v]) || (has_val(cert_val[v]) && val != cert_val[v])) {
           continue;
         }
@@ -1797,6 +1803,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         pref_try[v]    = val;
         n_carried++;
       }
+      n_carried0                 = n_carried;
       constexpr int max_attempts = 16;
       for (int attempt = 0; attempt < max_attempts; ++attempt) {
         std::vector<i_t> ord(promoted);
@@ -1834,7 +1841,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         pref_try[cv]    = pref_try[cv] > h_vlb[cv] ? h_vlb[cv] : h_vub[cv];
       }
     };
-    fix_with_promotion();
+    fix_with_promotion(true);
     if (mode == 2 && n_conflicts > 0) {
       // flips that conflict when fixed first: fixed again after the used links of the anchored
       // point, so that propagation turns down the flips its kept links exclude
@@ -1842,13 +1849,32 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         if (key[v] > 3 && !forced_open[v]) { key[v] = 1 + f_t(0.99) * (key[v] - 3); }
       }
       CUOPT_LOG_INFO("Slope scaling flip pattern conflicts: flips fixed after the used links");
-      fix_with_promotion();
+      fix_with_promotion(true);
     }
-    for (auto v : promoted) {
-      if (mode != 0) { break; }
-      if (!is_learned[v]) {
-        is_learned[v] = 1;
-        learned.push_back({v, pref_try[v]});
+    bool without_learned = false;
+    if (mode == 0 && n_conflicts > 0 && n_carried0 > 0) {
+      const size_t n_learned_carried = n_carried0;
+      without_learned                = true;
+      fix_with_promotion(false);
+      CUOPT_LOG_INFO(
+        "Slope scaling pattern retried without the %zu learned promotions: conflicts=%d "
+        "learned_dropped=%d",
+        n_learned_carried,
+        n_conflicts,
+        (int)(n_conflicts == 0));
+    }
+    if (mode == 0 && n_conflicts == 0) {
+      if (without_learned) {
+        for (const auto& lv : learned) {
+          is_learned[lv.first] = 0;
+        }
+        learned.clear();
+      }
+      for (auto v : promoted) {
+        if (!is_learned[v]) {
+          is_learned[v] = 1;
+          learned.push_back({v, pref_try[v]});
+        }
       }
     }
     std::vector<f_t> pat(h_int.size());
