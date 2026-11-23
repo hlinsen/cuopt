@@ -1211,14 +1211,16 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         pref[v]     = std::clamp<f_t>(std::floor(x + 0.5), h_vlb[v], h_vub[v]);
       }
     }
-    // preference repair on the binary-only rows (mode 0): a row the preferred values violate (a
+    // preference repair on the binary-only rows: a row the preferred values violate (a
     // cover "one of these must open" with all closed, a packing row with two open) is otherwise
     // settled by fix-and-propagate in fixing order, often too late (both values of its last
     // binary conflict). Each violated row flips the binary of the row whose flip lowers the
     // total violation of the binary-only rows most (the one with the LP value nearest its new
-    // value on ties); binaries flipped open are fixed with the pattern's opens.
+    // value on ties); binaries flipped open are fixed with the pattern's opens. In mode 1 the
+    // used-link pattern closes the incumbent's open binaries without flow that these rows need;
+    // the LP-nearest tie-break then reopens the incumbent's own binaries.
     i_t n_bviol0 = 0, n_bviol1 = 0, n_bflips = 0;
-    if (mode == 0 && !brows.empty()) {
+    if (!brows.empty()) {
       const size_t nb = brows.size();
       std::vector<double> bact(nb, 0);
       auto bviol      = [&](size_t q, double a) {
@@ -1353,14 +1355,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       n_ones,
       (int)dup,
       timer.elapsed_time());
+    CUOPT_LOG_INFO(
+      "Slope scaling pattern binary rows: mode=%d rows=%zu violated_by_preference=%d flips=%d "
+      "still_violated=%d",
+      mode,
+      brows.size(),
+      n_bviol0,
+      n_bflips,
+      n_bviol1);
     if (mode == 0) {
-      CUOPT_LOG_INFO(
-        "Slope scaling pattern binary rows: rows=%zu violated_by_preference=%d flips=%d "
-        "still_violated=%d",
-        brows.size(),
-        n_bviol0,
-        n_bflips,
-        n_bviol1);
       // link rows carrying flow at the point that the pattern closes: by the threshold (for a
       // pair row: with the two binaries' values summing to the threshold or more) or by
       // fix-and-propagate (a binary the pattern opened)
