@@ -184,6 +184,8 @@ class branch_and_bound_t {
   bool enable_concurrent_lp_root_solve() const { return enable_concurrent_lp_root_solve_; }
   std::atomic<int>* get_root_concurrent_halt() { return &root_concurrent_halt_; }
   void set_root_concurrent_halt(int value) { root_concurrent_halt_ = value; }
+  // For symmetry detected after construction; must be set before solve().
+  void set_symmetry(mip_symmetry_t<i_t, f_t>* symmetry) { symmetry_ = symmetry; }
   // While set, the pre-basis PDLP cut loop leaves the GPU to a primal heuristic: a running pass
   // is halted (its point is kept) and the next pass waits until the flag is cleared.
   void set_pdlp_cut_yield(bool value)

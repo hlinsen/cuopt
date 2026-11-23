@@ -33,6 +33,7 @@
 #include <cmath>
 #include <future>
 #include <memory>
+#include <optional>
 #include <thread>
 
 namespace cuopt::mathematical_optimization::mip {
@@ -199,16 +200,14 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
 
 #ifdef DETECT_SYMMETRY_AFTER_PRESOLVE
   // Detect symmetry after all presolve steps (PaPILO, cuOpt probing, bounds, trivial presolve).
-  // context.problem_ptr is the final reduced problem with correct variable indices.
-  if (context.settings.symmetry != 0 && !context.problem_ptr->empty) {
-    simplex_solver_settings_t<i_t, f_t> simplex_settings;
-    simplex_settings.set_log(true);
-    simplex_settings.time_limit                    = context.settings.time_limit;
-    user_problem_t<i_t, f_t> post_presolve_problem = cuopt_problem_to_user_problem<i_t, f_t>(
-      context.problem_ptr->handle_ptr, *context.problem_ptr);
-    bool has_symmetry_post = false;
-    context.symmetry       = cuopt::mathematical_optimization::mip::detect_symmetry(
-      post_presolve_problem, simplex_settings, has_symmetry_post);
+  // context.problem_ptr is the final reduced problem with correct variable indices. Only B&B uses
+  // the symmetry, so the detection runs in the B&B task, off the path to the primal heuristics'
+  // root LP; the problem is copied here, before the heuristics start modifying it.
+  std::optional<user_problem_t<i_t, f_t>> symmetry_problem;
+  if (context.settings.symmetry != 0 && !context.problem_ptr->empty &&
+      !context.settings.heuristics_only) {
+    symmetry_problem.emplace(cuopt_problem_to_user_problem<i_t, f_t>(
+      context.problem_ptr->handle_ptr, *context.problem_ptr));
   }
 #endif
 
@@ -445,6 +444,18 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
     if (!context.settings.heuristics_only) {
 #pragma omp task default(shared) priority(CUOPT_CRITICAL_TASK_PRIORITY)
       {
+#ifdef DETECT_SYMMETRY_AFTER_PRESOLVE
+        if (symmetry_problem.has_value()) {
+          simplex_solver_settings_t<i_t, f_t> simplex_settings;
+          simplex_settings.set_log(true);
+          simplex_settings.time_limit = context.settings.time_limit;
+          bool has_symmetry_post      = false;
+          context.symmetry            = cuopt::mathematical_optimization::mip::detect_symmetry(
+            *symmetry_problem, simplex_settings, has_symmetry_post);
+          symmetry_problem.reset();
+          branch_and_bound->set_symmetry(context.symmetry.get());
+        }
+#endif
         branch_and_bound_status = branch_and_bound->solve(branch_and_bound_solution);
       }
     }
