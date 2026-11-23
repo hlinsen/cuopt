@@ -84,6 +84,7 @@ class diversity_manager_t {
   struct pattern_eval_t {
     bool usable{false};
     bool optimal{false};
+    bool infeasible{false};  // the fixed LP stopped with an early primal-infeasibility verdict
     f_t lp_obj{std::numeric_limits<f_t>::infinity()};
     f_t l2_primal_res{0};
     f_t repaired_obj{std::numeric_limits<f_t>::infinity()};

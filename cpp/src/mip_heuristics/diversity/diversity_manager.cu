@@ -632,6 +632,9 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     lp_settings.concurrent_halt = &local_halt;
     lp_settings.inside_mip      = false;
     lp_settings.num_gpus        = context.settings.num_gpus;
+    // an infeasible fixed LP (a pattern without the capacity some rows need) stops after a few
+    // thousand iterations instead of running into the time limit
+    lp_settings.divergence_stop_checks = 3;
     std::vector<var_t> h_types(fixed_problem.n_variables, var_t::CONTINUOUS);
     snapshot.set_variable_types(h_types.data(), fixed_problem.n_variables);
     if (warm) {
@@ -649,6 +652,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     res.iters           = lp_info.number_of_steps_taken;
     res.l2_primal_res   = lp_info.l2_primal_residual;
     res.optimal         = lp_result.get_termination_status() == pdlp_termination_status_t::Optimal;
+    res.infeasible =
+      lp_result.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible;
     if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables ||
         lp_result.get_dual_solution().size() != (size_t)n_cstrs) {
       res.time = timer.elapsed_time() - t0;
@@ -669,7 +674,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   res.lp_assignment = sol.get_host_assignment();
   res.aborted       = !res.optimal && res.l2_primal_res > abort_above_res;
   t_point           = timer.elapsed_time();
-  if (repair && res.usable && res.lp_obj < repair_below && !res.aborted) {
+  if (repair && res.usable && res.lp_obj < repair_below && !res.aborted && !res.infeasible) {
     // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
     // (the ranking objective above stays the phase-A one)
@@ -683,6 +688,12 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     auto cur_p              = cuopt::device_copy(res.primal, stream);
     auto cur_d              = cuopt::device_copy(res.dual, stream);
     bool pushed             = false;
+    // a push that leaves the primal residual where the PID point had it (instead of cutting it by
+    // orders of magnitude) means the fixed LP is infeasible: no further push, no repair
+    auto push_stalled = [&]() {
+      return pushed && res.pushed_l2_primal_res > 1. &&
+             res.pushed_l2_primal_res > 0.5 * res.l2_primal_res;
+    };
     for (const auto& ps : pushes) {
       if (timer.check_time_limit() || check_b_b_preemption() || timer.remaining_time() < 30.) {
         break;
@@ -719,6 +730,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       raft::copy(cur_p.data(), lp_result.get_primal_solution().data(), cur_p.size(), stream);
       raft::copy(cur_d.data(), lp_result.get_dual_solution().data(), cur_d.size(), stream);
       pushed = true;
+      if (push_stalled()) { break; }
     }
     if (pushed) {
       raft::copy(fixed_assignment.data(), cur_p.data(), cur_p.size(), stream);
@@ -735,7 +747,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
              original_point_ok(sol.get_host_assignment());
     }
     t_check = timer.elapsed_time();
-    if (!feas) {
+    if (!feas && !push_stalled()) {
       timer_t rtimer(repair_tlimit);
       thrust::fill(handle_ptr->get_thrust_policy(),
                    fixed_problem.objective_coefficients.begin(),
@@ -1787,14 +1799,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                      timer.elapsed_time());
     }
     CUOPT_LOG_INFO(
-      "Slope scaling eval %d thr=%g: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g "
-      "time=%.2fs pushed_lp_obj=%g pushed_res=%g repaired=%g published=%d incumbent=%g "
-      "elapsed=%.2f",
+      "Slope scaling eval %d thr=%g: ones=%d lp_obj=%g optimal=%d infeasible=%d iters=%d "
+      "l2_primal_res=%g time=%.2fs pushed_lp_obj=%g pushed_res=%g repaired=%g published=%d "
+      "incumbent=%g elapsed=%.2f",
       n_evals,
       (double)thr,
       n_ones,
       ev.lp_obj,
       (int)ev.optimal,
+      (int)ev.infeasible,
       ev.iters,
       ev.l2_primal_res,
       ev.time,
