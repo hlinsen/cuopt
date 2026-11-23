@@ -1025,6 +1025,13 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                  n_pair_links,
                  (int)vub.size() - n_pair_links);
   if (vub.empty()) { return false; }
+  // the rounds and pattern LPs take the GPU from the B&B pre-basis PDLP cut loop (which only
+  // raises the bound) until slope scaling ends
+  auto* bnb = context.branch_and_bound_ptr;
+  if (bnb != nullptr) { bnb->set_pdlp_cut_yield(true); }
+  cuopt::scope_guard release_gpu([bnb]() {
+    if (bnb != nullptr) { bnb->set_pdlp_cut_yield(false); }
+  });
 
   // ---- slope-scaling rounds
   auto cur_x     = cuopt::host_copy(lp_optimal_solution, stream);
@@ -2057,9 +2064,10 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit, timer_t global_
                                                        probing_budget.probing_work_limit,
                                                        (size_t)probing_budget.probing_step_size);
     problem_ptr->handle_ptr->sync_stream();
-    CUOPT_LOG_DEBUG(
-      "PRESOLVE_PROBING_WALL wall=%.3f",
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - probing_t0).count());
+    CUOPT_LOG_INFO(
+      "PRESOLVE_PROBING_WALL wall=%.3f presolve_elapsed=%.3f",
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - probing_t0).count(),
+      presolve_timer.elapsed_time());
     if (problem_is_infeasible) { return false; }
   }
 
