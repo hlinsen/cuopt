@@ -54,6 +54,21 @@ class solution_publication_t {
     best_published_objective_ = solver_objective;
   }
 
+  // A caller that already lifted `assignment` of problem_ptr (post-processed to the original
+  // problem and uncrushed, exactly as build_user_assignment does) leaves the result here; the next
+  // publication of that same assignment uses it instead of lifting it a second time. Any other
+  // publication drops it.
+  void remember_lifted(const problem_t<i_t, f_t>* problem_ptr,
+                       const std::vector<f_t>& assignment,
+                       std::vector<f_t> lifted)
+  {
+    if (handle_ == nullptr) { return; }
+    std::lock_guard<std::mutex> lock(mutex_);
+    lifted_problem_ = problem_ptr;
+    lifted_key_     = assignment;
+    lifted_         = std::move(lifted);
+  }
+
   // `assignment` and `solver_objective` are in problem_ptr's solver space.
   // Returns whether the incumbent was published.
   bool publish_if_better(problem_t<i_t, f_t>* problem_ptr,
@@ -131,6 +146,13 @@ class solution_publication_t {
   std::vector<f_t> build_user_assignment(problem_t<i_t, f_t>* problem_ptr,
                                          const std::vector<f_t>& assignment)
   {
+    if (lifted_problem_ == problem_ptr && !lifted_.empty() && lifted_key_ == assignment) {
+      auto user_assignment = std::move(lifted_);
+      forget_lifted();
+      strip_user_assignment(user_assignment);
+      return user_assignment;
+    }
+    forget_lifted();
     // The B&B thread may never have selected a device of its own.
     RAFT_CUDA_TRY(cudaSetDevice(device_id_));
     auto stream = handle_->get_stream();
@@ -142,6 +164,12 @@ class solution_publication_t {
       problem_ptr->papilo_uncrush_assignment(d_assignment, stream);
     }
     auto user_assignment = cuopt::host_copy(d_assignment, stream);
+    strip_user_assignment(user_assignment);
+    return user_assignment;
+  }
+
+  void strip_user_assignment(std::vector<f_t>& user_assignment) const
+  {
     if (mip_solver_settings_accessor<i_t, f_t>::has_semi_continuous_callback_translation(
           settings_)) {
       strip_semi_continuous_auxiliaries_from_assignment(
@@ -149,7 +177,13 @@ class solution_publication_t {
         mip_solver_settings_accessor<i_t, f_t>::get_semi_continuous_original_num_variables(
           settings_));
     }
-    return user_assignment;
+  }
+
+  void forget_lifted()
+  {
+    lifted_problem_ = nullptr;
+    std::vector<f_t>().swap(lifted_key_);
+    std::vector<f_t>().swap(lifted_);
   }
 
   bool has_get_solution_callback() const
@@ -170,6 +204,10 @@ class solution_publication_t {
   std::unique_ptr<raft::handle_t> handle_;
   std::mutex mutex_;
   f_t best_published_objective_{std::numeric_limits<f_t>::max()};
+  // see remember_lifted
+  const problem_t<i_t, f_t>* lifted_problem_{nullptr};
+  std::vector<f_t> lifted_key_;
+  std::vector<f_t> lifted_;
 };
 
 }  // namespace cuopt::mathematical_optimization::mip

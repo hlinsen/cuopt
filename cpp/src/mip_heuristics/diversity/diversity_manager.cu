@@ -1007,6 +1007,8 @@ bool diversity_manager_t<i_t, f_t>::original_point_ok(const std::vector<f_t>& x)
                  t1 - t0,
                  timer.elapsed_time() - t1,
                  (int)ok);
+  // a point that passes is usually published next: its publication reuses this uncrush
+  if (ok) { context.solution_publication.remember_lifted(problem_ptr, x, std::move(h_x)); }
   return ok;
 }
 
