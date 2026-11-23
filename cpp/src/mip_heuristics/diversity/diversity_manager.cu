@@ -1349,21 +1349,31 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
     }
   }
-  // dual-guided flips around the anchored point: the reduced cost of each binary at the duals of
-  // the anchored point's fixed LP (rows with continuous columns) estimates the gain of flipping
-  // it alone (an upper bound: the fixed-LP value is convex in each fixing). The max_flips
-  // binaries with the largest estimated gains are flipped (closed at a positive reduced cost,
-  // opened at a negative one) and fixed first; every other integer keeps its value, and
-  // fix-and-propagate settles the integer-only rows. Returns eval_pattern's code, or 5 when no
-  // flip is estimated to gain.
+  // dual-guided flips around the anchored point, on top of its used-link pattern: the reduced
+  // cost of each binary at the duals of the anchored point's fixed LP (rows with continuous
+  // columns) estimates the gain of flipping it alone (an upper bound: the fixed-LP value is
+  // convex in each fixing). The max_flips binaries with the largest estimated gains are flipped
+  // (closed at a positive reduced cost, opened at a negative one) and fixed first; then the used
+  // links of the point are kept open, its unused links closed and the other integers kept at
+  // their values, fix-and-propagate settling the integer-only rows. Returns eval_pattern's code,
+  // or 5 when no flip is estimated to gain.
   auto flip_step = [&](i_t max_flips, i_t& n_cand) -> int {
     n_cand = 0;
     if (cur_y.size() != (size_t)n_cstrs || !std::isfinite(anchor_obj)) { return 5; }
     const f_t eps = f_t(1e-7) * std::max<f_t>(1, std::abs(anchor_obj));
     std::vector<std::pair<f_t, i_t>> cand;
+    i_t n_unused = 0;  // open links of the point closed by its used-link pattern
     for (auto v : h_int) {
-      nb_pref[v] = std::clamp<f_t>(std::floor(cur_x[v] + 0.5), h_vlb[v], h_vub[v]);
-      nb_key[v]  = nb_pref[v] > 0.5 ? 1 : 0;
+      const i_t k = link_of[v];
+      nb_pref[v]  = std::clamp<f_t>(std::floor(cur_x[v] + 0.5), h_vlb[v], h_vub[v]);
+      if (k >= 0) {
+        const bool o = u[k] > open_tol(k) && (!vub[k].pair || cur_x[v] > 0.5);
+        n_unused += !o && nb_pref[v] > 0.5;
+        nb_pref[v] = o ? f_t(1) : f_t(0);
+        nb_key[v]  = o ? 2 : 0;
+      } else {
+        nb_key[v] = nb_pref[v];
+      }
       if (h_vlb[v] != 0 || h_vub[v] != 1) { continue; }
       double aty = 0;
       for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
@@ -1390,8 +1400,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       gain_sum += cand[q].first;
     }
     CUOPT_LOG_INFO(
-      "Slope scaling flip step: candidates=%zu flipped=%zu opened=%d closed=%d est_gain_top=%g "
-      "est_gain_sum=%g elapsed=%.2f",
+      "Slope scaling flip step: unused_closed=%d candidates=%zu flipped=%zu opened=%d closed=%d "
+      "est_gain_top=%g est_gain_sum=%g elapsed=%.2f",
+      n_unused,
       cand.size(),
       n_flip,
       n_open,
@@ -1401,30 +1412,24 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       timer.elapsed_time());
     return eval_pattern(f_t(0), 2);
   };
-  // one evaluation of the slope-scaling point at thr: retried once after a flip repair; each new
-  // incumbent is followed by evaluations of its used-link pattern while they gain 0.5% or more,
-  // then by dual-guided flip steps (a large and a small flip set) while they improve it, each new
-  // incumbent again followed by its used-link evaluations
+  // one evaluation of the slope-scaling point at thr: retried once after a flip repair; a new
+  // incumbent is followed by one evaluation of its used-link pattern, then by dual-guided flip
+  // steps on top of the used-link pattern of the current incumbent (a large and a small flip
+  // set) while they improve it
   constexpr int max_flip_steps = 8;
   constexpr i_t flip_sizes[]   = {256, 32};
-  auto used_link_chain         = [&]() -> int {
-    while (std::isfinite(last_eval_obj)) {
-      const f_t before = last_eval_obj;
-      const int r1     = eval_pattern(f_t(0), 1);
-      if (r1 == 3) { return 3; }
-      if (r1 != 0 || !(last_eval_obj < before - f_t(0.005) * std::abs(before))) { break; }
-    }
-    return 0;
-  };
-  auto run_eval = [&](f_t thr) -> int {
+  auto run_eval                = [&](f_t thr) -> int {
     last_eval_obj = std::numeric_limits<f_t>::infinity();
     int r         = eval_pattern(thr, 0);
     if (r == 4) { r = eval_pattern(thr, 0); }
     std::fill(forced_open.begin(), forced_open.end(), 0);  // for the retry of this point only
     n_forced = 0;
     if (r == 3 || !std::isfinite(last_eval_obj)) { return r == 4 ? 0 : r; }
+    const int r1 = eval_pattern(f_t(0), 1);
+    std::fill(forced_open.begin(), forced_open.end(), 0);
+    n_forced = 0;
+    if (r1 == 3) { return 3; }
     for (int step = 0; step < max_flip_steps; ++step) {
-      if (used_link_chain() == 3) { return 3; }
       const f_t before = anchor_obj;
       i_t n_cand       = 0;
       for (const i_t size : flip_sizes) {
