@@ -29,8 +29,8 @@
 // Not implemented here: the LP-based fixing of [KK] (round up with probability equal to the
 // fractional part), its Dual and Type variable strategies, its integer-aware three-way branching,
 // and the clique/implication propagators and repair of [SRF].
-// Continuous bounds are tightened inside the domain only (conflict detection, never handed to an
-// LP), subject to a minimum relative improvement.
+// Continuous bounds are tightened inside the domain (conflict detection), subject to a minimum
+// relative improvement; callers may fix the continuous columns propagated onto a bound of zero.
 
 #include <algorithm>
 #include <cmath>
@@ -111,8 +111,9 @@ struct host_fix_propagate_t {
   std::vector<i_t> var_rows;
   std::vector<f_t> var_vals;
   std::vector<char> is_int;
-  // values of the last pass (integer entries are the fixings)
-  std::vector<f_t> col_lb;
+  // bounds after the last pass (integer entries are the fixings; continuous entries the
+  // propagated bounds)
+  std::vector<f_t> col_lb, col_ub;
   std::vector<char> row_dead;
   f_t abs_tol            = 1e-6;
   f_t int_tol            = 1e-5;
@@ -307,6 +308,7 @@ struct host_fix_propagate_t {
       lp->lower[v] = lp->upper[v] = p;
     }
     col_lb.assign(lp->lower.begin(), lp->lower.begin() + n_orig_cols);
+    col_ub.assign(lp->upper.begin(), lp->upper.begin() + n_orig_cols);
     return n_conflicts;
   }
 };

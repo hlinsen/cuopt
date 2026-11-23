@@ -587,7 +587,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                                   f_t repair_tlimit,
                                                   const char* origin,
                                                   f_t repair_below,
-                                                  f_t max_push_time)
+                                                  f_t max_push_time,
+                                                  const std::vector<i_t>* zero_fixed)
 {
   raft::common::nvtx::range fun_scope("eval_fixed_pattern");
   pattern_eval_t res;
@@ -598,8 +599,20 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   const double t0   = timer.elapsed_time();
   solution_t<i_t, f_t> sol(*problem_ptr);
   sol.copy_new_assignment(assign);
-  auto [fixed_problem, fixed_assignment, variable_map] =
-    sol.fix_variables(problem_ptr->integer_indices);
+  // the integers, and the continuous columns of zero_fixed (merged, sorted)
+  rmm::device_uvector<i_t> to_fix(0, stream);
+  if (zero_fixed != nullptr && !zero_fixed->empty()) {
+    auto h_int = cuopt::host_copy(problem_ptr->integer_indices, stream);
+    std::vector<i_t> merged(h_int.size() + zero_fixed->size());
+    std::merge(
+      h_int.begin(), h_int.end(), zero_fixed->begin(), zero_fixed->end(), merged.begin());
+    to_fix = cuopt::device_copy(merged, stream);
+  } else {
+    to_fix.resize(problem_ptr->integer_indices.size(), stream);
+    raft::copy(
+      to_fix.data(), problem_ptr->integer_indices.data(), problem_ptr->integer_indices.size(), stream);
+  }
+  auto [fixed_problem, fixed_assignment, variable_map] = sol.fix_variables(to_fix);
   fixed_problem.check_problem_representation(true);
   if (fixed_problem.n_constraints != n_cstrs) { return res; }
   // a full-length warm primal (all columns of the problem) is gathered to the fixed problem's
@@ -1218,6 +1231,34 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     for (size_t qq = 0; qq < h_int.size(); ++qq) {
       assign[h_int[qq]] = pat[qq];
     }
+    // the continuous columns the fixings propagate onto a zero bound (the flows of closed links)
+    // are fixed with the integers: the fixed LP keeps the columns the pattern can use. Rows left
+    // without a free column keep their dual of the current point (cur_y) when anchoring.
+    std::vector<i_t> zero_fixed;
+    std::vector<char> row_live(n_cstrs, 1);
+    if (fp_host.col_ub.size() == (size_t)n_vars && fp_host.col_lb.size() == (size_t)n_vars) {
+      std::vector<char> col_fixed(n_vars, 0);
+      for (i_t j = 0; j < n_vars; ++j) {
+        if (is_int[j]) {
+          col_fixed[j] = 1;
+          continue;
+        }
+        const bool at_lb = h_vlb[j] == 0 && fp_host.col_ub[j] <= 0;
+        const bool at_ub = h_vub[j] == 0 && fp_host.col_lb[j] >= 0;
+        if (at_lb || at_ub) {
+          zero_fixed.push_back(j);
+          assign[j]    = 0;
+          col_fixed[j] = 1;
+        }
+      }
+      for (i_t r = 0; r < n_cstrs; ++r) {
+        bool live = false;
+        for (i_t p = h_offsets[r]; p < h_offsets[r + 1] && !live; ++p) {
+          live = !col_fixed[h_cols[p]];
+        }
+        row_live[r] = live;
+      }
+    }
     const f_t rem          = remaining();
     const f_t rank_tlimit  = std::min<f_t>(60., 0.45 * rem);
     const f_t repair_limit = std::min<f_t>(40., 0.35 * rem);
@@ -1234,7 +1275,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  repair_limit,
                                  "slope_scaling",
                                  repair_below,
-                                 11.);
+                                 11.,
+                                 &zero_fixed);
     n_evals++;
     published     = published || ev.published;
     last_eval_obj = ev.published ? ev.repaired_obj : std::numeric_limits<f_t>::infinity();
@@ -1298,7 +1340,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (ev.published && ev.repaired_assignment.size() == (size_t)n_vars &&
         ev.dual.size() == (size_t)n_cstrs) {
       cur_x = ev.repaired_assignment;
-      cur_y = ev.dual;
+      for (i_t r = 0; r < n_cstrs; ++r) {
+        if (row_live[r]) { cur_y[r] = ev.dual[r]; }
+      }
       for (size_t k = 0; k < L; ++k) {
         u[k]         = usage(k, cur_x);
         is_open[k]   = u[k] > open_tol(k);
@@ -1307,14 +1351,86 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       CUOPT_LOG_INFO("Slope scaling anchored on the published point obj=%g elapsed=%.2f",
                      ev.repaired_obj,
                      timer.elapsed_time());
+      // diagnostics of the anchored point: objective split (integer / continuous columns), usage
+      // of the open links relative to their capacity, and the cost-carrying binaries at one that
+      // a greedy flip to zero drops without breaking a row
+      double obj_int = 0, obj_cont = 0;
+      for (i_t j = 0; j < n_vars; ++j) {
+        (is_int[j] ? obj_int : obj_cont) += (double)h_obj[j] * (double)cur_x[j];
+      }
+      std::vector<f_t> rel;
+      i_t n_open_cost = 0;
+      double open_cost = 0;
+      for (size_t k = 0; k < L; ++k) {
+        if (cur_x[vub[k].var] > 0.5) {
+          rel.push_back(std::max<f_t>(u[k], 0) / vub[k].cap);
+          n_open_cost += h_obj[vub[k].var] > 0;
+          open_cost += h_obj[vub[k].var];
+        }
+      }
+      std::sort(rel.begin(), rel.end());
+      auto rq = [&](double p) {
+        return rel.empty() ? 0. : (double)rel[(size_t)(p * (rel.size() - 1))];
+      };
+      const i_t n_frows = fp_host.n_rows();
+      std::vector<double> act(n_frows, 0);
+      for (i_t r = 0; r < n_frows; ++r) {
+        for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1]; ++p) {
+          act[r] += (double)fp_host.row_vals[p] * (double)cur_x[fp_host.row_cols[p]];
+        }
+      }
+      std::vector<i_t> cand;
+      for (auto v : h_int) {
+        if (cur_x[v] > 0.5 && h_vlb[v] == 0 && h_obj[v] > 0) { cand.push_back(v); }
+      }
+      std::sort(cand.begin(), cand.end(), [&](i_t a, i_t b) { return h_obj[a] > h_obj[b]; });
+      i_t n_drop = 0, n_drop_link = 0;
+      double drop_gain = 0;
+      const double dtol = 0.25 * abs_tol;
+      for (auto v : cand) {
+        const double xv = std::round((double)cur_x[v]);
+        bool ok         = true;
+        for (i_t q = fp_host.var_offsets[v]; q < fp_host.var_offsets[v + 1] && ok; ++q) {
+          const i_t r    = fp_host.var_rows[q];
+          const double a = act[r] - (double)fp_host.var_vals[q] * xv;
+          if (std::isfinite(fp_host.row_lb[r]) && a < fp_host.row_lb[r] - dtol) { ok = false; }
+          if (std::isfinite(fp_host.row_ub[r]) && a > fp_host.row_ub[r] + dtol) { ok = false; }
+        }
+        if (!ok) { continue; }
+        for (i_t q = fp_host.var_offsets[v]; q < fp_host.var_offsets[v + 1]; ++q) {
+          act[fp_host.var_rows[q]] -= (double)fp_host.var_vals[q] * xv;
+        }
+        n_drop++;
+        n_drop_link += link_of[v] >= 0;
+        drop_gain += (double)h_obj[v] * xv;
+      }
+      CUOPT_LOG_INFO(
+        "Slope scaling anchor stats: obj_int=%g obj_cont=%g open_links=%zu with_cost=%d "
+        "open_link_cost=%g use_rel_q(.1,.25,.5,.75,.9)=%g/%g/%g/%g/%g cost_ones=%zu drop1=%d "
+        "drop1_links=%d drop1_gain=%g",
+        obj_int,
+        obj_cont,
+        rel.size(),
+        n_open_cost,
+        open_cost,
+        rq(0.1),
+        rq(0.25),
+        rq(0.5),
+        rq(0.75),
+        rq(0.9),
+        cand.size(),
+        n_drop,
+        n_drop_link,
+        drop_gain);
     }
     CUOPT_LOG_INFO(
-      "Slope scaling eval %d thr=%g: ones=%d lp_obj=%g optimal=%d iters=%d l2_primal_res=%g "
-      "time=%.2fs pushed_lp_obj=%g pushed_res=%g repaired=%g published=%d incumbent=%g "
-      "elapsed=%.2f",
+      "Slope scaling eval %d thr=%g: ones=%d zero_fixed=%zu lp_obj=%g optimal=%d iters=%d "
+      "l2_primal_res=%g time=%.2fs pushed_lp_obj=%g pushed_res=%g repaired=%g published=%d "
+      "incumbent=%g elapsed=%.2f",
       n_evals,
       (double)thr,
       n_ones,
+      zero_fixed.size(),
       ev.lp_obj,
       (int)ev.optimal,
       ev.iters,

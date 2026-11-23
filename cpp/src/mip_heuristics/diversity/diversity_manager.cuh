@@ -80,7 +80,8 @@ class diversity_manager_t {
                          double stage0_cap                   = 0.);
   // fixed-binary LP evaluation of one binary pattern (full host assignment, integers = pattern):
   // cost-aware PDLP on the fixed problem (cold with PSLP, or warm-started without presolve),
-  // full objective of the LP point, optional objective-free repair + strict-checked publish
+  // full objective of the LP point, optional objective-free repair + strict-checked publish.
+  // zero_fixed: sorted continuous columns fixed at zero with the integers (assign holds 0 there)
   struct pattern_eval_t {
     bool usable{false};
     bool optimal{false};
@@ -106,7 +107,8 @@ class diversity_manager_t {
                                     f_t repair_tlimit,
                                     const char* origin,
                                     f_t repair_below  = std::numeric_limits<f_t>::infinity(),
-                                    f_t max_push_time = 11.);
+                                    f_t max_push_time = 11.,
+                                    const std::vector<i_t>* zero_fixed = nullptr);
   // strict host-side feasibility check of a full assignment against the model rows and bounds
   // (compensated activities, validator-style relative term, half the absolute tolerance) so
   // that published LP-derived points keep a margin over the external validator
