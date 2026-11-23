@@ -123,6 +123,8 @@ class diversity_manager_t {
   // fixed LP, repaired and published. No-op without such rows.
   bool run_slope_scaling();
   bool slope_scaling_done{false};
+  // whether the problem has the linked binaries run_slope_scaling scales
+  bool has_slope_scaling_links();
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring

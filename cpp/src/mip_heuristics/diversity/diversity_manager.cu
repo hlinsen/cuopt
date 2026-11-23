@@ -858,52 +858,51 @@ bool diversity_manager_t<i_t, f_t>::original_point_ok(const std::vector<f_t>& x)
   return presolver->is_original_primal_solution_feasible(h_x, 0.5 * abs_tol, 0., 0.5 * abs_tol);
 }
 
-template <typename i_t, typename f_t>
-bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
-{
-  raft::common::nvtx::range fun_scope("run_slope_scaling");
-  if (slope_scaling_done || problem_ptr->n_integer_vars == 0 ||
-      problem_ptr->n_integer_vars == problem_ptr->n_variables || !ls.lp_optimal_exists) {
-    return false;
-  }
-  slope_scaling_done = true;
-  auto* handle_ptr   = problem_ptr->handle_ptr;
-  auto stream        = handle_ptr->get_stream();
-  const f_t budget   = std::min<f_t>(std::min<f_t>(400., 0.25 * context.settings.time_limit),
-                                   timer.remaining_time() * 0.4);
-  if (budget < 30.) { return false; }
-  const double t0     = timer.elapsed_time();
-  const i_t n_vars    = problem_ptr->n_variables;
-  const i_t n_cstrs   = problem_ptr->n_constraints;
-  const f_t abs_tol   = problem_ptr->tolerances.absolute_tolerance;
-  const f_t int_tol   = problem_ptr->tolerances.integrality_tolerance;
-  auto h_offsets      = cuopt::host_copy(problem_ptr->offsets, stream);
-  auto h_cols         = cuopt::host_copy(problem_ptr->variables, stream);
-  auto h_vals         = cuopt::host_copy(problem_ptr->coefficients, stream);
-  auto h_clb          = cuopt::host_copy(problem_ptr->constraint_lower_bounds, stream);
-  auto h_cub          = cuopt::host_copy(problem_ptr->constraint_upper_bounds, stream);
-  auto h_int          = cuopt::host_copy(problem_ptr->integer_indices, stream);
-  auto h_obj          = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
-  auto [h_vlb, h_vub] = cuopt::extract_host_bounds<f_t>(problem_ptr->variable_bounds, handle_ptr);
-  std::vector<char> is_int(n_vars, 0);
-  for (auto v : h_int) {
-    is_int[v] = 1;
-  }
+namespace {
 
-  // ---- detection: rows with one or two integers (binaries) and at least one continuous column,
-  // one-sided, where each binary at 1 relaxes the row (pair rows: usage <= cap1 * y1 + cap2 * y2)
-  struct link_t {
-    i_t row;
-    i_t var;
-    i_t pos;    // nnz position of the binary's coefficient
-    f_t cap;    // |coefficient|: usage <= cap * y
-    f_t sign;   // usage = sign * (cont activity) - rhs_term
-    f_t rhs;    // usage = sign * act - rhs
-    bool pair;  // one of the two binaries of a pair row
-  };
-  std::vector<link_t> links;
-  std::vector<i_t> n_links(n_vars, 0);
-  i_t n_single_int_rows = 0, n_single_int_other = 0, n_pair_rows = 0;
+template <typename i_t, typename f_t>
+struct slope_link_t {
+  i_t row;
+  i_t var;
+  i_t pos;    // nnz position of the binary's coefficient
+  f_t cap;    // |coefficient|: usage <= cap * y
+  f_t sign;   // usage = sign * (cont activity) - rhs_term
+  f_t rhs;    // usage = sign * act - rhs
+  bool pair;  // one of the two binaries of a pair row
+};
+
+template <typename i_t, typename f_t>
+struct slope_links_t {
+  std::vector<slope_link_t<i_t, f_t>> links;
+  std::vector<i_t> n_links;
+  // the links of the binaries with exactly one link: the ones slope scaling scales
+  std::vector<slope_link_t<i_t, f_t>> vub;
+  i_t n_single_int_rows{0};
+  i_t n_single_int_other{0};
+  i_t n_pair_rows{0};
+};
+
+// Rows with one or two integers (binaries) and at least one continuous column, one-sided, where
+// each binary at 1 relaxes the row (pair rows: usage <= cap1 * y1 + cap2 * y2).
+template <typename i_t, typename f_t>
+slope_links_t<i_t, f_t> detect_slope_links(i_t n_vars,
+                                           i_t n_cstrs,
+                                           const std::vector<i_t>& h_offsets,
+                                           const std::vector<i_t>& h_cols,
+                                           const std::vector<f_t>& h_vals,
+                                           const std::vector<f_t>& h_clb,
+                                           const std::vector<f_t>& h_cub,
+                                           const std::vector<f_t>& h_vlb,
+                                           const std::vector<f_t>& h_vub,
+                                           const std::vector<char>& is_int)
+{
+  slope_links_t<i_t, f_t> det;
+  auto& links             = det.links;
+  auto& n_links           = det.n_links;
+  auto& n_single_int_rows = det.n_single_int_rows;
+  auto& n_single_int_other = det.n_single_int_other;
+  auto& n_pair_rows       = det.n_pair_rows;
+  n_links.assign(n_vars, 0);
   for (i_t r = 0; r < n_cstrs; ++r) {
     i_t n_i = 0, n_c = 0, pos = -1, pos2 = -1;
     for (i_t k = h_offsets[r]; k < h_offsets[r + 1]; ++k) {
@@ -953,7 +952,6 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     }
   }
   // binaries with exactly one link are scaled
-  std::vector<link_t> vub;
   for (size_t q = 0; q < links.size(); ++q) {
     const auto& l = links[q];
     if (n_links[l.var] != 1) { continue; }
@@ -962,8 +960,86 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         (q + 1 < links.size() && links[q + 1].row == l.row) ? links[q + 1] : links[q - 1];
       if (n_links[o.var] != 1) { continue; }
     }
-    vub.push_back(l);
+    det.vub.push_back(l);
   }
+  return det;
+}
+
+}  // namespace
+
+template <typename i_t, typename f_t>
+bool diversity_manager_t<i_t, f_t>::has_slope_scaling_links()
+{
+  if (problem_ptr->n_integer_vars == 0 || problem_ptr->n_integer_vars == problem_ptr->n_variables) {
+    return false;
+  }
+  auto* handle_ptr    = problem_ptr->handle_ptr;
+  auto stream         = handle_ptr->get_stream();
+  auto h_offsets      = cuopt::host_copy(problem_ptr->offsets, stream);
+  auto h_cols         = cuopt::host_copy(problem_ptr->variables, stream);
+  auto h_vals         = cuopt::host_copy(problem_ptr->coefficients, stream);
+  auto h_clb          = cuopt::host_copy(problem_ptr->constraint_lower_bounds, stream);
+  auto h_cub          = cuopt::host_copy(problem_ptr->constraint_upper_bounds, stream);
+  auto h_int          = cuopt::host_copy(problem_ptr->integer_indices, stream);
+  auto [h_vlb, h_vub] = cuopt::extract_host_bounds<f_t>(problem_ptr->variable_bounds, handle_ptr);
+  std::vector<char> is_int(problem_ptr->n_variables, 0);
+  for (auto v : h_int) {
+    is_int[v] = 1;
+  }
+  return !detect_slope_links<i_t, f_t>(problem_ptr->n_variables,
+                                       problem_ptr->n_constraints,
+                                       h_offsets,
+                                       h_cols,
+                                       h_vals,
+                                       h_clb,
+                                       h_cub,
+                                       h_vlb,
+                                       h_vub,
+                                       is_int)
+            .vub.empty();
+}
+
+template <typename i_t, typename f_t>
+bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
+{
+  raft::common::nvtx::range fun_scope("run_slope_scaling");
+  if (slope_scaling_done || problem_ptr->n_integer_vars == 0 ||
+      problem_ptr->n_integer_vars == problem_ptr->n_variables || !ls.lp_optimal_exists) {
+    return false;
+  }
+  slope_scaling_done = true;
+  auto* handle_ptr   = problem_ptr->handle_ptr;
+  auto stream        = handle_ptr->get_stream();
+  const f_t budget   = std::min<f_t>(std::min<f_t>(400., 0.25 * context.settings.time_limit),
+                                   timer.remaining_time() * 0.4);
+  if (budget < 30.) { return false; }
+  const double t0     = timer.elapsed_time();
+  const i_t n_vars    = problem_ptr->n_variables;
+  const i_t n_cstrs   = problem_ptr->n_constraints;
+  const f_t abs_tol   = problem_ptr->tolerances.absolute_tolerance;
+  const f_t int_tol   = problem_ptr->tolerances.integrality_tolerance;
+  auto h_offsets      = cuopt::host_copy(problem_ptr->offsets, stream);
+  auto h_cols         = cuopt::host_copy(problem_ptr->variables, stream);
+  auto h_vals         = cuopt::host_copy(problem_ptr->coefficients, stream);
+  auto h_clb          = cuopt::host_copy(problem_ptr->constraint_lower_bounds, stream);
+  auto h_cub          = cuopt::host_copy(problem_ptr->constraint_upper_bounds, stream);
+  auto h_int          = cuopt::host_copy(problem_ptr->integer_indices, stream);
+  auto h_obj          = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
+  auto [h_vlb, h_vub] = cuopt::extract_host_bounds<f_t>(problem_ptr->variable_bounds, handle_ptr);
+  std::vector<char> is_int(n_vars, 0);
+  for (auto v : h_int) {
+    is_int[v] = 1;
+  }
+
+  // ---- detection
+  auto det = detect_slope_links<i_t, f_t>(
+    n_vars, n_cstrs, h_offsets, h_cols, h_vals, h_clb, h_cub, h_vlb, h_vub, is_int);
+  const auto& links              = det.links;
+  const auto& n_links            = det.n_links;
+  const auto& vub                = det.vub;
+  const i_t n_single_int_rows    = det.n_single_int_rows;
+  const i_t n_single_int_other   = det.n_single_int_other;
+  const i_t n_pair_rows          = det.n_pair_rows;
   i_t n_pair_links = 0;
   for (auto& l : vub) {
     n_pair_links += l.pair;
@@ -2196,10 +2272,18 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     population.add_external_solutions_to_population();
     if (check_b_b_preemption()) { return population.best_feasible(); }
   }
-  // cost-aware polish of the LP-free incumbent before the root LP
+  // cost-aware polish of the LP-free incumbent before the root LP. Not when slope scaling will
+  // run after the root LP: its pattern evaluations bring their own polish, and this one would
+  // delay them (tens of seconds on large models).
   if (lp_free_fp && !fj_only_run && !simplex_solution_exists.load() && !check_b_b_preemption()) {
     population.add_external_solutions_to_population();
-    if (population.is_feasible()) {
+    const bool slope_scaling_ahead =
+      context.settings.heuristic_params.fix_propagate != 0 && has_slope_scaling_links();
+    if (slope_scaling_ahead) {
+      CUOPT_LOG_INFO("Early polish skipped: slope scaling links found, elapsed=%.2f",
+                     timer.elapsed_time());
+    }
+    if (population.is_feasible() && !slope_scaling_ahead) {
       auto early_best = population.best_feasible();
       // stage 0 only, short cap: the root LP (and the LP-guided patterns) start sooner
       polish_continuous(early_best, 40., nullptr, 0, nullptr, nullptr, 0, 10.);
