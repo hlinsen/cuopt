@@ -49,6 +49,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <optional>
 #include <tuple>
@@ -3510,7 +3511,8 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
 
     const auto& cusparse_view_ = pdhg_solver_.get_cusparse_view();
 
-    [[maybe_unused]] int sing_iters = 0;
+    const auto t_power = std::chrono::steady_clock::now();
+    int sing_iters     = 0;
     for (int i = 0; i < max_iterations; ++i) {
       ++sing_iters;
       // d_q = d_z
@@ -3578,6 +3580,15 @@ void pdlp_solver_t<i_t, f_t>::compute_initial_step_size()
 #endif
 
     const f_t step_size = scaling_factor / std::sqrt(sigma_max_sq.value(stream_view_));
+    const double power_s =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_power).count();
+    if (power_s > 0.2) {
+      CUOPT_LOG_INFO("PDLP initial step size: power iterations=%d sigma_max=%g step_size=%g time=%.2fs",
+                     sing_iters,
+                     (double)std::sqrt(sigma_max_sq.value(stream_view_)),
+                     (double)step_size,
+                     power_s);
+    }
     thrust::uninitialized_fill(
       handle_ptr_->get_thrust_policy(), step_size_.begin(), step_size_.end(), step_size);
 

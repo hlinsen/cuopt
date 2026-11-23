@@ -116,6 +116,11 @@ class diversity_manager_t {
                                     f_t max_push_time = 11.,
                                     f_t abort_above_res = std::numeric_limits<f_t>::infinity(),
                                     f_t lp_cutoff       = std::numeric_limits<f_t>::infinity());
+  // PDLP step size of the fixed LPs without LP presolve. Their matrix is that of the continuous
+  // columns (every integer fixed), the same for every pattern, and Stable3 keeps the step size of
+  // its power iteration for sigma_max: later fixed LPs reuse it instead of iterating again
+  f_t fixed_lp_step_size{-1};
+  i_t fixed_lp_step_key[3]{-1, -1, -1};
   // strict host-side feasibility check of a full assignment against the model rows and bounds
   // (compensated activities, validator-style relative term, half the absolute tolerance) so
   // that published LP-derived points keep a margin over the external validator

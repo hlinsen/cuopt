@@ -623,13 +623,37 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   const bool warm = warm_primal != nullptr && warm_dual != nullptr &&
                     warm_primal->size() == (size_t)fixed_problem.n_variables &&
                     warm_dual->size() == (size_t)n_cstrs;
+  // the step size of the first fixed LP of this shape (no LP presolve) is reused by the later ones
+  auto step_key_ok = [&]() {
+    return fixed_lp_step_size > 0 && fixed_lp_step_key[0] == fixed_problem.n_variables &&
+           fixed_lp_step_key[1] == fixed_problem.n_constraints &&
+           fixed_lp_step_key[2] == fixed_problem.nnz;
+  };
+  auto use_step = [&](pdlp_solver_settings_t<i_t, f_t>& s) {
+    if (s.pdlp_solver_mode == pdlp_solver_mode_t::Stable3 && step_key_ok()) {
+      s.set_initial_step_size(fixed_lp_step_size);
+    }
+  };
+  auto keep_step = [&](const pdlp_solver_settings_t<i_t, f_t>& s, auto& lp_result) {
+    if (s.pdlp_solver_mode != pdlp_solver_mode_t::Stable3 || step_key_ok()) { return; }
+    const f_t st = lp_result.get_pdlp_warm_start_data().initial_step_size_;
+    if (!(st > 0) || !std::isfinite(st)) { return; }
+    fixed_lp_step_size   = st;
+    fixed_lp_step_key[0] = fixed_problem.n_variables;
+    fixed_lp_step_key[1] = fixed_problem.n_constraints;
+    fixed_lp_step_key[2] = fixed_problem.nnz;
+    CUOPT_LOG_INFO("Fixed-pattern LP step size %g kept for the later fixed LPs", (double)st);
+  };
   {
     auto snapshot = make_root_lp_snapshot(fixed_problem);
     pdlp_solver_settings_t<i_t, f_t> lp_settings{};
     lp_settings.set_optimality_tolerance(tol);
     lp_settings.time_limit = std::max<double>(1., tlimit);
     lp_settings.method     = method_t::PDLP;
-    if (warm) { lp_settings.presolver = presolver_t::None; }
+    if (warm) {
+      lp_settings.presolver = presolver_t::None;
+      use_step(lp_settings);
+    }
     std::atomic<int> local_halt{0};
     lp_settings.concurrent_halt = &local_halt;
     lp_settings.inside_mip      = false;
@@ -678,9 +702,10 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
         fixed_assignment.data(), (i_t)fixed_assignment.size(), stream);
       lp_settings.set_initial_dual_solution(warm_dual->data(), (i_t)warm_dual->size(), stream);
     }
-    t_lp_start          = timer.elapsed_time();
-    auto lp_result      = solve_lp(snapshot, lp_settings);
-    t_lp_end            = timer.elapsed_time();
+    t_lp_start     = timer.elapsed_time();
+    auto lp_result = solve_lp(snapshot, lp_settings);
+    t_lp_end       = timer.elapsed_time();
+    if (warm) { keep_step(lp_settings, lp_result); }
     const auto& lp_info = lp_result.get_additional_termination_information();
     res.iters           = lp_info.number_of_steps_taken;
     res.l2_primal_res   = lp_info.l2_primal_residual;
@@ -778,7 +803,9 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       lp_settings.hyper_params.restart_k_p = 0.;
       lp_settings.hyper_params.restart_k_i = 0.;
       lp_settings.hyper_params.restart_k_d = 0.;
-      auto lp_result                       = solve_lp(snapshot, lp_settings);
+      use_step(lp_settings);
+      auto lp_result = solve_lp(snapshot, lp_settings);
+      keep_step(lp_settings, lp_result);
       if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables ||
           lp_result.get_dual_solution().size() != (size_t)n_cstrs) {
         break;
@@ -1974,9 +2001,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // fixed integer at its value) is positive. Moving a fixed integer j by delta changes D by
     // z_j * delta, so the integers whose move cancels the most of D (closing a binary that
     // consumes a tight capacity row, opening one that relieves it) are moved (cert_val) for the
-    // retries of the same point, until the cancelled part covers twice D
+    // retries of the same point, until the cancelled part covers twice D. A fixed LP stopped on
+    // its Lagrangian bound may be an infeasible one whose dual grows along such a ray (the bound
+    // exceeds the incumbent before the divergence verdict): its dual is checked the same way, and
+    // only a positive D (a valid Farkas proof, no free column against it) moves integers
     i_t n_new_cert = 0;
-    if (ev.infeasible && !ev.published && ev.dual.size() == (size_t)n_cstrs) {
+    if ((ev.infeasible || ev.cutoff == 1) && !ev.published && ev.dual.size() == (size_t)n_cstrs) {
       const auto& y = ev.dual;
       double ymax   = 0;
       std::vector<std::pair<double, i_t>> by_y;
@@ -2000,7 +2030,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         }
       }
       std::vector<double> aty(n_vars, 0.);
-      double D       = 0;
+      double D = 0, D_mag = 0;
       i_t n_bad_rows = 0, n_bad_cols = 0;
       for (i_t r = 0; r < n_cstrs && ymax > 0; ++r) {
         const double yr = y[r];
@@ -2011,6 +2041,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           continue;
         }
         D += yr * b;
+        D_mag += std::abs(yr * b);
         for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
           aty[h_cols[p]] += (double)h_vals[p] * yr;
         }
@@ -2031,15 +2062,22 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
             continue;
           }
           D += z * b;
+          D_mag += std::abs(z * b);
           continue;
         }
         z_int.push_back({j, z});
         D_int += z * (double)assign[j];
+        D_mag += std::abs(z * (double)assign[j]);
       }
       D += D_int;
+      const bool proof = D > 1e-6 * D_mag && n_bad_cols == 0 && !z_int.empty();
       double cancelled = 0;
-      const auto taken = ray_moves(
-        z_int, [&](i_t j) { return (double)assign[j]; }, D, n_new_cert, cancelled);
+      std::vector<std::pair<i_t, f_t>> taken;
+      if (ev.infeasible || proof) {
+        ev.infeasible = true;
+        taken         = ray_moves(
+          z_int, [&](i_t j) { return (double)assign[j]; }, D, n_new_cert, cancelled);
+      }
       i_t n_opening = 0;
       std::string top;
       for (const auto& [j, t] : taken) {
@@ -2061,18 +2099,20 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       n_cert += n_new_cert;
       const size_t n_z_int = z_int.size();
-      if (D > 0 && n_bad_cols == 0 && !z_int.empty()) {
+      if (proof) {
         if (rays.size() >= max_rays) { rays.erase(rays.begin()); }
         rays.push_back({std::move(z_int), D - D_int, 0});
       }
       CUOPT_LOG_INFO(
-        "Slope scaling certificate: mode=%d thr=%g rows(|y|/ymax):%s D=%g ymax=%g bad_rows=%d "
-        "bad_cols=%d int_terms=%zu moved=%d opening=%d cancelled/D=%g rays=%zu top:%s "
-        "elapsed=%.2f",
+        "Slope scaling certificate: mode=%d thr=%g stop=%s rows(|y|/ymax):%s D=%g D/mag=%g "
+        "ymax=%g bad_rows=%d bad_cols=%d int_terms=%zu moved=%d opening=%d cancelled/D=%g "
+        "rays=%zu top:%s elapsed=%.2f",
         mode,
         (double)thr,
+        ev.cutoff == 1 ? "bound" : "divergence",
         rows.c_str(),
         D,
+        D_mag > 0 ? D / D_mag : 0.,
         ymax,
         (int)n_bad_rows,
         (int)n_bad_cols,
