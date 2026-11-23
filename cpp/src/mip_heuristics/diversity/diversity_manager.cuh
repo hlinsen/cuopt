@@ -118,7 +118,8 @@ class diversity_manager_t {
                                     f_t repair_below  = std::numeric_limits<f_t>::infinity(),
                                     f_t max_push_time = 11.,
                                     f_t abort_above_res = std::numeric_limits<f_t>::infinity(),
-                                    f_t lp_cutoff       = std::numeric_limits<f_t>::infinity());
+                                    f_t lp_cutoff       = std::numeric_limits<f_t>::infinity(),
+                                    f_t near_below      = -std::numeric_limits<f_t>::infinity());
   // PDLP step size of the fixed LPs without LP presolve. Their matrix is that of the continuous
   // columns (every integer fixed), the same for every pattern, and Stable3 keeps the step size of
   // its power iteration for sigma_max: later fixed LPs reuse it instead of iterating again

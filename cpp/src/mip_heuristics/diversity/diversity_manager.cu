@@ -594,7 +594,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                                   f_t repair_below,
                                                   f_t max_push_time,
                                                   f_t abort_above_res,
-                                                  f_t lp_cutoff)
+                                                  f_t lp_cutoff,
+                                                  f_t near_below)
 {
   raft::common::nvtx::range fun_scope("eval_fixed_pattern");
   pattern_eval_t res;
@@ -777,8 +778,11 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   res.lp_assignment = sol.get_host_assignment();
   res.aborted       = !res.optimal && res.l2_primal_res > abort_above_res;
   t_point           = timer.elapsed_time();
-  if (repair && res.usable && res.lp_obj < repair_below && !res.aborted && !res.infeasible &&
-      !res.cutoff) {
+  // a fixed LP that ran to its optimum (not cut off at repair_below) just above it, below
+  // near_below, is repaired too (a near miss)
+  const bool near_ok = res.optimal && res.lp_obj < near_below;
+  if (repair && res.usable && (res.lp_obj < repair_below || near_ok) && !res.aborted &&
+      !res.infeasible && !res.cutoff) {
     // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
     // (the ranking objective above stays the phase-A one)
@@ -1493,11 +1497,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // near miss: a round pattern whose fixed LP ends just above the incumbent (within near_frac)
   // is repaired anyway; its point (and fixed-LP duals) is the anchor of one safe chain, whose
   // first step gains 0.7-1.9% after a round pattern (late round patterns end 0.9-2.8% above;
-  // a fire that cannot reach the incumbent is cut off in the step's fixed LP). Off: the window
-  // is also the round patterns' LP cutoff, and with it they are rarely cut (3-7 cutoffs instead
-  // of 13-15 per run, twice the time in round-pattern evals, 14 rounds instead of 20-22) while
-  // only 1-2 of 5-6 near-miss chains per run gained
-  constexpr f_t near_frac = f_t(0);
+  // a fire that cannot reach the incumbent is cut off in the step's fixed LP). The round
+  // patterns' LP cutoff stays at the incumbent: with the window as their cutoff they were rarely
+  // cut (3-7 cutoffs instead of 13-15 per run, twice the time in round-pattern evals, 14 rounds
+  // instead of 20-22); only a round LP that runs to its optimum uncut is a near miss
+  constexpr f_t near_frac = f_t(0.015);
   f_t near_obj            = std::numeric_limits<f_t>::infinity();
   std::vector<f_t> near_x, near_y;
   // mode 2 pattern (neighbourhood of the anchored point): preferred value and order key per
@@ -2134,10 +2138,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                : std::numeric_limits<f_t>::infinity();
     // a safe step's moved point is feasible for its fixed LP
     const std::vector<f_t>& wx = safe_warm && mv_x.size() == (size_t)n_vars ? mv_x : px;
-    // round patterns are repaired (and their LP not cut off) up to a near miss
+    // round patterns whose LP runs to its optimum (uncut) are repaired up to a near miss
     const f_t repair_near = mode == 0 && std::isfinite(repair_below)
                               ? repair_below + near_frac * std::abs(repair_below)
-                              : repair_below;
+                              : -std::numeric_limits<f_t>::infinity();
     auto ev               = eval_fixed_pattern(assign,
                                  1e-4,
                                  rank_tlimit,
@@ -2146,10 +2150,21 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  true,
                                  repair_limit,
                                  "slope_scaling",
-                                 repair_near,
+                                 repair_below,
                                  11.,
                                  retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity(),
+                                 repair_below,
                                  repair_near);
+    if (mode == 0 && std::isfinite(repair_below) && ev.usable && !ev.cutoff &&
+        !(ev.lp_obj < repair_below)) {
+      CUOPT_LOG_INFO("Slope scaling round LP above the incumbent, uncut: lp=%g (+%.3f%%) optimal=%d "
+                     "repaired=%d time=%.1fs",
+                     ev.lp_obj,
+                     100. * (ev.lp_obj - repair_below) / std::abs(repair_below),
+                     (int)ev.optimal,
+                     (int)(ev.repaired_assignment.size() == (size_t)n_vars),
+                     ev.time);
+    }
     if (mode == 0 && !ev.published && ev.repaired_assignment.size() == (size_t)n_vars &&
         ev.dual.size() == (size_t)n_cstrs && ev.repaired_obj < repair_near &&
         ev.repaired_obj < near_obj) {
