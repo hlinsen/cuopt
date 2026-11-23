@@ -1443,6 +1443,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // others need thr; later patterns are then moves from the incumbent's design (closing every
   // used link below thr made most of them LP-infeasible or conflicting)
   std::vector<char> anchor_open(n_vars, 0);
+  std::vector<f_t> anchor_u(L, 0);  // link row usage at the last published point
   constexpr f_t keep_frac = 0.5;
   // phase-A l2 primal residual of the last mode-0 first attempt (bound for its retry)
   f_t first_try_res = std::numeric_limits<f_t>::infinity();
@@ -1565,7 +1566,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     const std::vector<f_t>& px = mode == 0 ? cur_x : anchor_x;
     const std::vector<f_t>& py = mode == 0 ? cur_y : anchor_y;
     std::vector<f_t> key(n_vars, 0), pref(n_vars, 0);
-    i_t n_kept = 0;  // linked binaries opened by the hysteresis only
+    i_t n_kept     = 0;  // linked binaries opened by the hysteresis only
+    i_t n_pair_sum = 0;  // pair binaries opened by the pair's value sum
     if (mode == 1) {
       set_link_keep();
       CUOPT_LOG_INFO(
@@ -1598,10 +1600,24 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         // a pair binary is opened by its own LP value (the LP chooses between the two binaries);
         // a binary open in the last published point stays open down to keep_frac * thr
         const f_t yk = vub[k].pair ? std::max<f_t>(cur_x[v], 0) : std::max<f_t>(u[k], 0) / scale[k];
-        const bool o = is_open[k] && (yk >= thr || (anchor_open[v] && yk >= keep_frac * thr));
-        key[v]       = o ? 1 + yk : 0;
-        pref[v]      = o ? f_t(1) : f_t(0);
+        auto opens   = [&](i_t b, f_t y) {
+          return y >= thr || (anchor_open[b] && y >= keep_frac * thr);
+        };
+        bool o = is_open[k] && opens(v, yk);
         n_kept += o && yk < thr;
+        // a pair row whose flow the LP splits so that neither binary opens by itself, while the
+        // two values sum to thr or more: the binary with the larger value opens
+        const i_t p = pair_partner[k];
+        if (!o && is_open[k] && p >= 0) {
+          const i_t w  = vub[p].var;
+          const f_t yw = std::max<f_t>(cur_x[w], 0);
+          if (!opens(w, yw) && yk + yw >= thr && (yk > yw || (yk == yw && v < w))) {
+            o = true;
+            n_pair_sum++;
+          }
+        }
+        key[v]  = o ? 1 + yk : 0;
+        pref[v] = o ? f_t(1) : f_t(0);
       } else {
         const f_t x = std::clamp(px[v], h_vlb[v], h_vub[v]);
         key[v]      = x;
@@ -1913,13 +1929,45 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       CUOPT_LOG_INFO(
         "Slope scaling pattern closes used link rows: used=%d closed_by_threshold=%d "
-        "(pair_sum_above=%d) closed_by_propagation=%d closed_flow_share=%.3f kept_by_anchor=%d",
+        "(pair_sum_above=%d) closed_by_propagation=%d closed_flow_share=%.3f kept_by_anchor=%d "
+        "pair_sum_opened=%d",
         n_used,
         n_closed_thr,
         n_closed_pair_sum,
         n_closed_fp,
         flow_used > 0 ? flow_closed / flow_used : 0.,
-        n_kept);
+        n_kept,
+        n_pair_sum);
+      if (published) {
+        // the pattern against the last published point: its open link rows the pattern closes
+        // (and their share of its flow), and link rows it opens that the published point closes
+        i_t n_pub_rows = 0, n_pub_closed = 0, n_new_rows = 0;
+        double pub_flow = 0, pub_flow_closed = 0;
+        for (size_t k = 0; k < L; ++k) {
+          const i_t p = pair_partner[k];
+          if (p >= 0 && p < (i_t)k) { continue; }
+          const i_t v = vub[k].var, w = p >= 0 ? vub[p].var : -1;
+          const bool pub_open = anchor_open[v] || (w >= 0 && anchor_open[w]);
+          const bool pat_open = fp_host.col_lb[v] > 0.5 || (w >= 0 && fp_host.col_lb[w] > 0.5);
+          if (pub_open) {
+            n_pub_rows++;
+            pub_flow += std::max<f_t>(anchor_u[k], 0);
+            if (!pat_open) {
+              n_pub_closed++;
+              pub_flow_closed += std::max<f_t>(anchor_u[k], 0);
+            }
+          } else if (pat_open) {
+            n_new_rows++;
+          }
+        }
+        CUOPT_LOG_INFO(
+          "Slope scaling pattern vs published: published_open_rows=%d closed=%d "
+          "closed_flow_share=%.3f opened_rows=%d",
+          n_pub_rows,
+          n_pub_closed,
+          pub_flow > 0 ? pub_flow_closed / pub_flow : 0.,
+          n_new_rows);
+      }
       // mixed coupling rows the pattern's binaries overload at the point's flows (before the
       // fixed LP moves the flows): rounding a linked binary up takes more of the row
       i_t n_over = 0;
@@ -2305,6 +2353,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         is_open[k]              = u[k] > open_tol(k);
         prev_open[k]            = is_open[k];
         anchor_open[vub[k].var] = cur_x[vub[k].var] > 0.5;
+        anchor_u[k]             = u[k];
       }
       CUOPT_LOG_INFO("Slope scaling anchored on the published point obj=%g elapsed=%.2f",
                      ev.repaired_obj,
