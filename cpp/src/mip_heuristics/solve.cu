@@ -609,6 +609,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
       }
     });
 
+    CUOPT_LOG_INFO("Presolve timing: early CPUFJ started elapsed=%.2f", timer.elapsed_time());
     problem_checking_t<i_t, f_t>::check_problem_representation(op_problem);
     problem_checking_t<i_t, f_t>::check_initial_solution_representation(op_problem, settings);
 
@@ -654,6 +655,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
 
     auto constexpr const dual_postsolve = false;
     if (run_presolve) {
+      CUOPT_LOG_INFO("Presolve timing: before Papilo elapsed=%.2f", timer.elapsed_time());
       sort_csr(op_problem);
       const auto& hp             = settings.heuristic_params;
       const auto papilo_features = mip::papilo_presolve_features(op_problem);
@@ -711,6 +713,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
                                         op_problem.get_handle_ptr()->get_stream());
       }
       presolve_result_opt.emplace(std::move(result));
+      CUOPT_LOG_INFO("Presolve timing: reduced op problem built elapsed=%.2f", timer.elapsed_time());
 
       problem = mip::problem_t<i_t, f_t>(presolve_result_opt->reduced_problem);
       problem.set_papilo_presolve_data(presolver.get(),
@@ -798,6 +801,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
       CUOPT_LOG_INFO("Writing presolved problem to file: %s", settings.presolve_file.c_str());
       presolve_result_opt->reduced_problem.write_to_mps(settings.presolve_file);
     }
+    CUOPT_LOG_INFO("Presolve timing: early heuristics stopped elapsed=%.2f", timer.elapsed_time());
     // early_best_user_obj is in user-space.
     // run_mip_solver stores it in context.initial_upper_bound and converts to target spaces as
     // needed.

@@ -47,6 +47,7 @@
 #include <raft/core/nvtx.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <limits>
 #include <span>
@@ -941,14 +942,33 @@ third_party_presolve_status_t third_party_presolve_t<i_t, f_t>::apply_papilo(
                           reduction_allowlist_);
   // round and per-presolver statistics on large models, where Papilo takes much of the run
   constexpr i_t papilo_stats_min_nnz = 10000000;
-  papilo_presolver.setVerbosityLevel(original_nnz >= papilo_stats_min_nnz
-                                       ? papilo::VerbosityLevel::kInfo
-                                       : papilo::VerbosityLevel::kQuiet);
+  const bool papilo_stats            = original_nnz >= papilo_stats_min_nnz;
+  papilo_presolver.setVerbosityLevel(papilo_stats ? papilo::VerbosityLevel::kInfo
+                                                  : papilo::VerbosityLevel::kQuiet);
   CUOPT_LOG_DEBUG(
     "PRESOLVE_PAPILO_BUDGET rounds=%d badge_cap=%d tlim=%g", max_rounds, max_badgesize, time_limit);
 
   const auto papilo_t0 = std::chrono::steady_clock::now();
-  auto result          = papilo_presolver.apply(papilo_problem);
+  // the time at which each round's reductions are applied (the callback is polled between
+  // transactions and rounds and never interrupts)
+  std::atomic<int> papilo_logged_round{-1};
+  if (papilo_stats) {
+    papilo_presolver.getPresolveOptions().early_exit_callback = [&]() {
+      const auto& st = papilo_presolver.getStatistics();
+      const int r    = st.nrounds;
+      if (r != papilo_logged_round.load(std::memory_order_relaxed)) {
+        papilo_logged_round.store(r, std::memory_order_relaxed);
+        CUOPT_LOG_INFO(
+          "Papilo round %d at %.2fs: del_cols=%d del_rows=%d",
+          r,
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - papilo_t0).count(),
+          st.ndeletedcols,
+          st.ndeletedrows);
+      }
+      return false;
+    };
+  }
+  auto result = papilo_presolver.apply(papilo_problem);
   const double papilo_wall =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - papilo_t0).count();
   // The effective badge is what set_presolve_parameters actually installed; the cap alone is
@@ -1005,6 +1025,9 @@ third_party_presolve_status_t third_party_presolve_t<i_t, f_t>::apply_papilo(
       original_to_reduced_map_[original_idx] = static_cast<i_t>(i);
     }
   }
+  CUOPT_LOG_INFO(
+    "Presolve timing: Papilo with postsolve storage and maps %.2fs",
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - papilo_t0).count());
   return status;
 }
 
@@ -1033,7 +1056,12 @@ third_party_presolve_t<i_t, f_t>::apply_presolve_from_op_problem(
                 error_type_t::ValidationError,
                 "Presolve does not support optimization_problem with quadratic constraints");
 
+  const auto t_start = std::chrono::steady_clock::now();
+  auto since_start   = [&t_start]() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+  };
   auto mps = ::cuopt::mathematical_optimization::op_problem_to_mps_data_model<i_t, f_t>(op_problem);
+  CUOPT_LOG_INFO("Presolve timing: host model copy %.2fs", since_start());
 
   auto host_res = apply_presolve_from_mps_data(mps,
                                                category,
@@ -1059,12 +1087,14 @@ third_party_presolve_t<i_t, f_t>::apply_presolve_from_op_problem(
       std::move(host_res.original_to_reduced_map)};
   }
 
+  CUOPT_LOG_INFO("Presolve timing: host presolve done %.2fs", since_start());
   auto reduced_opt =
     ::cuopt::mathematical_optimization::mps_data_model_to_optimization_problem<i_t, f_t>(
       handle, host_res.reduced_problem);
   // mps_data_model doesn't carry problem_category; plumb it here so the
   // reduced op_problem matches the input's category
   reduced_opt.set_problem_category(category);
+  CUOPT_LOG_INFO("Presolve timing: reduced device problem %.2fs", since_start());
 
   return third_party_presolve_device_result_t<i_t, f_t>{
     host_res.status,
@@ -1150,8 +1180,12 @@ third_party_presolve_t<i_t, f_t>::apply_presolve_from_mps_data(
     original_objective_offset_         = mps.get_objective_offset();
     original_objective_scaling_factor_ = mps.get_objective_scaling_factor();
 
+    const auto t_build  = std::chrono::steady_clock::now();
     auto papilo_problem = build_papilo_problem<i_t, f_t>(mps, maximize_, category);
-    auto status         = apply_papilo(papilo_problem,
+    CUOPT_LOG_INFO(
+      "Presolve timing: Papilo problem build %.2fs",
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count());
+    auto status = apply_papilo(papilo_problem,
                                category,
                                dual_postsolve,
                                absolute_tolerance,
@@ -1168,7 +1202,11 @@ third_party_presolve_t<i_t, f_t>::apply_presolve_from_mps_data(
         status, io::mps_data_model_t<i_t, f_t>{}, {}, {}, {}};
     }
 
-    auto reduced_mps = build_reduced_mps_from_papilo<i_t, f_t>(papilo_problem, maximize_);
+    const auto t_reduced = std::chrono::steady_clock::now();
+    auto reduced_mps     = build_reduced_mps_from_papilo<i_t, f_t>(papilo_problem, maximize_);
+    CUOPT_LOG_INFO(
+      "Presolve timing: reduced host model %.2fs",
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_reduced).count());
     reduced_mps.set_problem_name(mps.get_problem_name());
     reduced_mps.set_objective_scaling_factor(mps.get_objective_scaling_factor());
 
