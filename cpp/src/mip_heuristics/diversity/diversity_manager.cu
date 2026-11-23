@@ -1221,16 +1221,17 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   for (auto j : h_cols) {
     col_nrows[j]++;
   }
-  // the links of the used-link pattern of the current point (mode 1, and the base of the flip
+  // the links of the used-link pattern of the anchored point (mode 1, and the base of the flip
   // steps): the links carrying flow, and the open links whose closing would take the point out of
-  // another row holding continuous columns (a row the binary shares with flows, e.g. a capacity
-  // that flows share with the binaries' fixed use) that no single-row continuous column absorbs
+  // another of its rows: an integer-only row (closing it would make fix-and-propagate move other
+  // integers, e.g. open the other binary of a cover), or a row holding continuous columns (a row
+  // the binary shares with flows) that no single-row continuous column absorbs. The anchored
+  // point then stays feasible for the pattern's fixed LP.
   std::vector<char> link_keep(n_vars, 0);
-  i_t n_keep_used = 0, n_keep_rows = 0, n_close = 0;
+  i_t n_keep_used = 0, n_keep_rows = 0, n_keep_int_rows = 0, n_close = 0;
   auto set_link_keep = [&]() {
     std::vector<double> act(fp_host.n_rows(), 0);
     for (i_t r = 0; r < fp_host.n_rows(); ++r) {
-      if (!frow_mixed[r]) { continue; }
       double a = 0;
       for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1]; ++p) {
         a += (double)fp_host.row_vals[p] * (double)anchor_x[fp_host.row_cols[p]];
@@ -1238,7 +1239,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       act[r] = a;
     }
     std::vector<f_t> xs = anchor_x;  // single-row continuous columns, as moved by the closings
-    n_keep_used = n_keep_rows = n_close = 0;
+    n_keep_used = n_keep_rows = n_keep_int_rows = n_close = 0;
     struct move_t {
       i_t col, row;
       double coef, value;
@@ -1254,18 +1255,22 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         continue;
       }
       if (!(anchor_x[v] > 0.5)) { continue; }
-      bool safe = true;
+      bool safe = true, int_row = false;
       moves.clear();
       for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1] && safe; ++kk) {
         const i_t r = fp_host.var_rows[kk];
-        if (!frow_mixed[r] || fp_host.row_orig[r] == vub[k].row) { continue; }
+        if (fp_host.row_orig[r] == vub[k].row) { continue; }
         const double na = act[r] - (double)fp_host.var_vals[kk] * (double)anchor_x[v];
         const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r];
         const double tol =
           1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
         if (na <= hi + tol && na >= lo - tol) { continue; }
-        const double need = na > hi + tol ? hi - na : lo - na;
         safe = false;
+        if (!frow_mixed[r]) {
+          int_row = true;
+          break;
+        }
+        const double need = na > hi + tol ? hi - na : lo - na;
         for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1]; ++p) {
           const i_t j = fp_host.row_cols[p];
           if (is_int[j] || col_nrows[j] != 1 || fp_host.row_vals[p] == 0) { continue; }
@@ -1279,13 +1284,13 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       if (!safe) {
         link_keep[v] = 1;
-        n_keep_rows++;
+        n_keep_int_rows += int_row;
+        n_keep_rows += !int_row;
         continue;
       }
       n_close++;
       for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
-        const i_t r = fp_host.var_rows[kk];
-        if (frow_mixed[r]) { act[r] -= (double)fp_host.var_vals[kk] * (double)anchor_x[v]; }
+        act[fp_host.var_rows[kk]] -= (double)fp_host.var_vals[kk] * (double)anchor_x[v];
       }
       for (const auto& m : moves) {
         act[m.row] += m.coef * (m.value - (double)xs[m.col]);
@@ -1308,10 +1313,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     i_t n_kept = 0;  // linked binaries opened by the hysteresis only
     if (mode == 1) {
       set_link_keep();
-      CUOPT_LOG_INFO("Slope scaling used-link pattern: used=%d kept_by_rows=%d closed=%d",
-                     n_keep_used,
-                     n_keep_rows,
-                     n_close);
+      CUOPT_LOG_INFO(
+        "Slope scaling used-link pattern: used=%d kept_by_rows=%d kept_by_int_rows=%d closed=%d",
+        n_keep_used,
+        n_keep_rows,
+        n_keep_int_rows,
+        n_close);
     }
     for (auto v : h_int) {
       const i_t k = link_of[v];
@@ -1860,6 +1867,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     const f_t eps = f_t(1e-7) * std::max<f_t>(1, std::abs(anchor_obj));
     std::vector<std::pair<f_t, i_t>> cand;
     i_t n_unused = 0;  // open links of the point closed by its used-link pattern
+    i_t n_close_cand   = 0;  // binaries open in the base pattern whose closing is estimated to gain
+    f_t close_gain_top = 0;
     set_link_keep();
     for (auto v : h_int) {
       const i_t k = link_of[v];
@@ -1880,10 +1889,18 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       const f_t rc   = (f_t)((double)h_obj[v] - aty);
       const f_t gain = nb_pref[v] > 0.5 ? rc : -rc;
-      if (gain > eps) { cand.push_back({gain, v}); }
+      if (!(gain > eps)) { continue; }
+      if (nb_pref[v] > 0.5) {
+        n_close_cand++;
+        close_gain_top = std::max(close_gain_top, gain);
+      }
+      cand.push_back({gain, v});
     }
     n_cand = (i_t)cand.size();
-    if (cand.empty()) { return 5; }
+    if (cand.empty()) {
+      CUOPT_LOG_INFO("Slope scaling flip step: no candidate");
+      return 5;
+    }
     std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) {
       return a.first > b.first || (a.first == b.first && a.second < b.second);
     });
@@ -1899,11 +1916,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       last_flips.push_back(v);
     }
     CUOPT_LOG_INFO(
-      "Slope scaling flip step: unused_closed=%d kept_by_rows=%d candidates=%zu tabu=%d "
-      "flipped=%zu opened=%d closed=%d est_gain_top=%g est_gain_sum=%g elapsed=%.2f",
+      "Slope scaling flip step: unused_closed=%d kept_by_rows=%d kept_by_int_rows=%d "
+      "candidates=%zu close_candidates=%d close_gain_top=%g tabu=%d flipped=%zu opened=%d "
+      "closed=%d est_gain_top=%g est_gain_sum=%g elapsed=%.2f",
       n_unused,
       n_keep_rows,
+      n_keep_int_rows,
       cand.size(),
+      n_close_cand,
+      (double)close_gain_top,
       n_tabu,
       n_flip,
       n_open,
