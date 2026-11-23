@@ -168,7 +168,12 @@ papilo::Problem<f_t> build_papilo_problem(io::mps_data_model_t<i_t, f_t> const& 
     if (var_ub[i] == std::numeric_limits<f_t>::infinity()) { builder.setColUb(i, 0); }
   }
 
+  const auto t0    = std::chrono::steady_clock::now();
+  auto since_t0    = [&t0]() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  };
   auto problem = builder.build();
+  CUOPT_LOG_INFO("Presolve timing: Papilo builder %.2fs", since_t0());
 
   if (h_entries.size()) {
     auto constexpr const sorted_entries = true;
@@ -177,7 +182,9 @@ papilo::Problem<f_t> build_papilo_problem(io::mps_data_model_t<i_t, f_t> const& 
     const int min_inter_row_space = category == problem_category_t::MIP ? 30 : 4;
     auto csr_storage              = papilo::SparseStorage<f_t>(
       h_entries, n_rows, n_cols, sorted_entries, spare_ratio, min_inter_row_space);
+    CUOPT_LOG_INFO("Presolve timing: Papilo row storage %.2fs", since_t0());
     problem.setConstraintMatrix(csr_storage, constr_lb, constr_ub, h_row_flags);
+    CUOPT_LOG_INFO("Presolve timing: Papilo constraint matrix %.2fs", since_t0());
 
     papilo::ConstraintMatrix<f_t>& matrix = problem.getConstraintMatrix();
     for (int i = 0; i < problem.getNRows(); ++i) {
@@ -940,9 +947,20 @@ third_party_presolve_status_t third_party_presolve_t<i_t, f_t>::apply_papilo(
                           original_n_vars,
                           max_badgesize,
                           reduction_allowlist_);
-  // round and per-presolver statistics on large models, where Papilo takes much of the run
-  constexpr i_t papilo_stats_min_nnz = 10000000;
-  const bool papilo_stats            = original_nnz >= papilo_stats_min_nnz;
+  // large models, where a Papilo round costs seconds and Papilo takes much of the run
+  constexpr i_t papilo_large_nnz = 10000000;
+  const bool papilo_large        = original_nnz >= papilo_large_nnz;
+  if (papilo_large && category == problem_category_t::MIP) {
+    // a round counts as unsuccessful (the next round type, or the end) while its reductions stay
+    // below 0.5% of the active columns, rows and nonzeros instead of Papilo's 0.08%: the long
+    // tails of small medium and exhaustive rounds end sooner
+    constexpr double large_abort_factor               = 5e-3;
+    papilo_presolver.getPresolveOptions().abortfacfast   = large_abort_factor;
+    papilo_presolver.getPresolveOptions().abortfacmedium = large_abort_factor;
+    papilo_presolver.getPresolveOptions().abortfac       = large_abort_factor;
+  }
+  // round and per-presolver statistics
+  const bool papilo_stats = papilo_large;
   papilo_presolver.setVerbosityLevel(papilo_stats ? papilo::VerbosityLevel::kInfo
                                                   : papilo::VerbosityLevel::kQuiet);
   CUOPT_LOG_DEBUG(

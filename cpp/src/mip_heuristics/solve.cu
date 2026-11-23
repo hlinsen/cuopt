@@ -570,6 +570,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
                                   no_bound);
       };
 
+    CUOPT_LOG_INFO("Presolve timing: setup elapsed=%.2f", timer.elapsed_time());
     if (run_early_fj) {
       const int gpufj_workers =
         omp_get_num_threads() >= CUOPT_MIP_EARLY_GPUFJ_REQUIRED_THREAD_COUNT ? 1 : 0;
@@ -593,6 +594,8 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
       if (pre_solve_heuristics && pre_solve_heuristics->solution_found()) {
         early_cpufj->set_best_objective(pre_solve_heuristics->get_best_objective());
       }
+      CUOPT_LOG_INFO("Presolve timing: early CPUFJ constructed elapsed=%.2f",
+                     timer.elapsed_time());
       // Reserve Papilo's arena as well as the GPU and structural heuristic workers.
       early_cpufj->start(mip::presolve_early_worker_budget(omp_get_num_threads(),
                                                            CUOPT_MIP_PAPILO_THREAD_LIMIT,
@@ -641,8 +644,10 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
     double presolve_time = 0.0;
     std::unique_ptr<mip::third_party_presolve_t<i_t, f_t>> presolver;
     std::optional<mip::third_party_presolve_device_result_t<i_t, f_t>> presolve_result_opt;
+    CUOPT_LOG_INFO("Presolve timing: scaled elapsed=%.2f", timer.elapsed_time());
     mip::problem_t<i_t, f_t> problem(
       op_problem, settings.get_tolerances(), settings.determinism_mode == CUOPT_MODE_DETERMINISTIC);
+    CUOPT_LOG_INFO("Presolve timing: original device problem elapsed=%.2f", timer.elapsed_time());
 
     if (run_early_fj) {
       // Start early GPU FJ (uses GPU while CPU is busy with Papilo)
