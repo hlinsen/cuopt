@@ -1751,7 +1751,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // other end of its domain, in the next attempt (a closed binary of an infeasible cluster is
     // opened before its neighbours are fixed). The learned promotions of earlier patterns come
     // first (a binary moved by a flip or certificate repair keeps its value); one that conflicts
-    // in this pattern is dropped for this pattern.
+    // in this pattern is dropped for this pattern. Round patterns (mode 0) only: the
+    // neighbourhood patterns keep the anchored point's design, which the promotions learned on
+    // round patterns contradict (carried into them, half of the flip patterns conflicted).
     std::vector<i_t> promoted;
     std::vector<char> is_promoted(n_vars, 0), carried(n_vars, 0);
     std::vector<f_t> pref_try;
@@ -1766,6 +1768,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       pref_try  = pref;
       n_carried = 0;
       for (const auto& [v, val] : learned) {
+        if (mode != 0) { break; }
         if ((forced_open[v] && val < pref[v]) || (has_val(cert_val[v]) && val != cert_val[v])) {
           continue;
         }
@@ -1823,6 +1826,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       fix_with_promotion();
     }
     for (auto v : promoted) {
+      if (mode != 0) { break; }
       if (!is_learned[v]) {
         is_learned[v] = 1;
         learned.push_back({v, pref_try[v]});
