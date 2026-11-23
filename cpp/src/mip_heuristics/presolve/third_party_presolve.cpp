@@ -885,6 +885,27 @@ third_party_presolve_status_t third_party_presolve_t<i_t, f_t>::apply_pslp(
                    presolver->stats->n_rows_reduced,
                    presolver->stats->n_cols_reduced,
                    presolver->stats->nnz_reduced);
+    {
+      const auto* st = presolver->stats;
+      CUOPT_LOG_INFO(
+        "PSLP stats: time init=%.2fs fast=%.2fs (ston_cols=%.2fs dton=%.2fs) medium=%.2fs "
+        "(propagation=%.2fs parallel_rows=%.2fs parallel_cols=%.2fs) presolve=%.2fs | nnz removed "
+        "trivial=%zu fast=%zu propagation=%zu parallel_rows=%zu parallel_cols=%zu",
+        st->time_init,
+        st->time_fast_reductions,
+        st->time_ston_cols,
+        st->time_dton_rows,
+        st->time_medium_reductions,
+        st->time_primal_propagation,
+        st->time_parallel_rows,
+        st->time_parallel_cols,
+        st->time_presolve,
+        st->nnz_removed_trivial,
+        st->nnz_removed_fast,
+        st->nnz_removed_primal_propagation,
+        st->nnz_removed_parallel_rows,
+        st->nnz_removed_parallel_cols);
+    }
 
     // Free previously allocated presolver and settings (if any) and stash the
     // new ones so undo_pslp / build_reduced_mps_from_pslp can find them later.

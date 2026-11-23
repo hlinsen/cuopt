@@ -20,6 +20,7 @@
 #include <mip_heuristics/problem/problem_helpers.cuh>
 
 #include <cuopt/mathematical_optimization/solve.hpp>
+#include <linear_algebra/sort_csr.cuh>
 #include <mip_heuristics/relaxed_lp/relaxed_lp.cuh>
 #include <pdlp/root_lp_snapshot.cuh>
 #include <pdlp/solve.cuh>
@@ -35,6 +36,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
+#include <future>
+#include <optional>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -1468,6 +1472,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // phase-A l2 primal residual of the last mode-0 first attempt (bound for its retry)
   f_t first_try_res = std::numeric_limits<f_t>::infinity();
   f_t anchor_obj    = std::numeric_limits<f_t>::infinity();  // objective of the anchored point
+  // called after a publish moves the anchored point (and with it the next round's scales)
+  std::function<void()> on_anchor;
   // the anchored (last published) point and its fixed-LP duals: the point of the neighbourhood
   // evaluations (mode 1 and 2), kept while the rounds move cur_x / cur_y
   std::vector<f_t> anchor_x, anchor_y;
@@ -2442,6 +2448,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       CUOPT_LOG_INFO("Slope scaling anchored on the published point obj=%g elapsed=%.2f",
                      ev.repaired_obj,
                      timer.elapsed_time());
+      if (on_anchor) { on_anchor(); }
     }
     CUOPT_LOG_INFO(
       "Slope scaling eval %d mode=%d thr=%g: ones=%d lp_obj=%g optimal=%d infeasible=%d "
@@ -2829,6 +2836,87 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   };
   std::vector<var_t> h_types(n_vars, var_t::CONTINUOUS);
   int rounds_done = 0;
+  // the round LP of the given scales: each linked binary's coefficient in its link row is scaled
+  // to its scale, its upper bound to cap / scale (the objective and every other entry stay)
+  auto round_data = [&](const std::vector<f_t>& sc) {
+    std::pair<std::vector<f_t>, std::vector<f_t>> d{h_vals, h_vub};
+    for (size_t k = 0; k < L; ++k) {
+      const auto& l       = vub[k];
+      d.first[l.pos]      = h_vals[l.pos] * (sc[k] / l.cap);
+      d.second[l.var]     = l.cap / sc[k];
+    }
+    return d;
+  };
+  auto round_problem = [&](const std::vector<f_t>& mod_vals, const std::vector<f_t>& mod_vub) {
+    auto snapshot = make_root_lp_snapshot(*problem_ptr);
+    snapshot.set_csr_constraint_matrix(mod_vals.data(),
+                                       (i_t)mod_vals.size(),
+                                       h_cols.data(),
+                                       (i_t)h_cols.size(),
+                                       h_offsets.data(),
+                                       (i_t)h_offsets.size());
+    snapshot.set_variable_upper_bounds(mod_vub.data(), n_vars);
+    snapshot.set_variable_types(h_types.data(), n_vars);
+    return snapshot;
+  };
+  // speculative PSLP presolve of the next round LP: it depends on the scales only, which change
+  // between two round LPs only when a publish moves the anchored point, so it runs on the host
+  // while the GPU evaluates the round's patterns (instead of ~5 s of host presolve before the
+  // round LP's first iteration); a publish launches it again for the new scales
+  struct round_presolve_t {
+    std::unique_ptr<third_party_presolve_t<i_t, f_t>> pre;
+    third_party_presolve_host_result_t<i_t, f_t> res{};
+    double seconds{0};
+  };
+  std::vector<f_t> spec_scale;
+  std::future<std::shared_ptr<round_presolve_t>> spec;
+  std::vector<std::future<std::shared_ptr<round_presolve_t>>> spec_old;  // superseded, running
+  int n_spec_launched = 0, n_spec_used = 0;
+  double spec_hidden  = 0;  // presolve seconds the used ones took off the round LPs
+  auto next_scales    = [&]() {
+    std::vector<f_t> sc = scale;
+    for (size_t k = 0; k < L; ++k) {
+      if (u[k] > open_tol(k)) { sc[k] = std::clamp<f_t>(u[k], floor_rel * vub[k].cap, vub[k].cap); }
+    }
+    return sc;
+  };
+  auto speculate = [&]() {
+    if (!(remaining() - eval_reserve() > 2. * round_cap)) { return; }
+    auto sc = next_scales();
+    if (spec.valid() && sc == spec_scale) { return; }
+    spec_old.erase(std::remove_if(spec_old.begin(),
+                                  spec_old.end(),
+                                  [](auto& f) {
+                                    return f.wait_for(std::chrono::seconds(0)) ==
+                                           std::future_status::ready;
+                                  }),
+                   spec_old.end());
+    if (spec.valid()) { spec_old.push_back(std::move(spec)); }
+    spec_scale    = std::move(sc);
+    auto [nv, nu] = round_data(spec_scale);
+    auto next     = round_problem(nv, nu);
+    sort_csr(next);
+    auto mps         = op_problem_to_mps_data_model<i_t, f_t>(next);
+    const double ptl = std::max(
+      1., std::min(0.1 * std::min<double>(round_cap, remaining() - eval_reserve()), 60.));
+    n_spec_launched++;
+    spec = std::async(std::launch::async, [mps = std::move(mps), ptl]() {
+      std::shared_ptr<round_presolve_t> out;
+      try {
+        auto r        = std::make_shared<round_presolve_t>();
+        r->pre        = std::make_unique<third_party_presolve_t<i_t, f_t>>();
+        const auto t0 = std::chrono::steady_clock::now();
+        r->res        = r->pre->apply_presolve_from_mps_data(
+          mps, problem_category_t::LP, presolver_t::PSLP, true, f_t(1e-4), f_t(1e-4), ptl);
+        r->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        out        = std::move(r);
+      } catch (...) {
+        out = nullptr;
+      }
+      return out;
+    });
+  };
+  on_anchor = speculate;
   for (int round = 1; round <= max_rounds; ++round) {
     if (stop()) { break; }
     if (remaining() < last_round_time + eval_reserve()) {
@@ -2842,33 +2930,39 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     }
     const double t_round       = timer.elapsed_time();
     const double t_round_start = t_round;
+    scale = next_scales();
+    auto [mod_vals, mod_vub] = round_data(scale);
+    std::vector<f_t> init_x  = cur_x;
     for (size_t k = 0; k < L; ++k) {
-      if (u[k] > open_tol(k)) {
-        scale[k] = std::clamp<f_t>(u[k], floor_rel * vub[k].cap, vub[k].cap);
-      }
-    }
-    std::vector<f_t> mod_vals = h_vals;
-    std::vector<f_t> mod_vub  = h_vub;
-    std::vector<f_t> init_x   = cur_x;
-    for (size_t k = 0; k < L; ++k) {
-      const auto& l   = vub[k];
-      const f_t ratio = scale[k] / l.cap;
-      mod_vals[l.pos] = h_vals[l.pos] * ratio;
-      mod_vub[l.var]  = l.cap / scale[k];
-      init_x[l.var]   = std::clamp<f_t>(std::max<f_t>(u[k], 0) / scale[k], 0, mod_vub[l.var]);
+      const auto& l = vub[k];
+      init_x[l.var] = std::clamp<f_t>(std::max<f_t>(u[k], 0) / scale[k], 0, mod_vub[l.var]);
     }
     for (i_t j = 0; j < n_vars; ++j) {
       init_x[j] = std::clamp(init_x[j], h_vlb[j], mod_vub[j]);
     }
-    auto snapshot = make_root_lp_snapshot(*problem_ptr);
-    snapshot.set_csr_constraint_matrix(mod_vals.data(),
-                                       (i_t)mod_vals.size(),
-                                       h_cols.data(),
-                                       (i_t)h_cols.size(),
-                                       h_offsets.data(),
-                                       (i_t)h_offsets.size());
-    snapshot.set_variable_upper_bounds(mod_vub.data(), n_vars);
-    snapshot.set_variable_types(h_types.data(), n_vars);
+    std::shared_ptr<round_presolve_t> rp;
+    if (spec.valid()) {
+      const double t_wait = timer.elapsed_time();
+      auto got            = spec.get();
+      const bool ok       = got != nullptr &&
+                      got->res.status == third_party_presolve_status_t::REDUCED &&
+                      spec_scale == scale;
+      const double wait = timer.elapsed_time() - t_wait;
+      if (ok) {
+        rp = got;
+        n_spec_used++;
+        spec_hidden += std::max(0., got->seconds - wait);
+      }
+      CUOPT_LOG_INFO(
+        "Slope scaling round %d: speculative presolve %s presolve=%.2fs wait=%.2fs launched=%d "
+        "used=%d",
+        round,
+        ok ? "used" : (got == nullptr ? "failed" : "discarded"),
+        got != nullptr ? got->seconds : 0.,
+        wait,
+        n_spec_launched,
+        n_spec_used);
+    }
     pdlp_solver_settings_t<i_t, f_t> lp_settings{};
     lp_settings.set_optimality_tolerance(1e-4);
     lp_settings.time_limit =
@@ -2881,19 +2975,54 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     lp_settings.set_initial_primal_solution(init_x.data(), (i_t)init_x.size(), stream);
     lp_settings.set_initial_dual_solution(cur_y.data(), (i_t)cur_y.size(), stream);
     handle_ptr->sync_stream();
-    const double t_lp   = timer.elapsed_time();
-    auto lp_result      = solve_lp(snapshot, lp_settings);
+    const double t_lp = timer.elapsed_time();
+    std::optional<optimization_problem_solution_t<i_t, f_t>> lp_res;
+    std::vector<f_t> new_x, new_y;
+    if (rp) {
+      // the presolved round LP: the start is crushed into its space, its solution postsolved; it
+      // gets the time limit less the presolve time the synchronous path would have spent
+      auto reduced = mps_data_model_to_optimization_problem<i_t, f_t>(handle_ptr,
+                                                                      rp->res.reduced_problem);
+      reduced.set_problem_category(problem_category_t::LP);
+      std::vector<f_t> x_pre, y_pre;
+      rp->pre->crush_primal_dual_solution_pslp(reduced, init_x, cur_y, x_pre, y_pre);
+      lp_settings.presolver = presolver_t::None;
+      if (!x_pre.empty()) {
+        lp_settings.set_initial_primal_solution(x_pre.data(), (i_t)x_pre.size(), stream);
+      }
+      if (!y_pre.empty()) {
+        lp_settings.set_initial_dual_solution(y_pre.data(), (i_t)y_pre.size(), stream);
+      }
+      lp_settings.time_limit = std::max<double>(1., lp_settings.time_limit - rp->seconds);
+      handle_ptr->sync_stream();
+      lp_res.emplace(solve_lp(reduced, lp_settings));
+      if (lp_res->get_primal_solution().size() == (size_t)reduced.get_n_variables() &&
+          lp_res->get_dual_solution().size() == (size_t)reduced.get_n_constraints()) {
+        new_x   = cuopt::host_copy(lp_res->get_primal_solution(), stream);
+        new_y   = cuopt::host_copy(lp_res->get_dual_solution(), stream);
+        auto rc = cuopt::host_copy(lp_res->get_reduced_cost(), stream);
+        rp->pre->undo(new_x, new_y, rc, problem_category_t::LP, false, true);
+      }
+    } else {
+      auto snapshot = round_problem(mod_vals, mod_vub);
+      lp_res.emplace(solve_lp(snapshot, lp_settings));
+      if (lp_res->get_primal_solution().size() == (size_t)n_vars &&
+          lp_res->get_dual_solution().size() == (size_t)n_cstrs) {
+        new_x = cuopt::host_copy(lp_res->get_primal_solution(), stream);
+        new_y = cuopt::host_copy(lp_res->get_dual_solution(), stream);
+      }
+    }
+    auto& lp_result     = *lp_res;
     const auto& lp_info = lp_result.get_additional_termination_information();
-    const bool usable   = lp_result.get_primal_solution().size() == (size_t)n_vars &&
-                        lp_result.get_dual_solution().size() == (size_t)n_cstrs;
+    const bool usable   = new_x.size() == (size_t)n_vars && new_y.size() == (size_t)n_cstrs;
     if (!usable) {
       CUOPT_LOG_INFO("Slope scaling round %d: LP status=%s returned no usable point",
                      round,
                      lp_result.get_termination_status_string().c_str());
       break;
     }
-    cur_x = cuopt::host_copy(lp_result.get_primal_solution(), stream);
-    cur_y = cuopt::host_copy(lp_result.get_dual_solution(), stream);
+    cur_x = std::move(new_x);
+    cur_y = std::move(new_y);
     rounds_done++;
     last_round_time = timer.elapsed_time() - t_round_start;
     i_t n_open = 0, n_opened = 0, n_closed = 0, n_full = 0;
@@ -2929,6 +3058,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     prev_open         = is_open;
     const bool due    = round >= first_eval_round && (round - first_eval_round) % eval_every == 0;
     if (due || (stable && round >= 2)) {
+      if (round < max_rounds) { speculate(); }
       // the highest threshold first; the lower ones (more links opened, which the binary rows
       // turn into fix-and-propagate conflicts far more often) only when it repeats a pattern
       int r                 = 1;
@@ -2947,6 +3077,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       round_time += timer.elapsed_time() - t_round;
     }
   }
+  on_anchor = nullptr;  // no round LP follows
+  CUOPT_LOG_INFO("Slope scaling speculative presolve: launched=%d used=%d hidden=%.1fs",
+                 n_spec_launched,
+                 n_spec_used,
+                 spec_hidden);
   if (n_evals == 0 && rounds_done > 0) { run_eval(eval_thresholds[0]); }
   // the rounds are over (stable, or the time left is below a round's reserve): safe steps on the
   // anchored point while slope scaling has time
