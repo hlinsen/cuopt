@@ -274,6 +274,10 @@ class pdlp_solver_t {
    */
   i_t total_pdlp_iterations_{0};
   i_t internal_solver_iterations_{0};
+  // settings_.divergence_stop_checks: consecutive diverging checks, and the l2 primal residual at
+  // the first of them
+  i_t divergence_count_{0};
+  f_t divergence_res_{0};
 
   // Initial solution
   rmm::device_uvector<f_t> initial_primal_;
