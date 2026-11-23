@@ -1554,6 +1554,37 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
     }
   }
 
+  // Objective cutoff (opt-in): primal and dual objectives that agree and both lie above the cutoff
+  // mean an optimum the caller would discard
+  if (std::isfinite(settings_.objective_cutoff) && internal_solver_iterations_ > 0 &&
+      total_pdlp_iterations_ % 1000 == 0) {
+    const auto& info   = current_termination_strategy_.get_convergence_information();
+    const f_t p        = info.get_primal_objective().element(0, stream_view_);
+    const f_t d        = info.get_dual_objective().element(0, stream_view_);
+    const f_t c        = settings_.objective_cutoff;
+    const bool above   = std::isfinite(p) && std::isfinite(d) &&
+                       std::min(p, d) > c + f_t(0.01) * std::max<f_t>(1, std::abs(c)) &&
+                       std::abs(p - d) <= f_t(0.02) * std::max<f_t>(1, std::abs(p));
+    cutoff_count_      = above ? cutoff_count_ + 1 : 0;
+    if (cutoff_count_ >= 2) {
+      print_final_termination_criteria(timer,
+                                       current_termination_strategy_.get_convergence_information(),
+                                       pdlp_termination_status_t::IterationLimit);
+      return current_termination_strategy_.fill_return_problem_solution(
+        internal_solver_iterations_,
+        pdhg_solver_,
+        (settings_.hyper_params.use_adaptive_step_size_strategy)
+          ? pdhg_solver_.get_primal_solution()
+          : pdhg_solver_.get_potential_next_primal_solution(),
+        (settings_.hyper_params.use_adaptive_step_size_strategy)
+          ? pdhg_solver_.get_dual_solution()
+          : pdhg_solver_.get_potential_next_dual_solution(),
+        get_filled_warmed_start_data(),
+        std::vector<pdlp_termination_status_t>(climber_strategies_.size(),
+                                               pdlp_termination_status_t::IterationLimit));
+    }
+  }
+
   // No reason to terminate
   return check_limits(timer);
 }

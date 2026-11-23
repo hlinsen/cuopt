@@ -588,7 +588,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                                   const char* origin,
                                                   f_t repair_below,
                                                   f_t max_push_time,
-                                                  f_t abort_above_res)
+                                                  f_t abort_above_res,
+                                                  f_t lp_cutoff)
 {
   raft::common::nvtx::range fun_scope("eval_fixed_pattern");
   pattern_eval_t res;
@@ -635,6 +636,14 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     // an infeasible fixed LP (a pattern without the capacity some rows need) stops after a few
     // thousand iterations instead of running into the time limit
     lp_settings.divergence_stop_checks = 3;
+    // a fixed LP whose optimum is clearly above lp_cutoff (a pattern that cannot beat the
+    // incumbent) stops once its primal and dual objectives agree on it; the PDLP objectives are
+    // the user objective (fixed integers in the offset) without LP presolve, a minimization when
+    // the scaling factor is positive
+    if (warm && std::isfinite(lp_cutoff) &&
+        problem_ptr->presolve_data.objective_scaling_factor > 0) {
+      lp_settings.objective_cutoff = lp_cutoff;
+    }
     std::vector<var_t> h_types(fixed_problem.n_variables, var_t::CONTINUOUS);
     snapshot.set_variable_types(h_types.data(), fixed_problem.n_variables);
     if (warm) {
@@ -654,6 +663,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     res.optimal         = lp_result.get_termination_status() == pdlp_termination_status_t::Optimal;
     res.infeasible =
       lp_result.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible;
+    res.cutoff = std::isfinite(lp_settings.objective_cutoff) &&
+                 lp_result.get_termination_status() == pdlp_termination_status_t::IterationLimit;
     if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables ||
         lp_result.get_dual_solution().size() != (size_t)n_cstrs) {
       res.time = timer.elapsed_time() - t0;
@@ -674,7 +685,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   res.lp_assignment = sol.get_host_assignment();
   res.aborted       = !res.optimal && res.l2_primal_res > abort_above_res;
   t_point           = timer.elapsed_time();
-  if (repair && res.usable && res.lp_obj < repair_below && !res.aborted && !res.infeasible) {
+  if (repair && res.usable && res.lp_obj < repair_below && !res.aborted && !res.infeasible &&
+      !res.cutoff) {
     // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
     // (the ranking objective above stays the phase-A one)
@@ -1652,7 +1664,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  "slope_scaling",
                                  repair_below,
                                  11.,
-                                 retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity());
+                                 retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity(),
+                                 repair_below);
     if (mode == 0 && !retry) { first_try_res = ev.l2_primal_res; }
     if (ev.aborted) {
       CUOPT_LOG_INFO(
@@ -1977,8 +1990,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                      timer.elapsed_time());
     }
     CUOPT_LOG_INFO(
-      "Slope scaling eval %d thr=%g: ones=%d lp_obj=%g optimal=%d infeasible=%d iters=%d "
-      "l2_primal_res=%g time=%.2fs pushed_lp_obj=%g pushed_res=%g repaired=%g published=%d "
+      "Slope scaling eval %d thr=%g: ones=%d lp_obj=%g optimal=%d infeasible=%d cutoff=%d "
+      "iters=%d l2_primal_res=%g time=%.2fs pushed_lp_obj=%g pushed_res=%g repaired=%g published=%d "
       "incumbent=%g elapsed=%.2f",
       n_evals,
       (double)thr,
@@ -1986,6 +1999,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       ev.lp_obj,
       (int)ev.optimal,
       (int)ev.infeasible,
+      (int)ev.cutoff,
       ev.iters,
       ev.l2_primal_res,
       ev.time,

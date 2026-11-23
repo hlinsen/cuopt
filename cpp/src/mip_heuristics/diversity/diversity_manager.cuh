@@ -99,6 +99,7 @@ class diversity_manager_t {
     f_t pushed_l2_primal_res{-1};
     double push_time{0};
     bool aborted{false};  // no push and repair: the phase-A residual ended above abort_above_res
+    bool cutoff{false};   // the fixed LP stopped with its optimum clearly above lp_cutoff
   };
   pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
                                     f_t tol,
@@ -110,7 +111,8 @@ class diversity_manager_t {
                                     const char* origin,
                                     f_t repair_below  = std::numeric_limits<f_t>::infinity(),
                                     f_t max_push_time = 11.,
-                                    f_t abort_above_res = std::numeric_limits<f_t>::infinity());
+                                    f_t abort_above_res = std::numeric_limits<f_t>::infinity(),
+                                    f_t lp_cutoff       = std::numeric_limits<f_t>::infinity());
   // strict host-side feasibility check of a full assignment against the model rows and bounds
   // (compensated activities, validator-style relative term, half the absolute tolerance) so
   // that published LP-derived points keep a margin over the external validator

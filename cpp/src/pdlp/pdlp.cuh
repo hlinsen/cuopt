@@ -278,6 +278,8 @@ class pdlp_solver_t {
   // the first of them
   i_t divergence_count_{0};
   f_t divergence_res_{0};
+  // settings_.objective_cutoff: consecutive checks with both objectives above the cutoff
+  i_t cutoff_count_{0};
 
   // Initial solution
   rmm::device_uvector<f_t> initial_primal_;

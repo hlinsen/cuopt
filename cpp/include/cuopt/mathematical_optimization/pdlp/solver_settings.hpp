@@ -363,6 +363,16 @@ class pdlp_solver_settings_t {
    * PrimalInfeasible. A heuristic (no certificate), for callers that only need an early verdict.
    */
   i_t divergence_stop_checks{0};
+  /**
+   * @brief Non-batch only: stop with IterationLimit once the LP optimum is clearly above this
+   * objective value (+infinity: off).
+   *
+   * Checked every 1000 iterations: the primal and dual objectives agree within 2% and both exceed
+   * the cutoff by more than 1% of max(1, |cutoff|). When this holds at two consecutive checks the
+   * current iterate is returned with status IterationLimit. A heuristic, for callers that discard
+   * an LP whose optimum does not beat a known objective (e.g. a MIP incumbent).
+   */
+  f_t objective_cutoff{std::numeric_limits<f_t>::infinity()};
   presolver_t presolver{presolver_t::Default};
   bool dual_postsolve{true};
   // Concurrent LP/MIP: 1–2 GPUs. Multi-GPU PDLP (method=PDLP): up to the visible device
