@@ -3032,10 +3032,18 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     return population.best_feasible();
   }
 
-  population.timer        = timer;
-  const f_t time_limit    = timer.remaining_time();
-  const auto& hp          = context.settings.heuristic_params;
-  const f_t lp_time_limit = std::min(hp.root_lp_max_time, time_limit * hp.root_lp_time_ratio);
+  population.timer     = timer;
+  const f_t time_limit = timer.remaining_time();
+  const auto& hp       = context.settings.heuristic_params;
+  const bool slope_scaling_ahead =
+    hp.fix_propagate != 0 && !fj_only_run && has_slope_scaling_links();
+  // with slope scaling ahead the root LP point is only its starting point (its first round
+  // re-solves the LP from it) and PDLP sits on a residual plateau long before 60 s on large models
+  constexpr f_t slope_scaling_root_lp_time = 30.;
+  const f_t lp_time_limit =
+    std::min({hp.root_lp_max_time,
+              time_limit * hp.root_lp_time_ratio,
+              slope_scaling_ahead ? slope_scaling_root_lp_time : std::numeric_limits<f_t>::infinity()});
   // after every change to the problem, we should resize all the relevant vars
   // we need to encapsulate that to prevent repetitions
   recombine_stats.reset();
@@ -3083,8 +3091,6 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   // delay them (tens of seconds on large models).
   if (lp_free_fp && !fj_only_run && !simplex_solution_exists.load() && !check_b_b_preemption()) {
     population.add_external_solutions_to_population();
-    const bool slope_scaling_ahead =
-      context.settings.heuristic_params.fix_propagate != 0 && has_slope_scaling_links();
     if (slope_scaling_ahead) {
       CUOPT_LOG_INFO("Early polish skipped: slope scaling links found, elapsed=%.2f",
                      timer.elapsed_time());
