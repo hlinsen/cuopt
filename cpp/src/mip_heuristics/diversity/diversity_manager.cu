@@ -2041,9 +2041,13 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // the retry of a flip-repaired point gets less fixed-LP time, and no push or repair when its
     // fixed LP ends at more than twice the first attempt's residual (a failed retry cost ~130 s);
     // a neighbourhood pattern of the anchored point (warm-started from it) settles its fixed-LP
-    // objective within ~15 s, the residual left after that is the pushes' work
+    // objective within ~15 s, the residual left after that is the pushes' work; a safe step's
+    // (its moved point feasible, the fixed LP below the incumbent) gets up to 45 s, its first
+    // step after a mode-0 publish (~1000 flips) stopped unconverged at 20 s 3 runs out of 4
     const bool retry       = mode == 0 && point_lps > 0;
-    const f_t rank_cap     = mode != 0 ? f_t(20) : (retry ? f_t(40) : f_t(60));
+    const f_t rank_cap     = safe_warm   ? f_t(45)
+                             : mode != 0 ? f_t(20)
+                                         : (retry ? f_t(40) : f_t(60));
     const f_t rank_tlimit  = std::min<f_t>(rank_cap, 0.45 * rem);
     const f_t repair_limit = std::min<f_t>(40., 0.35 * rem);
     // no repair for patterns whose fixed LP is not below the incumbent
