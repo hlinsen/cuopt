@@ -2250,14 +2250,17 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   cuopt_assert(
     ls.constraint_prop.bounds_update.calculate_infeasible_redundant_constraints(*problem_ptr),
     "The problem must not be ii");
+  CUOPT_LOG_INFO("Heuristics setup: structures elapsed=%.2f", timer.elapsed_time());
   population.initialize_population();
   population.allocate_solutions();
   add_user_given_solutions(initial_sol_vector);
   population.add_solutions_from_vec(std::move(initial_sol_vector), "initial_solutions");
+  CUOPT_LOG_INFO("Heuristics setup: population elapsed=%.2f", timer.elapsed_time());
   if (check_b_b_preemption()) { return population.best_feasible(); }
   // Run CPUFJ early to find quick initial solutions
   ls_cpufj_raii_guard_t ls_cpufj_raii_guard(ls);  // RAII to stop cpufj threads on solve stop
   ls.start_cpufj_scratch_threads(population);
+  CUOPT_LOG_INFO("Heuristics setup: scratch CPUFJ started elapsed=%.2f", timer.elapsed_time());
   // Dedicated ruin-and-repair improvement worker on a spare thread; deepens the population's
   // feasible incumbent without taking any thread away from feasibility discovery above.
   ls.start_cpufj_lns_improvement_thread(population);
@@ -2486,7 +2489,9 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
     lp_rounded_sol.round_nearest(rng());
     lp_rounded_sol.compute_feasibility();
     population.add_solution(std::move(lp_rounded_sol), "lp_round_nearest");
+    CUOPT_LOG_INFO("Heuristics setup: LP rounding added elapsed=%.2f", timer.elapsed_time());
     ls.start_cpufj_lptopt_scratch_threads(population);
+    CUOPT_LOG_INFO("Heuristics setup: LP-start CPUFJ started elapsed=%.2f", timer.elapsed_time());
   }
 
   if (check_b_b_preemption()) { return population.best_feasible(); }
@@ -2504,8 +2509,12 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
 
   if (context.settings.heuristic_params.fix_propagate != 0) {
     ls.lp_point_fix_propagate = [this]() {
+      CUOPT_LOG_INFO("Heuristics setup: LP point reached elapsed=%.2f", timer.elapsed_time());
       run_lp_guided_fix_propagate();
+      CUOPT_LOG_INFO("Heuristics setup: LP-guided FPC done elapsed=%.2f", timer.elapsed_time());
       population.add_external_solutions_to_population();
+      CUOPT_LOG_INFO("Heuristics setup: external solutions added elapsed=%.2f",
+                     timer.elapsed_time());
       try {
         run_slope_scaling();
       } catch (const std::exception& e) {
