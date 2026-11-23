@@ -1419,8 +1419,13 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // links of the point are kept open, its unused links closed and the other integers kept at
   // their values, fix-and-propagate settling the integer-only rows. Returns eval_pattern's code,
   // or 5 when no flip is estimated to gain.
+  // binaries flipped by a step that did not improve: no longer flip candidates
+  std::vector<char> flip_tabu(n_vars, 0);
+  std::vector<i_t> last_flips;
+  i_t n_tabu = 0;
   auto flip_step = [&](i_t max_flips, i_t& n_cand) -> int {
     n_cand = 0;
+    last_flips.clear();
     if (cur_y.size() != (size_t)n_cstrs || !std::isfinite(anchor_obj)) { return 5; }
     const f_t eps = f_t(1e-7) * std::max<f_t>(1, std::abs(anchor_obj));
     std::vector<std::pair<f_t, i_t>> cand;
@@ -1436,7 +1441,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       } else {
         nb_key[v] = nb_pref[v];
       }
-      if (h_vlb[v] != 0 || h_vub[v] != 1) { continue; }
+      if (h_vlb[v] != 0 || h_vub[v] != 1 || flip_tabu[v]) { continue; }
       double aty = 0;
       for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
         const i_t r = fp_host.var_rows[kk];
@@ -1460,12 +1465,14 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       nb_pref[v] = 1 - nb_pref[v];
       nb_key[v]  = 3 + (f_t)(n_flip - q) / (f_t)n_flip;
       gain_sum += cand[q].first;
+      last_flips.push_back(v);
     }
     CUOPT_LOG_INFO(
-      "Slope scaling flip step: unused_closed=%d candidates=%zu flipped=%zu opened=%d closed=%d "
-      "est_gain_top=%g est_gain_sum=%g elapsed=%.2f",
+      "Slope scaling flip step: unused_closed=%d candidates=%zu tabu=%d flipped=%zu opened=%d "
+      "closed=%d est_gain_top=%g est_gain_sum=%g elapsed=%.2f",
       n_unused,
       cand.size(),
+      n_tabu,
       n_flip,
       n_open,
       (int)n_flip - n_open,
@@ -1476,8 +1483,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   };
   // one evaluation of the slope-scaling point at thr: retried once after a flip repair; a new
   // incumbent is followed by one evaluation of its used-link pattern, then by dual-guided flip
-  // steps on top of the used-link pattern of the current incumbent
-  constexpr int max_flip_steps = 16;
+  // steps on top of the used-link pattern of the current incumbent, while there is time (the
+  // slope-scaling patterns after a publish conflicted with the binary-only rows)
+  constexpr int max_flip_steps = 64;
   constexpr i_t flip_sizes[]   = {256, 32, 8};
   auto run_eval                = [&](f_t thr) -> int {
     last_eval_obj = std::numeric_limits<f_t>::infinity();
@@ -1490,9 +1498,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     std::fill(forced_open.begin(), forced_open.end(), 0);
     n_forced = 0;
     if (r1 == 3) { return 3; }
-    // the flip-set size shrinks after a step that does not improve and stays after one that does
+    // the flip-set size shrinks after a step that does not improve and stays after one that does;
+    // the binaries of a step that does not improve become tabu, and once the smallest size failed
+    // the sizes start over on the remaining candidates
     size_t s = 0;
-    for (int step = 0; step < max_flip_steps && s < std::size(flip_sizes); ++step) {
+    for (int step = 0; step < max_flip_steps; ++step) {
       const f_t before = anchor_obj;
       i_t n_cand       = 0;
       last_eval_obj    = std::numeric_limits<f_t>::infinity();
@@ -1503,10 +1513,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       if (rf == 3) { return 3; }
       if (rf == 5) { break; }
       if (!(anchor_obj < before)) {
+        for (auto v : last_flips) {
+          n_tabu += !flip_tabu[v];
+          flip_tabu[v] = 1;
+        }
         // a smaller size that would flip every candidate again is skipped
         do {
           ++s;
         } while (s < std::size(flip_sizes) && n_cand <= flip_sizes[s]);
+        if (s == std::size(flip_sizes)) { s = 0; }
       }
     }
     return r == 4 ? 0 : r;
