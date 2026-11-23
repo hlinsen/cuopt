@@ -1321,13 +1321,22 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   std::vector<f_t> cert_val(n_vars, no_val);
   i_t n_cert                   = 0;
   constexpr i_t max_cert_moves = 100;
-  // the Farkas ray of the last infeasible fixed LP of this point: its z_j on the integers and its
-  // objective without the integer terms. A retry pattern the same ray still proves infeasible (ray
-  // objective > 0 at the retry's integer values, e.g. propagation re-opened a consumer of the
-  // deficit row) gets more moves without an LP
-  std::vector<std::pair<i_t, double>> ray_z;
-  double ray_D0 = 0;
-  int ray_mode  = -1;
+  // infeasibility certificates learned from the infeasible fixed LPs of this run: the Farkas ray of
+  // a pattern LP with its z_j on the integers and D0, its objective without the integer terms. The
+  // ray depends on the rows and the continuous bounds only, so any integer pattern v with
+  // D0 + sum z_j v_j > 0 is infeasible by the same ray (a feasibility cut): every pattern is
+  // checked against them after fix-and-propagate and moved before it spends an LP (a retry whose
+  // propagation re-opened a consumer of the deficit row, a later round's pattern on the same
+  // deficit rows)
+  struct ray_t {
+    std::vector<std::pair<i_t, double>> z;
+    double D0;
+    int hits;
+  };
+  std::vector<ray_t> rays;
+  constexpr size_t max_rays = 16;
+  // mode-0 fixed LPs evaluated for the current point (its later ones are retries)
+  int point_lps = 0;
   // moves of a ray at the integer values val (most cancelling first, until twice D is cancelled)
   auto ray_moves = [&](const std::vector<std::pair<i_t, double>>& z_int,
                        auto&& val,
@@ -1576,28 +1585,33 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       n_ones += pat[qq] > 0.5;
       n_pref_ones += pref[h_int[qq]] > 0.5;
     }
-    if (mode == ray_mode && !ray_z.empty() && n_conflicts == 0) {
-      double Dp = ray_D0;
-      for (const auto& [j, z] : ray_z) {
-        Dp += z * (double)fp_host.col_lb[j];
+    for (size_t q = 0; q < rays.size() && n_conflicts == 0; ++q) {
+      auto& ray = rays[q];
+      double Dp = ray.D0, mag = std::abs(ray.D0);
+      for (const auto& [j, z] : ray.z) {
+        const double t = z * (double)fp_host.col_lb[j];
+        Dp += t;
+        mag += std::abs(t);
       }
-      if (Dp > 0) {
-        i_t n_more      = 0;
-        double canc     = 0;
-        const auto more = ray_moves(
-          ray_z, [&](i_t j) { return (double)fp_host.col_lb[j]; }, Dp, n_more, canc);
-        n_cert += n_more;
-        CUOPT_LOG_INFO(
-          "Slope scaling certificate recheck: mode=%d thr=%g ray_objective=%g (the retry pattern is "
-          "still infeasible) moved=%d cancelled/D=%g elapsed=%.2f",
-          mode,
-          (double)thr,
-          Dp,
-          (int)n_more,
-          canc / Dp,
-          timer.elapsed_time());
-        if (n_more > 0) { return 4; }
-      }
+      if (!(Dp > 1e-6 * mag)) { continue; }
+      i_t n_more  = 0;
+      double canc = 0;
+      ray_moves(ray.z, [&](i_t j) { return (double)fp_host.col_lb[j]; }, Dp, n_more, canc);
+      n_cert += n_more;
+      ray.hits++;
+      CUOPT_LOG_INFO(
+        "Slope scaling certificate check: mode=%d thr=%g ray=%zu/%zu hits=%d proves the pattern "
+        "infeasible (ray_objective/scale=%g) moved=%d cancelled/D=%g elapsed=%.2f",
+        mode,
+        (double)thr,
+        q,
+        rays.size(),
+        ray.hits,
+        Dp / mag,
+        (int)n_more,
+        canc / Dp,
+        timer.elapsed_time());
+      if (n_more > 0) { return 4; }
     }
     bool dup = false;
     for (auto& s : seen) {
@@ -1725,7 +1739,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     const f_t rem = remaining();
     // the retry of a flip-repaired point gets less fixed-LP time, and no push or repair when its
     // fixed LP ends at more than twice the first attempt's residual (a failed retry cost ~130 s)
-    const bool retry       = mode == 0 && (n_forced > 0 || n_cert > 0);
+    const bool retry       = mode == 0 && point_lps > 0;
     const f_t rank_tlimit  = std::min<f_t>(retry ? 40. : 60., 0.45 * rem);
     const f_t repair_limit = std::min<f_t>(40., 0.35 * rem);
     // no repair for patterns whose fixed LP is not below the incumbent
@@ -1745,6 +1759,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity(),
                                  repair_below);
     if (mode == 0 && !retry) { first_try_res = ev.l2_primal_res; }
+    if (mode == 0) { point_lps++; }
     if (ev.aborted) {
       CUOPT_LOG_INFO(
         "Slope scaling retry aborted: l2_primal_res=%g above twice the first attempt's %g time=%.2fs",
@@ -1920,8 +1935,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         n_via_flow,
         timer.elapsed_time());
     }
-    // certificate repair of an infeasible fixed LP (a used-link pattern: once): the dual iterate y
-    // of the stopped
+    // certificate repair of an infeasible fixed LP: the dual iterate y of the stopped
     // PDLP run diverges along a Farkas ray. With z = -A^T y its ray objective D (row terms y_i *
     // the bound of the side y_i holds, column terms z_j * the bound of the side z_j holds, a
     // fixed integer at its value) is positive. Moving a fixed integer j by delta changes D by
@@ -1929,8 +1943,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // consumes a tight capacity row, opening one that relieves it) are moved (cert_val) for the
     // retries of the same point, until the cancelled part covers twice D
     i_t n_new_cert = 0;
-    if ((mode == 0 || n_cert == 0) && ev.infeasible && !ev.published &&
-        ev.dual.size() == (size_t)n_cstrs) {
+    if (ev.infeasible && !ev.published && ev.dual.size() == (size_t)n_cstrs) {
       const auto& y = ev.dual;
       double ymax   = 0;
       std::vector<std::pair<double, i_t>> by_y;
@@ -2014,12 +2027,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         }
       }
       n_cert += n_new_cert;
-      ray_z    = std::move(z_int);
-      ray_D0   = D - D_int;
-      ray_mode = mode;
+      const size_t n_z_int = z_int.size();
+      if (D > 0 && n_bad_cols == 0 && !z_int.empty()) {
+        if (rays.size() >= max_rays) { rays.erase(rays.begin()); }
+        rays.push_back({std::move(z_int), D - D_int, 0});
+      }
       CUOPT_LOG_INFO(
         "Slope scaling certificate: mode=%d thr=%g rows(|y|/ymax):%s D=%g ymax=%g bad_rows=%d "
-        "bad_cols=%d candidates=%zu moved=%d opening=%d cancelled/D=%g top:%s elapsed=%.2f",
+        "bad_cols=%d int_terms=%zu moved=%d opening=%d cancelled/D=%g rays=%zu top:%s "
+        "elapsed=%.2f",
         mode,
         (double)thr,
         rows.c_str(),
@@ -2027,10 +2043,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         ymax,
         (int)n_bad_rows,
         (int)n_bad_cols,
-        ray_z.size(),
+        n_z_int,
         (int)n_new_cert,
         (int)n_opening,
         D > 0 ? cancelled / D : 0.,
+        rays.size(),
         top.c_str(),
         timer.elapsed_time());
     }
@@ -2078,9 +2095,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     std::fill(forced_open.begin(), forced_open.end(), 0);
     n_forced = 0;
     std::fill(cert_val.begin(), cert_val.end(), no_val);
-    n_cert = 0;
-    ray_z.clear();
-    ray_mode = -1;
+    n_cert    = 0;
+    point_lps = 0;
   };
   auto run_eval = [&](f_t thr) -> int {
     last_eval_obj = std::numeric_limits<f_t>::infinity();
