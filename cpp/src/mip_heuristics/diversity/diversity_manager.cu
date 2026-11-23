@@ -1488,7 +1488,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     double coef, value;
   };
   std::vector<move_t> mv_cols;
-  i_t mv_block = -1;  // the row (fp_host numbering) that blocked the last move refused
+  bool safe_warm = false;  // the pattern's fixed LP starts from the moved point (a safe step)
+  i_t mv_block   = -1;  // the row (fp_host numbering) that blocked the last move refused
   // moves integer v by d at the moved point unless that takes the point out of one of v's rows
   // (other than skip_row): 0 moved, 1 an integer-only row, 2 a row with continuous columns that
   // no single-row continuous column absorbs
@@ -2027,10 +2028,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     const f_t repair_below = population.is_feasible()
                                ? population.best_feasible().get_user_objective()
                                : std::numeric_limits<f_t>::infinity();
-    auto ev                = eval_fixed_pattern(assign,
+    // a safe step's moved point is feasible for its fixed LP
+    const std::vector<f_t>& wx = safe_warm && mv_x.size() == (size_t)n_vars ? mv_x : px;
+    auto ev                    = eval_fixed_pattern(assign,
                                  1e-4,
                                  rank_tlimit,
-                                 &px,
+                                 &wx,
                                  &py,
                                  true,
                                  repair_limit,
@@ -2528,7 +2531,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         tops.c_str());
     }
     if (n_kept == 0 && n_close == 0) { return 5; }
-    return eval_pattern(f_t(0), 2);
+    safe_warm     = true;
+    const int res = eval_pattern(f_t(0), 2);
+    safe_warm     = false;
+    return res;
   };
   // one evaluation of the slope-scaling point at thr: retried after a flip or certificate repair
   // (four times at most)
