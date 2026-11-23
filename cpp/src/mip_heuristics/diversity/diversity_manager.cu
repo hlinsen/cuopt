@@ -660,6 +660,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                fixed_assignment.size(),
                stream);
   }
+  res.lp_time = timer.elapsed_time() - t0;
   clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
   sol.unfix_variables(fixed_assignment, variable_map);
   // full objective (fixed integers included) of the (slightly infeasible) LP point
@@ -730,8 +731,9 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       sol.unfix_variables(fixed_assignment, variable_map);
       res.pushed_lp_obj = sol.get_user_objective();
     }
-    res.push_time = timer.elapsed_time() - t_push;
-    bool feas     = sol.get_feasible();
+    res.push_time         = timer.elapsed_time() - t_push;
+    const double t_repair = timer.elapsed_time();
+    bool feas             = sol.get_feasible();
     if (feas) {
       f_t max_excess = 0;
       feas           = strict_point_ok(sol.get_host_assignment(), max_excess) &&
@@ -781,6 +783,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
         }
       }
     }
+    res.repair_time = timer.elapsed_time() - t_repair;
     if (feas) {
       res.repaired_obj        = sol.get_user_objective();
       res.repaired_assignment = sol.get_host_assignment();
@@ -1338,8 +1341,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     }
     CUOPT_LOG_INFO(
       "Slope scaling eval %d mode=%d thr=%g: ones=%d lp_obj=%g optimal=%d infeasible=%d "
-      "iters=%d l2_primal_res=%g time=%.2fs pushed_lp_obj=%g pushed_res=%g repaired=%g "
-      "published=%d incumbent=%g elapsed=%.2f",
+      "iters=%d l2_primal_res=%g time=%.2fs (lp/push/repair %.1f/%.1f/%.1f) pushed_lp_obj=%g "
+      "pushed_res=%g repaired=%g published=%d incumbent=%g elapsed=%.2f",
       n_evals,
       mode,
       (double)thr,
@@ -1350,6 +1353,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       ev.iters,
       ev.l2_primal_res,
       ev.time,
+      ev.lp_time,
+      ev.push_time,
+      ev.repair_time,
       ev.pushed_lp_obj,
       ev.pushed_l2_primal_res,
       ev.repaired_obj,
@@ -1434,8 +1440,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   };
   // one evaluation of the slope-scaling point at thr: retried once after a flip repair; a new
   // incumbent is followed by one evaluation of its used-link pattern, then by dual-guided flip
-  // steps on top of the used-link pattern of the current incumbent (a large and a small flip
-  // set) while they improve it
+  // steps on top of the used-link pattern of the current incumbent
   constexpr int max_flip_steps = 8;
   constexpr i_t flip_sizes[]   = {256, 32};
   auto run_eval                = [&](f_t thr) -> int {
@@ -1449,20 +1454,24 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     std::fill(forced_open.begin(), forced_open.end(), 0);
     n_forced = 0;
     if (r1 == 3) { return 3; }
-    for (int step = 0; step < max_flip_steps; ++step) {
+    // the flip-set size shrinks after a step that does not improve and stays after one that does
+    size_t s = 0;
+    for (int step = 0; step < max_flip_steps && s < std::size(flip_sizes); ++step) {
       const f_t before = anchor_obj;
       i_t n_cand       = 0;
-      for (const i_t size : flip_sizes) {
-        if (size != flip_sizes[0] && n_cand <= size) { break; }  // the same flips again
-        last_eval_obj = std::numeric_limits<f_t>::infinity();
-        int rf        = flip_step(size, n_cand);
-        if (rf == 4) { rf = eval_pattern(f_t(0), 2); }
-        std::fill(forced_open.begin(), forced_open.end(), 0);
-        n_forced = 0;
-        if (rf == 3) { return 3; }
-        if (rf == 5 || anchor_obj < before) { break; }
+      last_eval_obj    = std::numeric_limits<f_t>::infinity();
+      int rf           = flip_step(flip_sizes[s], n_cand);
+      if (rf == 4) { rf = eval_pattern(f_t(0), 2); }
+      std::fill(forced_open.begin(), forced_open.end(), 0);
+      n_forced = 0;
+      if (rf == 3) { return 3; }
+      if (rf == 5) { break; }
+      if (!(anchor_obj < before)) {
+        // a smaller size that would flip every candidate again is skipped
+        do {
+          ++s;
+        } while (s < std::size(flip_sizes) && n_cand <= flip_sizes[s]);
       }
-      if (!(anchor_obj < before)) { break; }
     }
     return r == 4 ? 0 : r;
   };

@@ -97,6 +97,8 @@ class diversity_manager_t {
     f_t pushed_lp_obj{std::numeric_limits<f_t>::infinity()};
     f_t pushed_l2_primal_res{-1};
     double push_time{0};
+    double lp_time{0};      // setup and phase-A LP
+    double repair_time{0};  // strict checks of the pushed point and the repair
   };
   pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
                                     f_t tol,
