@@ -1719,7 +1719,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   constexpr int max_rounds       = 60;
   constexpr int first_eval_round = 3;
   constexpr int eval_every       = 1;
-  const f_t eval_thresholds[]    = {f_t(0.7), f_t(0.5), f_t(0.3)};
+  const f_t eval_thresholds[]    = {f_t(0.8), f_t(0.7), f_t(0.5)};
   const double round_cap         = std::min<double>(60., 0.15 * budget);
   const f_t eval_reserve         = 0.3 * budget;
   std::vector<var_t> h_types(n_vars, var_t::CONTINUOUS);
@@ -1812,11 +1812,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     prev_open         = is_open;
     const bool due    = round >= first_eval_round && (round - first_eval_round) % eval_every == 0;
     if (due || (stable && round >= 2)) {
-      // the highest threshold first; the lower ones (more links opened, which the binary rows
-      // turn into fix-and-propagate conflicts far more often) only when it repeats a pattern
+      // the highest threshold first (fewest links opened); the second when the first repeats a
+      // pattern, conflicts, or (before the first publish) fails its evaluation; the lowest (more
+      // links opened, which the binary rows turn into fix-and-propagate conflicts far more
+      // often) only when the second repeats a pattern
       int r = 1;
-      for (int t = 0; t < 3 && r == 1; ++t) {
+      for (int t = 0; t < 3; ++t) {
         r = run_eval(eval_thresholds[t]);
+        const bool next = r == 1 || (t == 0 && (r == 2 || (r == 0 && !published)));
+        if (!next) { break; }
       }
       if (stable && r == 1) { break; }
       if (r == 3) { break; }
