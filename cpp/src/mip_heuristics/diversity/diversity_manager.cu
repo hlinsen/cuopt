@@ -2911,7 +2911,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     return sc;
   };
   auto speculate = [&]() {
-    if (!(remaining() - eval_reserve() > 2. * round_cap)) { return; }
+    // only while the rounds-end rule still allows a next round
+    if (!(remaining() - eval_reserve() > last_round_time)) { return; }
     auto sc = next_scales();
     if (spec.valid() && sc == spec_scale) { return; }
     spec_old.erase(std::remove_if(spec_old.begin(),

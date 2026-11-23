@@ -56,14 +56,16 @@ class solution_publication_t {
 
   // A caller that already lifted `assignment` of problem_ptr (post-processed to the original
   // problem and uncrushed, exactly as build_user_assignment does) leaves the result here; the next
-  // publication of that same assignment uses it instead of lifting it a second time. Any other
-  // publication drops it.
+  // publication of that same assignment uses it instead of lifting it a second time, and the
+  // publications of other assignments (other threads' incumbents) leave it. It has its own lock,
+  // so that a publication in progress (which holds mutex_ through its lift) does not hold up the
+  // caller.
   void remember_lifted(const problem_t<i_t, f_t>* problem_ptr,
                        const std::vector<f_t>& assignment,
                        std::vector<f_t> lifted)
   {
     if (handle_ == nullptr) { return; }
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(lifted_mutex_);
     lifted_problem_ = problem_ptr;
     lifted_key_     = assignment;
     lifted_         = std::move(lifted);
@@ -146,13 +148,15 @@ class solution_publication_t {
   std::vector<f_t> build_user_assignment(problem_t<i_t, f_t>* problem_ptr,
                                          const std::vector<f_t>& assignment)
   {
-    if (lifted_problem_ == problem_ptr && !lifted_.empty() && lifted_key_ == assignment) {
-      auto user_assignment = std::move(lifted_);
-      forget_lifted();
-      strip_user_assignment(user_assignment);
-      return user_assignment;
+    {
+      std::lock_guard<std::mutex> lock(lifted_mutex_);
+      if (lifted_problem_ == problem_ptr && !lifted_.empty() && lifted_key_ == assignment) {
+        auto user_assignment = std::move(lifted_);
+        forget_lifted();
+        strip_user_assignment(user_assignment);
+        return user_assignment;
+      }
     }
-    forget_lifted();
     // The B&B thread may never have selected a device of its own.
     RAFT_CUDA_TRY(cudaSetDevice(device_id_));
     auto stream = handle_->get_stream();
@@ -205,6 +209,7 @@ class solution_publication_t {
   std::mutex mutex_;
   f_t best_published_objective_{std::numeric_limits<f_t>::max()};
   // see remember_lifted
+  std::mutex lifted_mutex_;
   const problem_t<i_t, f_t>* lifted_problem_{nullptr};
   std::vector<f_t> lifted_key_;
   std::vector<f_t> lifted_;
