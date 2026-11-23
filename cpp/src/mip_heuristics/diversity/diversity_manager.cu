@@ -665,6 +665,20 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       lp_result.get_termination_status() == pdlp_termination_status_t::PrimalInfeasible;
     res.cutoff = std::isfinite(lp_settings.objective_cutoff) &&
                  lp_result.get_termination_status() == pdlp_termination_status_t::IterationLimit;
+    if (res.cutoff) {
+      CUOPT_LOG_INFO(
+        "Fixed-pattern LP cutoff (%s): iters=%d primal_obj=%g dual_obj=%g rel_primal_res=%g "
+        "rel_dual_res=%g cutoff=%g lp_time=%.2fs time_limit=%.0fs",
+        origin,
+        lp_info.number_of_steps_taken,
+        (double)lp_info.primal_objective,
+        (double)lp_info.dual_objective,
+        (double)lp_info.l2_relative_primal_residual,
+        (double)lp_info.l2_relative_dual_residual,
+        (double)lp_cutoff,
+        timer.elapsed_time() - t0,
+        (double)lp_settings.time_limit);
+    }
     if (lp_result.get_primal_solution().size() != (size_t)fixed_problem.n_variables ||
         lp_result.get_dual_solution().size() != (size_t)n_cstrs) {
       res.time = timer.elapsed_time() - t0;
@@ -1305,7 +1319,48 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   const f_t no_val = std::numeric_limits<f_t>::quiet_NaN();
   auto has_val     = [](f_t v) { return !std::isnan(v); };
   std::vector<f_t> cert_val(n_vars, no_val);
-  i_t n_cert = 0;
+  i_t n_cert                   = 0;
+  constexpr i_t max_cert_moves = 100;
+  // the Farkas ray of the last infeasible fixed LP of this point: its z_j on the integers and its
+  // objective without the integer terms. A retry pattern the same ray still proves infeasible (ray
+  // objective > 0 at the retry's integer values, e.g. propagation re-opened a consumer of the
+  // deficit row) gets more moves without an LP
+  std::vector<std::pair<i_t, double>> ray_z;
+  double ray_D0 = 0;
+  int ray_mode  = -1;
+  // moves of a ray at the integer values val (most cancelling first, until twice D is cancelled)
+  auto ray_moves = [&](const std::vector<std::pair<i_t, double>>& z_int,
+                       auto&& val,
+                       double D,
+                       i_t& n_moved,
+                       double& cancelled) {
+    std::vector<std::pair<double, std::pair<i_t, f_t>>> mv;
+    for (const auto& [j, z] : z_int) {
+      if (has_val(cert_val[j])) { continue; }
+      const double v  = val(j);
+      const bool unit = h_vub[j] - h_vlb[j] <= 1;
+      if (z < 0 && v < h_vub[j] - 0.5) {
+        const f_t t = unit ? h_vub[j] : (f_t)(v + 1);
+        mv.push_back({-z * ((double)t - v), {j, t}});
+      } else if (z > 0 && v > h_vlb[j] + 0.5) {
+        const f_t t = unit ? h_vlb[j] : (f_t)(v - 1);
+        mv.push_back({z * (v - (double)t), {j, t}});
+      }
+    }
+    std::sort(mv.begin(), mv.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<std::pair<i_t, f_t>> taken;
+    for (const auto& [g, jt] : mv) {
+      if (n_cert + n_moved >= max_cert_moves ||
+          (n_moved > 0 && (D > 0 ? cancelled >= 2 * D : n_moved >= 10))) {
+        break;
+      }
+      cert_val[jt.first] = jt.second;
+      taken.push_back(jt);
+      n_moved++;
+      cancelled += g;
+    }
+    return taken;
+  };
   // conflict promotions learned by the patterns of this run (variable, value it was fixed at): the
   // same closed binaries of infeasible clusters conflict in most patterns, so every pattern starts
   // with the promotions of the earlier ones instead of rediscovering them one attempt at a time
@@ -1520,6 +1575,29 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       pat[qq] = fp_host.col_lb[h_int[qq]];
       n_ones += pat[qq] > 0.5;
       n_pref_ones += pref[h_int[qq]] > 0.5;
+    }
+    if (mode == ray_mode && !ray_z.empty() && n_conflicts == 0) {
+      double Dp = ray_D0;
+      for (const auto& [j, z] : ray_z) {
+        Dp += z * (double)fp_host.col_lb[j];
+      }
+      if (Dp > 0) {
+        i_t n_more      = 0;
+        double canc     = 0;
+        const auto more = ray_moves(
+          ray_z, [&](i_t j) { return (double)fp_host.col_lb[j]; }, Dp, n_more, canc);
+        n_cert += n_more;
+        CUOPT_LOG_INFO(
+          "Slope scaling certificate recheck: mode=%d thr=%g ray_objective=%g (the retry pattern is "
+          "still infeasible) moved=%d cancelled/D=%g elapsed=%.2f",
+          mode,
+          (double)thr,
+          Dp,
+          (int)n_more,
+          canc / Dp,
+          timer.elapsed_time());
+        if (n_more > 0) { return 4; }
+      }
     }
     bool dup = false;
     for (auto& s : seen) {
@@ -1895,12 +1973,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       for (i_t j = 0; j < n_vars; ++j) {
         zmax = std::max(zmax, std::abs(aty[j]));
       }
-      struct move_t {
-        double gain;
-        i_t var;
-        f_t target;
-      };
-      std::vector<move_t> moves;
+      std::vector<std::pair<i_t, double>> z_int;
+      double D_int = 0;
       for (i_t j = 0; j < n_vars && zmax > 0; ++j) {
         const double z = -aty[j];
         if (std::abs(z) <= 1e-12 * zmax) { continue; }
@@ -1913,51 +1987,36 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           D += z * b;
           continue;
         }
-        const double v = assign[j];
-        D += z * v;
-        const bool unit = h_vub[j] - h_vlb[j] <= 1;
-        if (z < 0 && v < h_vub[j] - 0.5) {
-          const f_t t = unit ? h_vub[j] : (f_t)(v + 1);
-          moves.push_back({-z * ((double)t - v), j, t});
-        } else if (z > 0 && v > h_vlb[j] + 0.5) {
-          const f_t t = unit ? h_vlb[j] : (f_t)(v - 1);
-          moves.push_back({z * (v - (double)t), j, t});
-        }
+        z_int.push_back({j, z});
+        D_int += z * (double)assign[j];
       }
-      std::sort(moves.begin(), moves.end(), [](const move_t& a, const move_t& b) {
-        return a.gain > b.gain;
-      });
-      constexpr i_t max_moves = 100;
-      double cancelled        = 0;
-      i_t n_opening           = 0;
+      D += D_int;
+      double cancelled = 0;
+      const auto taken = ray_moves(
+        z_int, [&](i_t j) { return (double)assign[j]; }, D, n_new_cert, cancelled);
+      i_t n_opening = 0;
       std::string top;
-      for (const auto& m : moves) {
-        if (n_new_cert >= max_moves ||
-            (n_new_cert > 0 && (D > 0 ? cancelled >= 2 * D : n_new_cert >= 10))) {
-          break;
-        }
-        if (has_val(cert_val[m.var])) { continue; }
-        cert_val[m.var] = m.target;
-        n_new_cert++;
-        cancelled += m.gain;
-        n_opening += m.target > assign[m.var];
-        if (n_new_cert <= 4) {
-          const i_t k = link_of[m.var];
+      for (const auto& [j, t] : taken) {
+        n_opening += t > assign[j];
+        if (top.size() < 400) {
+          const i_t k = link_of[j];
           char buf[160];
           snprintf(buf,
                    sizeof(buf),
-                   " [var=%d %s %g->%g gain/D=%g pref=%g point=%g]",
-                   (int)m.var,
+                   " [var=%d %s %g->%g pref=%g point=%g]",
+                   (int)j,
                    k < 0 ? "int" : (vub[k].pair ? "pair" : "single"),
-                   (double)assign[m.var],
-                   (double)m.target,
-                   D > 0 ? m.gain / D : 0.,
-                   (double)pref[m.var],
-                   (double)cur_x[m.var]);
+                   (double)assign[j],
+                   (double)t,
+                   (double)pref[j],
+                   (double)cur_x[j]);
           top += buf;
         }
       }
       n_cert += n_new_cert;
+      ray_z    = std::move(z_int);
+      ray_D0   = D - D_int;
+      ray_mode = mode;
       CUOPT_LOG_INFO(
         "Slope scaling certificate: mode=%d thr=%g rows(|y|/ymax):%s D=%g ymax=%g bad_rows=%d "
         "bad_cols=%d candidates=%zu moved=%d opening=%d cancelled/D=%g top:%s elapsed=%.2f",
@@ -1968,7 +2027,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         ymax,
         (int)n_bad_rows,
         (int)n_bad_cols,
-        moves.size(),
+        ray_z.size(),
         (int)n_new_cert,
         (int)n_opening,
         D > 0 ? cancelled / D : 0.,
@@ -2020,19 +2079,23 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     n_forced = 0;
     std::fill(cert_val.begin(), cert_val.end(), no_val);
     n_cert = 0;
+    ray_z.clear();
+    ray_mode = -1;
   };
   auto run_eval = [&](f_t thr) -> int {
     last_eval_obj = std::numeric_limits<f_t>::infinity();
     clear_moves();
     int r = eval_pattern(thr, 0);
-    for (int retry = 0; r == 4 && retry < 2; ++retry) {
+    for (int retry = 0; r == 4 && retry < 4; ++retry) {
       r = eval_pattern(thr, 0);
     }
     clear_moves();  // for the retries of this point only
     while (r != 3 && std::isfinite(last_eval_obj)) {
       const f_t before = last_eval_obj;
       int r1           = eval_pattern(f_t(0), 1);
-      if (r1 == 4) { r1 = eval_pattern(f_t(0), 1); }  // certificate retry of the used-link pattern
+      for (int retry = 0; r1 == 4 && retry < 3; ++retry) {
+        r1 = eval_pattern(f_t(0), 1);  // certificate retries of the used-link pattern
+      }
       clear_moves();
       if (r1 == 3) { return 3; }
       if (r1 == 1 || r1 == 2 || !(last_eval_obj < before - f_t(0.005) * std::abs(before))) {
