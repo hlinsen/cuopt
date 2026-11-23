@@ -587,7 +587,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
                                                   f_t repair_tlimit,
                                                   const char* origin,
                                                   f_t repair_below,
-                                                  f_t max_push_time)
+                                                  f_t max_push_time,
+                                                  f_t abort_above_res)
 {
   raft::common::nvtx::range fun_scope("eval_fixed_pattern");
   pattern_eval_t res;
@@ -661,7 +662,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   res.lp_obj        = sol.get_user_objective();
   res.usable        = std::isfinite(res.lp_obj);
   res.lp_assignment = sol.get_host_assignment();
-  if (repair && res.usable && res.lp_obj < repair_below) {
+  res.aborted       = !res.optimal && res.l2_primal_res > abort_above_res;
+  if (repair && res.usable && res.lp_obj < repair_below && !res.aborted) {
     // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
     // (the ranking objective above stays the phase-A one)
@@ -986,16 +988,23 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   }
   int64_t n_other_nnz = 0;
   i_t n_other_rows    = 0;
+  // one-sided rows (not link rows) holding linked binaries and continuous columns: the binaries
+  // take a share of the row (e.g. a capacity the flows share with the binaries' fixed use)
+  std::vector<i_t> mixed_coupling_rows;
   for (i_t r = 0; r < n_cstrs; ++r) {
     if (is_link_row[r]) { continue; }
-    bool has = false;
+    bool has = false, has_cont = false;
     for (i_t k = h_offsets[r]; k < h_offsets[r + 1]; ++k) {
       if (is_vub_bin[h_cols[k]]) {
         has = true;
         n_other_nnz++;
       }
+      has_cont = has_cont || !is_int[h_cols[k]];
     }
     n_other_rows += has;
+    if (has && has_cont && std::isfinite(h_clb[r]) != std::isfinite(h_cub[r])) {
+      mixed_coupling_rows.push_back(r);
+    }
   }
   std::vector<f_t> caps;
   for (auto& l : vub) {
@@ -1087,6 +1096,39 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       pair_partner[k] = (i_t)k - 1;
     }
   }
+  // binary-only rows (every column a binary) and, per binary, the binary-only rows holding it
+  // (position in brows, coefficient): the preference repair of the patterns works on them
+  std::vector<i_t> brows;
+  std::vector<i_t> bvar_off(n_vars + 1, 0), bvar_row;
+  std::vector<f_t> bvar_val;
+  {
+    auto is_bin = [&](i_t j) { return is_int[j] && h_vlb[j] == 0 && h_vub[j] == 1; };
+    for (i_t r = 0; r < n_cstrs; ++r) {
+      if (h_offsets[r + 1] == h_offsets[r]) { continue; }
+      bool all_bin = true;
+      for (i_t p = h_offsets[r]; p < h_offsets[r + 1] && all_bin; ++p) {
+        all_bin = is_bin(h_cols[p]);
+      }
+      if (!all_bin) { continue; }
+      brows.push_back(r);
+      for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+        bvar_off[h_cols[p] + 1]++;
+      }
+    }
+    for (i_t j = 0; j < n_vars; ++j) {
+      bvar_off[j + 1] += bvar_off[j];
+    }
+    bvar_row.resize(bvar_off[n_vars]);
+    bvar_val.resize(bvar_off[n_vars]);
+    std::vector<i_t> fill(bvar_off.begin(), bvar_off.end() - 1);
+    for (size_t q = 0; q < brows.size(); ++q) {
+      const i_t r = brows[q];
+      for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+        bvar_row[fill[h_cols[p]]]   = (i_t)q;
+        bvar_val[fill[h_cols[p]]++] = h_vals[p];
+      }
+    }
+  }
   // links by continuous column (CSR): the links whose row holds the column, i.e. whose binary
   // gives that flow its capacity
   std::vector<i_t> col_link_off(n_vars + 1, 0), col_link;
@@ -1132,6 +1174,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // used link below thr made most of them LP-infeasible or conflicting)
   std::vector<char> anchor_open(n_vars, 0);
   constexpr f_t keep_frac = 0.5;
+  // phase-A l2 primal residual of the last mode-0 first attempt (bound for its retry)
+  f_t first_try_res = std::numeric_limits<f_t>::infinity();
   // pattern of the current point, then fix-and-propagate (most used first), fixed LP, push,
   // repair, publish. mode 0: the slope-scaling point, the linked binaries with y = usage / scale
   // >= thr opened; mode 1: the used-link pattern of the current (published) point, every link
@@ -1165,6 +1209,85 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         const f_t x = std::clamp(cur_x[v], h_vlb[v], h_vub[v]);
         key[v]      = x;
         pref[v]     = std::clamp<f_t>(std::floor(x + 0.5), h_vlb[v], h_vub[v]);
+      }
+    }
+    // preference repair on the binary-only rows (mode 0): a row the preferred values violate (a
+    // cover "one of these must open" with all closed, a packing row with two open) is otherwise
+    // settled by fix-and-propagate in fixing order, often too late (both values of its last
+    // binary conflict). Each violated row flips the binary of the row whose flip lowers the
+    // total violation of the binary-only rows most (the one with the LP value nearest its new
+    // value on ties); binaries flipped open are fixed with the pattern's opens.
+    i_t n_bviol0 = 0, n_bviol1 = 0, n_bflips = 0;
+    if (mode == 0 && !brows.empty()) {
+      const size_t nb = brows.size();
+      std::vector<double> bact(nb, 0);
+      auto bviol      = [&](size_t q, double a) {
+        const i_t r = brows[q];
+        double v    = 0;
+        if (std::isfinite(h_cub[r]) && a > h_cub[r] + 1e-9) { v += a - h_cub[r]; }
+        if (std::isfinite(h_clb[r]) && a < h_clb[r] - 1e-9) { v += h_clb[r] - a; }
+        return v;
+      };
+      std::vector<size_t> bqueue;
+      std::vector<char> bqueued(nb, 0);
+      for (size_t q = 0; q < nb; ++q) {
+        const i_t r = brows[q];
+        double a    = 0;
+        for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+          a += (double)h_vals[p] * (double)pref[h_cols[p]];
+        }
+        bact[q] = a;
+        if (bviol(q, a) > 0) {
+          bqueue.push_back(q);
+          bqueued[q] = 1;
+          n_bviol0++;
+        }
+      }
+      const i_t max_flips = 4 * n_bviol0 + 100;
+      for (size_t head = 0; head < bqueue.size() && n_bflips < max_flips; ++head) {
+        const size_t q = bqueue[head];
+        bqueued[q]     = 0;
+        const double v0 = bviol(q, bact[q]);
+        if (v0 <= 0) { continue; }
+        const i_t r       = brows[q];
+        i_t best          = -1;
+        double best_score = 0, best_dist = 0;
+        for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+          const i_t j = h_cols[p];
+          if (forced_open[j]) { continue; }
+          const double dj = pref[j] > 0.5 ? -1. : 1.;
+          if (bviol(q, bact[q] + h_vals[p] * dj) >= v0) { continue; }
+          double score = 0;
+          for (i_t t = bvar_off[j]; t < bvar_off[j + 1]; ++t) {
+            const i_t qq = bvar_row[t];
+            score += bviol(qq, bact[qq] + bvar_val[t] * dj) - bviol(qq, bact[qq]);
+          }
+          if (score >= -1e-9) { continue; }
+          const double dist =
+            std::abs(std::clamp<double>(cur_x[j], 0., 1.) - (pref[j] > 0.5 ? 0. : 1.));
+          if (best < 0 || score < best_score - 1e-9 ||
+              (score < best_score + 1e-9 && dist < best_dist)) {
+            best       = j;
+            best_score = score;
+            best_dist  = dist;
+          }
+        }
+        if (best < 0) { continue; }
+        const double dj = pref[best] > 0.5 ? -1. : 1.;
+        pref[best]      = pref[best] > 0.5 ? f_t(0) : f_t(1);
+        key[best]       = pref[best] > 0.5 ? 1 + std::clamp<f_t>(cur_x[best], 0, 1) : f_t(0);
+        n_bflips++;
+        for (i_t t = bvar_off[best]; t < bvar_off[best + 1]; ++t) {
+          const i_t qq = bvar_row[t];
+          bact[qq] += bvar_val[t] * dj;
+          if (!bqueued[qq] && bviol(qq, bact[qq]) > 0) {
+            bqueue.push_back(qq);
+            bqueued[qq] = 1;
+          }
+        }
+      }
+      for (size_t q = 0; q < nb; ++q) {
+        n_bviol1 += bviol(q, bact[q]) > 0;
       }
     }
     std::vector<i_t> ord0(h_int.begin(), h_int.end());
@@ -1231,6 +1354,13 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       (int)dup,
       timer.elapsed_time());
     if (mode == 0) {
+      CUOPT_LOG_INFO(
+        "Slope scaling pattern binary rows: rows=%zu violated_by_preference=%d flips=%d "
+        "still_violated=%d",
+        brows.size(),
+        n_bviol0,
+        n_bflips,
+        n_bviol1);
       // link rows carrying flow at the point that the pattern closes: by the threshold (for a
       // pair row: with the two binaries' values summing to the threshold or more) or by
       // fix-and-propagate (a binary the pattern opened)
@@ -1260,6 +1390,36 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         n_closed_fp,
         flow_used > 0 ? flow_closed / flow_used : 0.,
         n_kept);
+      // mixed coupling rows the pattern's binaries overload at the point's flows (before the
+      // fixed LP moves the flows): rounding a linked binary up takes more of the row
+      i_t n_over = 0;
+      double max_over = 0, sum_over = 0, sum_extra = 0;
+      for (auto r : mixed_coupling_rows) {
+        double act = 0, d = 0, mag = 0;
+        for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+          const i_t c = h_cols[p];
+          act += (double)h_vals[p] * (double)cur_x[c];
+          mag = std::max(mag, std::abs((double)h_vals[p] * (double)cur_x[c]));
+          if (is_vub_bin[c]) { d += (double)h_vals[p] * ((double)fp_host.col_lb[c] - (double)cur_x[c]); }
+        }
+        const bool le     = std::isfinite(h_cub[r]);
+        const double sgn  = le ? 1. : -1.;
+        const double over = sgn * (act + d) - std::max(sgn * (le ? h_cub[r] : h_clb[r]), sgn * act);
+        sum_extra += sgn * d;
+        if (over > 1e-6 * std::max(1., mag)) {
+          n_over++;
+          max_over = std::max(max_over, over);
+          sum_over += over;
+        }
+      }
+      CUOPT_LOG_INFO(
+        "Slope scaling pattern coupling rows: mixed=%zu overloaded=%d max_over=%g sum_over=%g "
+        "binary_extra_use=%g",
+        mixed_coupling_rows.size(),
+        n_over,
+        max_over,
+        sum_over,
+        sum_extra);
     }
     if (dup) { return 1; }
     if (n_conflicts > 0) { return 2; }
@@ -1271,8 +1431,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     for (size_t qq = 0; qq < h_int.size(); ++qq) {
       assign[h_int[qq]] = pat[qq];
     }
-    const f_t rem          = remaining();
-    const f_t rank_tlimit  = std::min<f_t>(60., 0.45 * rem);
+    const f_t rem = remaining();
+    // the retry of a flip-repaired point gets less fixed-LP time, and no push or repair when its
+    // fixed LP ends at more than twice the first attempt's residual (a failed retry cost ~130 s)
+    const bool retry       = mode == 0 && n_forced > 0;
+    const f_t rank_tlimit  = std::min<f_t>(retry ? 40. : 60., 0.45 * rem);
     const f_t repair_limit = std::min<f_t>(40., 0.35 * rem);
     // no repair for patterns whose fixed LP is not below the incumbent
     const f_t repair_below = population.is_feasible()
@@ -1287,7 +1450,16 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  repair_limit,
                                  "slope_scaling",
                                  repair_below,
-                                 11.);
+                                 11.,
+                                 retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity());
+    if (mode == 0 && !retry) { first_try_res = ev.l2_primal_res; }
+    if (ev.aborted) {
+      CUOPT_LOG_INFO(
+        "Slope scaling retry aborted: l2_primal_res=%g above twice the first attempt's %g time=%.2fs",
+        ev.l2_primal_res,
+        first_try_res,
+        ev.time);
+    }
     n_evals++;
     published     = published || ev.published;
     last_eval_obj = ev.published ? ev.repaired_obj : std::numeric_limits<f_t>::infinity();
