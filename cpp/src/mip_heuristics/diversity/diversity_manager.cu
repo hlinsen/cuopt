@@ -1219,6 +1219,16 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // value on ties); binaries flipped open are fixed with the pattern's opens. In mode 1 the
     // used-link pattern closes the incumbent's open binaries without flow that these rows need;
     // the LP-nearest tie-break then reopens the incumbent's own binaries.
+    // mode 1: linked binaries open in the published point (cur_x) that the used-link preference
+    // closes (before the preference repair)
+    i_t n_pub_open = 0, n_pub_pref_closed0 = 0;
+    if (mode == 1) {
+      for (auto v : h_int) {
+        if (link_of[v] < 0 || !(cur_x[v] > 0.5)) { continue; }
+        n_pub_open++;
+        n_pub_pref_closed0 += pref[v] < 0.5;
+      }
+    }
     i_t n_bviol0 = 0, n_bviol1 = 0, n_bflips = 0;
     if (!brows.empty()) {
       const size_t nb = brows.size();
@@ -1363,6 +1373,28 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       n_bviol0,
       n_bflips,
       n_bviol1);
+    if (mode == 1) {
+      // the published design against the used-link pattern: published-open linked binaries
+      // closed by the preference (before / after the preference repair) and by the final
+      // pattern, and published-closed ones the final pattern opens
+      i_t n_pref_closed1 = 0, n_pat_closed = 0, n_pat_opened = 0;
+      for (size_t qq = 0; qq < h_int.size(); ++qq) {
+        const i_t v = h_int[qq];
+        if (link_of[v] < 0) { continue; }
+        const bool po = cur_x[v] > 0.5;
+        n_pref_closed1 += po && pref[v] < 0.5;
+        n_pat_closed += po && pat[qq] < 0.5;
+        n_pat_opened += !po && pat[qq] > 0.5;
+      }
+      CUOPT_LOG_INFO(
+        "Slope scaling used-link pattern vs published: published_open=%d pref_closed=%d "
+        "pref_closed_after_repair=%d pattern_closed=%d pattern_opened_other=%d",
+        n_pub_open,
+        n_pub_pref_closed0,
+        n_pref_closed1,
+        n_pat_closed,
+        n_pat_opened);
+    }
     if (mode == 0) {
       // link rows carrying flow at the point that the pattern closes: by the threshold (for a
       // pair row: with the two binaries' values summing to the threshold or more) or by
