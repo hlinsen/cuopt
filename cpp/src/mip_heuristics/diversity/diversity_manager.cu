@@ -603,6 +603,9 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     sol.fix_variables(problem_ptr->integer_indices);
   fixed_problem.check_problem_representation(true);
   if (fixed_problem.n_constraints != n_cstrs) { return res; }
+  const double t_fixed = timer.elapsed_time();
+  double t_lp_start = t_fixed, t_lp_end = t_fixed, t_point = t_fixed, t_check = t_fixed;
+  double t_repair = t_fixed, t_publish = t_fixed;
   // a full-length warm primal (all columns of the problem) is gathered to the fixed problem's
   // columns
   std::vector<f_t> warm_fixed;
@@ -639,7 +642,9 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
         fixed_assignment.data(), (i_t)fixed_assignment.size(), stream);
       lp_settings.set_initial_dual_solution(warm_dual->data(), (i_t)warm_dual->size(), stream);
     }
+    t_lp_start          = timer.elapsed_time();
     auto lp_result      = solve_lp(snapshot, lp_settings);
+    t_lp_end            = timer.elapsed_time();
     const auto& lp_info = lp_result.get_additional_termination_information();
     res.iters           = lp_info.number_of_steps_taken;
     res.l2_primal_res   = lp_info.l2_primal_residual;
@@ -663,6 +668,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
   res.usable        = std::isfinite(res.lp_obj);
   res.lp_assignment = sol.get_host_assignment();
   res.aborted       = !res.optimal && res.l2_primal_res > abort_above_res;
+  t_point           = timer.elapsed_time();
   if (repair && res.usable && res.lp_obj < repair_below && !res.aborted) {
     // phase B: the PID point's l2 primal residual stalls ~50-100 (repair +2%); warm-started
     // pushes with a frozen large primal weight drive it to ~1e-3 at a nearly unchanged objective
@@ -728,6 +734,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       feas           = strict_point_ok(sol.get_host_assignment(), max_excess) &&
              original_point_ok(sol.get_host_assignment());
     }
+    t_check = timer.elapsed_time();
     if (!feas) {
       timer_t rtimer(repair_tlimit);
       thrust::fill(handle_ptr->get_thrust_policy(),
@@ -772,6 +779,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
         }
       }
     }
+    t_repair = timer.elapsed_time();
     if (feas) {
       res.repaired_obj        = sol.get_user_objective();
       res.repaired_assignment = sol.get_host_assignment();
@@ -784,8 +792,21 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
         population.add_solution(solution_t<i_t, f_t>(sol), origin);
       }
     }
+    t_publish = timer.elapsed_time();
   }
   res.time = timer.elapsed_time() - t0;
+  CUOPT_LOG_INFO(
+    "Pattern eval timing: fix=%.2f lp_setup=%.2f lp=%.2f point=%.2f push=%.2f check=%.2f "
+    "repair=%.2f publish=%.2f total=%.2f",
+    t_fixed - t0,
+    t_lp_start - t_fixed,
+    t_lp_end - t_lp_start,
+    t_point - t_lp_end,
+    res.push_time,
+    std::max(0., t_check - t_point - res.push_time),
+    std::max(0., t_repair - t_check),
+    std::max(0., t_publish - t_repair),
+    res.time);
   return res;
 }
 
@@ -854,11 +875,19 @@ bool diversity_manager_t<i_t, f_t>::original_point_ok(const std::vector<f_t>& x)
   // private copy of the presolve data: post-processing writes into its fixed-variable buffer,
   // which the publication path of other threads uses on the shared problem
   presolve_data_t<i_t, f_t> pd(problem_ptr->presolve_data, stream);
+  const double t0 = timer.elapsed_time();
   pd.post_process_assignment(*problem_ptr, d_x, true, stream);
   pd.papilo_uncrush_assignment(d_x, stream);
   auto h_x          = cuopt::host_copy(d_x, stream);
+  const double t1   = timer.elapsed_time();
   const f_t abs_tol = problem_ptr->tolerances.absolute_tolerance;
-  return presolver->is_original_primal_solution_feasible(h_x, 0.5 * abs_tol, 0., 0.5 * abs_tol);
+  const bool ok =
+    presolver->is_original_primal_solution_feasible(h_x, 0.5 * abs_tol, 0., 0.5 * abs_tol);
+  CUOPT_LOG_INFO("Original-space check: uncrush=%.2fs check=%.2fs ok=%d",
+                 t1 - t0,
+                 timer.elapsed_time() - t1,
+                 (int)ok);
+  return ok;
 }
 
 namespace {
@@ -1765,7 +1794,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   constexpr int first_eval_round = 3;
   constexpr int eval_every       = 1;
   const f_t eval_thresholds[]    = {f_t(0.7), f_t(0.5), f_t(0.3)};
-  const double round_cap         = std::min<double>(60., 0.15 * budget);
+  // the round LPs hold the GPU alone (the cut loop yields), so half the former cap gives them as
+  // many iterations as before and twice the rounds and pattern attempts
+  const double round_cap         = std::min<double>(30., 0.075 * budget);
   const f_t eval_reserve         = 0.3 * budget;
   std::vector<var_t> h_types(n_vars, var_t::CONTINUOUS);
   int rounds_done = 0;
