@@ -716,7 +716,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       raft::copy(fixed_assignment.data(), cur_p.data(), cur_p.size(), stream);
       clamp_within_var_bounds(fixed_assignment, &fixed_problem, handle_ptr);
       sol.unfix_variables(fixed_assignment, variable_map);
-      res.pushed_lp_obj = sol.get_user_objective();
+      res.pushed_lp_obj     = sol.get_user_objective();
+      res.pushed_assignment = sol.get_host_assignment();
     }
     res.push_time = timer.elapsed_time() - t_push;
     bool feas     = sol.get_feasible();
@@ -1076,6 +1077,16 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   for (size_t k = 0; k < L; ++k) {
     link_of[vub[k].var] = (i_t)k;
   }
+  // the other link of a pair row (-1 for single links); the two links of a pair row are adjacent
+  std::vector<i_t> pair_partner(L, -1);
+  for (size_t k = 0; k < L; ++k) {
+    if (!vub[k].pair) { continue; }
+    if (k + 1 < L && vub[k + 1].row == vub[k].row) {
+      pair_partner[k] = (i_t)k + 1;
+    } else if (k > 0 && vub[k - 1].row == vub[k].row) {
+      pair_partner[k] = (i_t)k - 1;
+    }
+  }
   // links by continuous column (CSR): the links whose row holds the column, i.e. whose binary
   // gives that flow its capacity
   std::vector<i_t> col_link_off(n_vars + 1, 0), col_link;
@@ -1126,7 +1137,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     for (auto v : h_int) {
       const i_t k = link_of[v];
       if (forced_open[v]) {
-        key[v]  = 3;
+        // fixed after the pattern's own open links (keys above 1), so that a forced binary that
+        // conflicts with them is flipped instead of constraining them
+        key[v]  = 1;
         pref[v] = 1;
       } else if (k >= 0 && mode == 1) {
         // used link: flow on its row, and for a pair binary also open at the point
@@ -1239,14 +1252,18 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     published     = published || ev.published;
     last_eval_obj = ev.published ? ev.repaired_obj : std::numeric_limits<f_t>::infinity();
     // flip repair: the fixed-LP point of a pattern below the incumbent that could not be repaired
-    // violates rows; in each (largest violation first) the closed link binaries of the row are
+    // violates rows; in each (largest violation first) the closed link rows of the row are
     // opened, and also those whose continuous columns appear in the row (a violated flow row is
-    // relieved by opening the links that carry its flows). The opened binaries (forced_open) are
-    // used for one more evaluation of the same point.
+    // relieved by opening the links that carry its flows); one binary per pair row, the one with
+    // the larger value at the slope-scaling point. The opened binaries (forced_open) are used for
+    // one more evaluation of the same point (mode 0 only, the retry is not repaired again). The
+    // violated rows are taken at the pushed point when there is one (the residual of a pattern
+    // the fixed LP cannot serve stays on the rows it cannot serve).
     i_t n_new_forced = 0;
-    if (!ev.published && ev.usable && ev.lp_obj < repair_below &&
+    if (mode == 0 && n_forced == 0 && !ev.published && ev.usable && ev.lp_obj < repair_below &&
         ev.lp_assignment.size() == (size_t)n_vars) {
-      const auto& x = ev.lp_assignment;
+      const auto& x =
+        ev.pushed_assignment.size() == (size_t)n_vars ? ev.pushed_assignment : ev.lp_assignment;
       std::vector<std::pair<double, i_t>> viol_rows;
       for (i_t r = 0; r < n_cstrs; ++r) {
         double act = 0, mag = 0;
@@ -1265,32 +1282,136 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       });
       constexpr i_t max_new_forced = 500;
       i_t n_direct = 0, n_via_flow = 0;
-      auto open_link = [&](i_t v, i_t& counter) {
-        if (forced_open[v] || x[v] >= 0.5 || n_new_forced >= max_new_forced) { return; }
+      // a link row is open in the pattern if one of its binaries is
+      auto row_open = [&](i_t k) {
+        if (x[vub[k].var] >= 0.5) { return true; }
+        const i_t p = pair_partner[k];
+        return p >= 0 && x[vub[p].var] >= 0.5;
+      };
+      auto open_link = [&](i_t k, i_t& counter) {
+        if (n_new_forced >= max_new_forced || row_open(k)) { return; }
+        i_t v       = vub[k].var;
+        const i_t p = pair_partner[k];
+        if (p >= 0) {
+          const i_t w = vub[p].var;
+          if (forced_open[w]) { return; }
+          if (cur_x[w] > cur_x[v] || (cur_x[w] == cur_x[v] && vub[p].cap > vub[k].cap)) { v = w; }
+        }
+        if (forced_open[v]) { return; }
         forced_open[v] = 1;
         n_new_forced++;
         counter++;
       };
+      // diagnostics: the closed link rows next to the largest violations, the closed link rows
+      // the slope-scaling point uses, and the closed link rows with the largest fixed-LP duals
+      auto row_once = [&](i_t k) { return pair_partner[k] < 0 || k < pair_partner[k]; };
+      auto closed_used = [&](i_t k) { return !row_open(k) && u[k] > open_tol(k); };
+      auto closed_pref = [&](i_t k) {
+        const i_t p = pair_partner[k];
+        return !row_open(k) && (pref[vub[k].var] > 0.5 || (p >= 0 && pref[vub[p].var] > 0.5));
+      };
+      std::vector<char> is_cand(L, 0);
+      for (size_t qv = 0; qv < viol_rows.size(); ++qv) {
+        const i_t r = viol_rows[qv].second;
+        i_t n_c = 0, n_cl = 0, n_cu = 0, n_cp = 0, n_int_r = 0;
+        double act = 0;
+        for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+          const i_t c = h_cols[p];
+          act += (double)h_vals[p] * (double)x[c];
+          n_int_r += is_int[c];
+          auto visit = [&](i_t k) {
+            if (is_cand[k] || !row_once(k)) { return; }
+            is_cand[k] = 1;
+            if (qv >= 3) { return; }
+            n_c++;
+            n_cl += !row_open(k);
+            n_cu += closed_used(k);
+            n_cp += closed_pref(k);
+          };
+          if (link_of[c] >= 0) {
+            const i_t k = link_of[c];
+            visit(row_once(k) ? k : pair_partner[k]);
+          } else if (!is_int[c]) {
+            for (i_t q = col_link_off[c]; q < col_link_off[c + 1]; ++q) {
+              const i_t k = col_link[q];
+              visit(row_once(k) ? k : pair_partner[k]);
+            }
+          }
+        }
+        if (qv < 3) {
+          CUOPT_LOG_INFO(
+            "Slope scaling flip repair row %d: lo=%g hi=%g act=%g viol=%g nnz=%d ints=%d "
+            "link_rows=%d closed=%d closed_used_at_point=%d closed_pref_open=%d dual=%g",
+            r,
+            (double)h_clb[r],
+            (double)h_cub[r],
+            act,
+            viol_rows[qv].first,
+            h_offsets[r + 1] - h_offsets[r],
+            n_int_r,
+            n_c,
+            n_cl,
+            n_cu,
+            n_cp,
+            ev.dual.size() == (size_t)n_cstrs ? (double)ev.dual[r] : 0.);
+        }
+      }
+      {
+        i_t n_cu = 0, n_cp = 0, n_cl = 0;
+        std::vector<std::pair<double, i_t>> by_dual;
+        for (size_t k = 0; k < L; ++k) {
+          if (!row_once(k) || row_open(k)) { continue; }
+          n_cl++;
+          n_cu += closed_used(k);
+          n_cp += closed_pref(k);
+          if (ev.dual.size() == (size_t)n_cstrs) {
+            const i_t p   = pair_partner[k];
+            const f_t cap = p >= 0 ? std::max(vub[k].cap, vub[p].cap) : vub[k].cap;
+            by_dual.push_back({std::abs((double)ev.dual[vub[k].row]) * cap, (i_t)k});
+          }
+        }
+        const size_t top = std::min<size_t>(20, by_dual.size());
+        std::partial_sort(by_dual.begin(),
+                          by_dual.begin() + top,
+                          by_dual.end(),
+                          [](const auto& a, const auto& b) { return a.first > b.first; });
+        i_t top_cand = 0, top_used = 0;
+        for (size_t t = 0; t < top; ++t) {
+          top_cand += is_cand[by_dual[t].second];
+          top_used += closed_used(by_dual[t].second);
+        }
+        CUOPT_LOG_INFO(
+          "Slope scaling flip repair links: closed_rows=%d closed_used_at_point=%d "
+          "closed_pref_open=%d top20_dual(first=%g last=%g) in_candidates=%d used_at_point=%d",
+          n_cl,
+          n_cu,
+          n_cp,
+          top > 0 ? by_dual[0].first : 0.,
+          top > 0 ? by_dual[top - 1].first : 0.,
+          top_cand,
+          top_used);
+      }
       for (const auto& [v, r] : viol_rows) {
         if (n_new_forced >= max_new_forced) { break; }
         for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
           const i_t c = h_cols[p];
           if (link_of[c] >= 0) {
-            open_link(c, n_direct);
+            open_link(link_of[c], n_direct);
           } else if (!is_int[c]) {
             for (i_t q = col_link_off[c]; q < col_link_off[c + 1]; ++q) {
-              open_link(vub[col_link[q]].var, n_via_flow);
+              open_link(col_link[q], n_via_flow);
             }
           }
         }
       }
       n_forced += n_new_forced;
       CUOPT_LOG_INFO(
-        "Slope scaling flip repair: violated_rows=%zu max_violation=%g opened direct=%d "
+        "Slope scaling flip repair: violated_rows=%zu max_violation=%g point=%s opened direct=%d "
         "via_flow=%d "
         "elapsed=%.2f",
         viol_rows.size(),
         viol_rows.empty() ? 0. : viol_rows[0].first,
+        ev.pushed_assignment.size() == (size_t)n_vars ? "pushed" : "lp",
         n_direct,
         n_via_flow,
         timer.elapsed_time());
