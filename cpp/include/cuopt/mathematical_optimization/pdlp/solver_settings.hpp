@@ -368,12 +368,15 @@ class pdlp_solver_settings_t {
    * objective value (+infinity: off).
    *
    * Checked every 1000 iterations: the primal and dual objectives agree within 2%, both exceed the
-   * cutoff by more than 1% of max(1, |cutoff|) and the relative l2 dual residual is at most 1e-2
-   * (the dual objective bounds the optimum). When this holds at two consecutive checks the
-   * current iterate is returned with status IterationLimit. A heuristic, for callers that discard
-   * an LP whose optimum does not beat a known objective (e.g. a MIP incumbent).
+   * cutoff by more than objective_cutoff_margin * max(1, |cutoff|) and the relative l2 dual
+   * residual is at most 1e-2 (the dual objective bounds the optimum). When this holds at two
+   * consecutive checks the current iterate is returned with status IterationLimit. A heuristic,
+   * for callers that discard an LP whose optimum does not beat a known objective (e.g. a MIP
+   * incumbent).
    */
   f_t objective_cutoff{std::numeric_limits<f_t>::infinity()};
+  // relative margin above objective_cutoff that both objectives must exceed
+  f_t objective_cutoff_margin{0.01};
   /**
    * @brief Non-batch only: stop with TimeLimit once the objectives stall (0: off).
    *

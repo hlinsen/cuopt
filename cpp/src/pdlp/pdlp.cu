@@ -1565,7 +1565,8 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
     const f_t c        = settings_.objective_cutoff;
     // the dual objective only bounds the optimum for a (nearly) feasible dual
     const bool above = std::isfinite(p) && std::isfinite(d) &&
-                       std::min(p, d) > c + f_t(0.01) * std::max<f_t>(1, std::abs(c)) &&
+                       std::min(p, d) >
+                         c + settings_.objective_cutoff_margin * std::max<f_t>(1, std::abs(c)) &&
                        std::abs(p - d) <= f_t(0.02) * std::max<f_t>(1, std::abs(p)) &&
                        info.get_relative_l2_dual_residual_value(0) <= f_t(0.01);
     cutoff_count_      = above ? cutoff_count_ + 1 : 0;

@@ -703,6 +703,10 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     // lp_cutoff (a heuristic rule: the dual objective only bounds the optimum for a feasible dual)
     if (warm && stop_above && std::isfinite(lp_cutoff)) {
       lp_settings.objective_cutoff = lp_cutoff - full_shift;
+      // 0.3% above: over the logged fixed LPs, none whose primal and dual objectives agreed (2%)
+      // more than 0.02% above the incumbent ended below it, and a publish needs the repaired
+      // point below the incumbent
+      lp_settings.objective_cutoff_margin = 0.003;
     }
     std::vector<var_t> h_types(fixed_problem.n_variables, var_t::CONTINUOUS);
     snapshot.set_variable_types(h_types.data(), fixed_problem.n_variables);
