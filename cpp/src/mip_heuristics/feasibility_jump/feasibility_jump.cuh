@@ -118,7 +118,10 @@ class fj_t {
     fj_settings_t settings      = fj_settings_t{},
     bool randomize_params       = false,
     bool preserve_rng           = false,
-    bool copy_related_variables = true);
+    bool copy_related_variables = true,
+    // only the device reads happen here; the host-side construction is left to
+    // fj_cpu_climber_t::run_deferred_host_init on the thread that runs the climber
+    bool defer_host_init = false);
   i_t alloc_max_climbers(i_t desired_climbers);
   void resize_vectors(const raft::handle_t* handle_ptr);
   void device_init(cuda::stream_ref stream);

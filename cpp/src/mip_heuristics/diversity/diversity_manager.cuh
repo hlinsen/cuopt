@@ -27,6 +27,7 @@
 #include <utilities/timer.hpp>
 
 #include <cstdint>
+#include <optional>
 
 namespace cuopt::mathematical_optimization::mip {
 
@@ -139,8 +140,9 @@ class diversity_manager_t {
   // fixed LP, repaired and published. No-op without such rows.
   bool run_slope_scaling();
   bool slope_scaling_done{false};
-  // whether the problem has the linked binaries run_slope_scaling scales
+  // whether the problem has the linked binaries run_slope_scaling scales (detected once)
   bool has_slope_scaling_links();
+  std::optional<bool> slope_links_found;
   // main loop of diversity improvements
   void main_loop();
   // randomly chooses a recombiner and returns the offspring

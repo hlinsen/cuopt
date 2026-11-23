@@ -103,7 +103,10 @@ void local_search_t<i_t, f_t>::start_cpufj_scratch_threads(population_t<i_t, f_t
                                    context.preempt_heuristic_solver_,
                                    &constraint_prop.bounds_update.probing_cache,
                                    fj_settings_t{},
-                                   /*randomize=*/counter > 0);
+                                   /*randomize=*/counter > 0,
+                                   /*preserve_rng=*/false,
+                                   /*copy_related_variables=*/true,
+                                   /*defer_host_init=*/true);
 
     cpu_fj->log_prefix = "******* scratch " + std::to_string(counter) + ": ";
     cpu_fj->improvement_callback =
@@ -129,7 +132,10 @@ void local_search_t<i_t, f_t>::start_cpufj_scratch_threads(population_t<i_t, f_t
     auto ptr = scratch_cpu_fj[i].get();
 #pragma omp task firstprivate(ptr) priority(CUOPT_DEFAULT_TASK_PRIORITY) \
   depend(out : *ptr) default(none)
-    cpufj_solve(ptr);
+    {
+      ptr->run_deferred_host_init();
+      cpufj_solve(ptr);
+    }
   }
 }
 
@@ -163,7 +169,9 @@ void local_search_t<i_t, f_t>::start_cpufj_lns_improvement_thread(
                                              &constraint_prop.bounds_update.probing_cache,
                                              fj_settings_t{},
                                              /*randomize=*/true,
-                                             /*preserve_rng=*/true);
+                                             /*preserve_rng=*/true,
+                                             /*copy_related_variables=*/true,
+                                             /*defer_host_init=*/true);
   scratch_cpu_fj_lns->log_prefix = "******* lns improvement: ";
   scratch_cpu_fj_lns->improvement_callback =
     [&population](f_t obj, const std::vector<f_t>& h_vec, double /*work_units*/) {
@@ -187,6 +195,7 @@ void local_search_t<i_t, f_t>::start_cpufj_lns_improvement_thread(
     const int previous_max_threads = omp_get_max_threads();
     omp_set_num_threads(1);
     try {
+      ptr->run_deferred_host_init();
       run_cpufj_lns_ruin_repair<i_t, f_t>(
         ptr,
         [feed_ptr, n](auto& assignment) {
@@ -224,7 +233,12 @@ void local_search_t<i_t, f_t>::start_cpufj_lptopt_scratch_threads(
                                                    default_weights,
                                                    0.,
                                                    context.preempt_heuristic_solver_,
-                                                   &constraint_prop.bounds_update.probing_cache);
+                                                   &constraint_prop.bounds_update.probing_cache,
+                                                   fj_settings_t{},
+                                                   /*randomize=*/false,
+                                                   /*preserve_rng=*/false,
+                                                   /*copy_related_variables=*/true,
+                                                   /*defer_host_init=*/true);
   scratch_cpu_fj_on_lp_opt->log_prefix = "******* scratch on LP optimal: ";
   scratch_cpu_fj_on_lp_opt->improvement_callback =
     [this, &population](f_t obj, const std::vector<f_t>& h_vec, double /*work_units*/) {
@@ -243,7 +257,10 @@ void local_search_t<i_t, f_t>::start_cpufj_lptopt_scratch_threads(
 
 #pragma omp task shared(scratch_cpu_fj_on_lp_opt) \
   priority(CUOPT_DEFAULT_TASK_PRIORITY) default(none) depend(out : *scratch_cpu_fj_on_lp_opt)
-  cpufj_solve(scratch_cpu_fj_on_lp_opt.get());
+  {
+    scratch_cpu_fj_on_lp_opt->run_deferred_host_init();
+    cpufj_solve(scratch_cpu_fj_on_lp_opt.get());
+  }
 }
 
 template <typename i_t, typename f_t>
