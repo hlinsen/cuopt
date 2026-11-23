@@ -1288,6 +1288,17 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // binaries opened by a flip repair, for the retry of the same point only
   std::vector<char> forced_open(n_vars, 0);
   i_t n_forced      = 0;
+  // integers moved by the certificate repair of an infeasible fixed LP (value, NaN = none), fixed
+  // first in the retries of the same point
+  const f_t no_val = std::numeric_limits<f_t>::quiet_NaN();
+  auto has_val     = [](f_t v) { return !std::isnan(v); };
+  std::vector<f_t> cert_val(n_vars, no_val);
+  i_t n_cert = 0;
+  // conflict promotions learned by the patterns of this run (variable, value it was fixed at): the
+  // same closed binaries of infeasible clusters conflict in most patterns, so every pattern starts
+  // with the promotions of the earlier ones instead of rediscovering them one attempt at a time
+  std::vector<std::pair<i_t, f_t>> learned;
+  std::vector<char> is_learned(n_vars, 0);
   f_t last_eval_obj = std::numeric_limits<f_t>::infinity();  // repaired objective of the last eval
   // hysteresis of the mode-0 patterns after a publish: the linked binaries open in the last
   // published point (anchor_open) stay open while their y is at least keep_frac * thr, the
@@ -1308,7 +1319,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     i_t n_kept = 0;  // linked binaries opened by the hysteresis only
     for (auto v : h_int) {
       const i_t k = link_of[v];
-      if (forced_open[v]) {
+      if (has_val(cert_val[v])) {
+        key[v]  = 3;
+        pref[v] = cert_val[v];
+      } else if (forced_open[v]) {
         // fixed after the pattern's own open links (keys above 1), so that a forced binary that
         // conflicts with them is flipped instead of constraining them
         key[v]  = 1;
@@ -1387,7 +1401,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         double best_score = 0, best_dist = 0;
         for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
           const i_t j = h_cols[p];
-          if (forced_open[j]) { continue; }
+          if (forced_open[j] || has_val(cert_val[j])) { continue; }
           const double dj = pref[j] > 0.5 ? -1. : 1.;
           if (bviol(q, bact[q] + h_vals[p] * dj) >= v0) { continue; }
           double score = 0;
@@ -1429,11 +1443,24 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     i_t n_flipped = 0, n_implied = 0, n_conflicts = 0;
     // conflict promotion: a variable whose two values both conflicted is fixed first, at the
     // other end of its domain, in the next attempt (a closed binary of an infeasible cluster is
-    // opened before its neighbours are fixed)
+    // opened before its neighbours are fixed). The learned promotions of earlier patterns come
+    // first (a binary moved by a flip or certificate repair keeps its value); one that conflicts
+    // in this pattern is dropped for this pattern.
     std::vector<i_t> promoted;
-    std::vector<char> is_promoted(n_vars, 0);
-    std::vector<f_t> pref_try  = pref;
-    constexpr int max_attempts = 8;
+    std::vector<char> is_promoted(n_vars, 0), carried(n_vars, 0);
+    std::vector<f_t> pref_try = pref;
+    size_t n_carried          = 0;
+    for (const auto& [v, val] : learned) {
+      if ((forced_open[v] && val < pref[v]) || (has_val(cert_val[v]) && val != cert_val[v])) {
+        continue;
+      }
+      promoted.push_back(v);
+      is_promoted[v] = 1;
+      carried[v]     = 1;
+      pref_try[v]    = val;
+      n_carried++;
+    }
+    constexpr int max_attempts = 16;
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
       std::vector<i_t> ord(promoted);
       for (auto v : ord0) {
@@ -1455,10 +1482,25 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           ck < 0 ? 0. : (double)u[ck],
           ck < 0 ? 0. : (double)scale[ck]);
       }
-      if (n_conflicts == 0 || cv < 0 || is_promoted[cv]) { break; }
+      if (n_conflicts == 0 || cv < 0) { break; }
+      if (is_promoted[cv]) {
+        if (!carried[cv]) { break; }
+        carried[cv]     = 0;
+        is_promoted[cv] = 0;
+        pref_try[cv]    = pref[cv];
+        promoted.erase(std::find(promoted.begin(), promoted.end(), cv));
+        n_carried--;
+        continue;
+      }
       promoted.push_back(cv);
       is_promoted[cv] = 1;
       pref_try[cv]    = pref_try[cv] > h_vlb[cv] ? h_vlb[cv] : h_vub[cv];
+    }
+    for (auto v : promoted) {
+      if (!is_learned[v]) {
+        is_learned[v] = 1;
+        learned.push_back({v, pref_try[v]});
+      }
     }
     std::vector<f_t> pat(h_int.size());
     i_t n_ones = 0, n_pref_ones = 0;
@@ -1472,14 +1514,17 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       if (s == pat) { dup = true; }
     }
     CUOPT_LOG_INFO(
-      "Slope scaling pattern mode=%d thr=%g forced=%d: fix-and-propagate time=%.3fs conflicts=%d "
-      "promoted=%zu flipped=%d implied_off_pref=%d pref_ones=%d ones=%d dup=%d elapsed=%.2f",
+      "Slope scaling pattern mode=%d thr=%g forced=%d cert=%d: fix-and-propagate time=%.3fs "
+      "conflicts=%d promoted=%zu carried=%zu flipped=%d implied_off_pref=%d pref_ones=%d ones=%d "
+      "dup=%d elapsed=%.2f",
       mode,
       (double)thr,
       n_forced,
+      n_cert,
       timer.elapsed_time() - t_fp,
       n_conflicts,
-      promoted.size(),
+      promoted.size() - n_carried,
+      n_carried,
       n_flipped,
       n_implied,
       n_pref_ones,
@@ -1590,7 +1635,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     const f_t rem = remaining();
     // the retry of a flip-repaired point gets less fixed-LP time, and no push or repair when its
     // fixed LP ends at more than twice the first attempt's residual (a failed retry cost ~130 s)
-    const bool retry       = mode == 0 && n_forced > 0;
+    const bool retry       = mode == 0 && (n_forced > 0 || n_cert > 0);
     const f_t rank_tlimit  = std::min<f_t>(retry ? 40. : 60., 0.45 * rem);
     const f_t repair_limit = std::min<f_t>(40., 0.35 * rem);
     // no repair for patterns whose fixed LP is not below the incumbent
@@ -1628,8 +1673,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // violated rows are taken at the pushed point when there is one (the residual of a pattern
     // the fixed LP cannot serve stays on the rows it cannot serve).
     i_t n_new_forced = 0;
-    if (mode == 0 && n_forced == 0 && !ev.published && ev.usable && ev.lp_obj < repair_below &&
-        ev.lp_assignment.size() == (size_t)n_vars) {
+    if (mode == 0 && n_forced == 0 && n_cert == 0 && !ev.published && ev.usable &&
+        !ev.infeasible && ev.lp_obj < repair_below && ev.lp_assignment.size() == (size_t)n_vars) {
       const auto& x =
         ev.pushed_assignment.size() == (size_t)n_vars ? ev.pushed_assignment : ev.lp_assignment;
       std::vector<std::pair<double, i_t>> viol_rows;
@@ -1784,6 +1829,139 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         n_via_flow,
         timer.elapsed_time());
     }
+    // certificate repair of an infeasible fixed LP (a used-link pattern: once): the dual iterate y
+    // of the stopped
+    // PDLP run diverges along a Farkas ray. With z = -A^T y its ray objective D (row terms y_i *
+    // the bound of the side y_i holds, column terms z_j * the bound of the side z_j holds, a
+    // fixed integer at its value) is positive. Moving a fixed integer j by delta changes D by
+    // z_j * delta, so the integers whose move cancels the most of D (closing a binary that
+    // consumes a tight capacity row, opening one that relieves it) are moved (cert_val) for the
+    // retries of the same point, until the cancelled part covers twice D
+    i_t n_new_cert = 0;
+    if ((mode == 0 || n_cert == 0) && ev.infeasible && !ev.published &&
+        ev.dual.size() == (size_t)n_cstrs) {
+      const auto& y = ev.dual;
+      double ymax   = 0;
+      std::vector<std::pair<double, i_t>> by_y;
+      for (i_t r = 0; r < n_cstrs; ++r) {
+        if (!std::isfinite((double)y[r])) { continue; }
+        ymax = std::max(ymax, std::abs((double)y[r]));
+        if (y[r] != 0) { by_y.push_back({std::abs((double)y[r]), r}); }
+      }
+      // the rows carrying the ray (largest |y|): the deficit rows of the pattern
+      std::string rows;
+      {
+        const size_t top = std::min<size_t>(4, by_y.size());
+        std::partial_sort(by_y.begin(),
+                          by_y.begin() + top,
+                          by_y.end(),
+                          [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (size_t t = 0; t < top; ++t) {
+          char buf[64];
+          snprintf(buf, sizeof(buf), " %d:%.3g", (int)by_y[t].second, by_y[t].first / ymax);
+          rows += buf;
+        }
+      }
+      std::vector<double> aty(n_vars, 0.);
+      double D       = 0;
+      i_t n_bad_rows = 0, n_bad_cols = 0;
+      for (i_t r = 0; r < n_cstrs && ymax > 0; ++r) {
+        const double yr = y[r];
+        if (!(std::abs(yr) > 1e-12 * ymax)) { continue; }
+        const double b = yr > 0 ? h_clb[r] : h_cub[r];
+        if (!std::isfinite(b)) {
+          n_bad_rows++;
+          continue;
+        }
+        D += yr * b;
+        for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
+          aty[h_cols[p]] += (double)h_vals[p] * yr;
+        }
+      }
+      double zmax = 0;
+      for (i_t j = 0; j < n_vars; ++j) {
+        zmax = std::max(zmax, std::abs(aty[j]));
+      }
+      struct move_t {
+        double gain;
+        i_t var;
+        f_t target;
+      };
+      std::vector<move_t> moves;
+      for (i_t j = 0; j < n_vars && zmax > 0; ++j) {
+        const double z = -aty[j];
+        if (std::abs(z) <= 1e-12 * zmax) { continue; }
+        if (!is_int[j]) {
+          const double b = z > 0 ? h_vlb[j] : h_vub[j];
+          if (!std::isfinite(b)) {
+            n_bad_cols++;
+            continue;
+          }
+          D += z * b;
+          continue;
+        }
+        const double v = assign[j];
+        D += z * v;
+        const bool unit = h_vub[j] - h_vlb[j] <= 1;
+        if (z < 0 && v < h_vub[j] - 0.5) {
+          const f_t t = unit ? h_vub[j] : (f_t)(v + 1);
+          moves.push_back({-z * ((double)t - v), j, t});
+        } else if (z > 0 && v > h_vlb[j] + 0.5) {
+          const f_t t = unit ? h_vlb[j] : (f_t)(v - 1);
+          moves.push_back({z * (v - (double)t), j, t});
+        }
+      }
+      std::sort(moves.begin(), moves.end(), [](const move_t& a, const move_t& b) {
+        return a.gain > b.gain;
+      });
+      constexpr i_t max_moves = 100;
+      double cancelled        = 0;
+      i_t n_opening           = 0;
+      std::string top;
+      for (const auto& m : moves) {
+        if (n_new_cert >= max_moves ||
+            (n_new_cert > 0 && (D > 0 ? cancelled >= 2 * D : n_new_cert >= 10))) {
+          break;
+        }
+        if (has_val(cert_val[m.var])) { continue; }
+        cert_val[m.var] = m.target;
+        n_new_cert++;
+        cancelled += m.gain;
+        n_opening += m.target > assign[m.var];
+        if (n_new_cert <= 4) {
+          const i_t k = link_of[m.var];
+          char buf[160];
+          snprintf(buf,
+                   sizeof(buf),
+                   " [var=%d %s %g->%g gain/D=%g pref=%g point=%g]",
+                   (int)m.var,
+                   k < 0 ? "int" : (vub[k].pair ? "pair" : "single"),
+                   (double)assign[m.var],
+                   (double)m.target,
+                   D > 0 ? m.gain / D : 0.,
+                   (double)pref[m.var],
+                   (double)cur_x[m.var]);
+          top += buf;
+        }
+      }
+      n_cert += n_new_cert;
+      CUOPT_LOG_INFO(
+        "Slope scaling certificate: mode=%d thr=%g rows(|y|/ymax):%s D=%g ymax=%g bad_rows=%d "
+        "bad_cols=%d candidates=%zu moved=%d opening=%d cancelled/D=%g top:%s elapsed=%.2f",
+        mode,
+        (double)thr,
+        rows.c_str(),
+        D,
+        ymax,
+        (int)n_bad_rows,
+        (int)n_bad_cols,
+        moves.size(),
+        (int)n_new_cert,
+        (int)n_opening,
+        D > 0 ? cancelled / D : 0.,
+        top.c_str(),
+        timer.elapsed_time());
+    }
     if (ev.published && ev.repaired_assignment.size() == (size_t)n_vars &&
         ev.dual.size() == (size_t)n_cstrs) {
       cur_x = ev.repaired_assignment;
@@ -1817,21 +1995,35 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       (int)ev.published,
       repair_below,
       timer.elapsed_time());
-    return n_new_forced > 0 ? 4 : 0;  // 4: flip-repaired, worth evaluating the point again
+    // 4: flip- or certificate-repaired, worth evaluating the point again
+    return n_new_forced > 0 || n_new_cert > 0 ? 4 : 0;
   };
-  // one evaluation of the slope-scaling point at thr: retried once after a flip repair; each new
-  // incumbent is followed by evaluations of its used-link pattern while they gain 0.5% or more
+  // one evaluation of the slope-scaling point at thr: retried after a flip or certificate repair
+  // (twice at most); each new incumbent is followed by evaluations of its used-link pattern while
+  // they gain 0.5% or more
+  auto clear_moves = [&]() {
+    std::fill(forced_open.begin(), forced_open.end(), 0);
+    n_forced = 0;
+    std::fill(cert_val.begin(), cert_val.end(), no_val);
+    n_cert = 0;
+  };
   auto run_eval = [&](f_t thr) -> int {
     last_eval_obj = std::numeric_limits<f_t>::infinity();
-    int r         = eval_pattern(thr, 0);
-    if (r == 4) { r = eval_pattern(thr, 0); }
-    std::fill(forced_open.begin(), forced_open.end(), 0);  // for the retry of this point only
-    n_forced = 0;
+    clear_moves();
+    int r = eval_pattern(thr, 0);
+    for (int retry = 0; r == 4 && retry < 2; ++retry) {
+      r = eval_pattern(thr, 0);
+    }
+    clear_moves();  // for the retries of this point only
     while (r != 3 && std::isfinite(last_eval_obj)) {
       const f_t before = last_eval_obj;
-      const int r1     = eval_pattern(f_t(0), 1);
+      int r1           = eval_pattern(f_t(0), 1);
+      if (r1 == 4) { r1 = eval_pattern(f_t(0), 1); }  // certificate retry of the used-link pattern
+      clear_moves();
       if (r1 == 3) { return 3; }
-      if (r1 != 0 || !(last_eval_obj < before - f_t(0.005) * std::abs(before))) { break; }
+      if (r1 == 1 || r1 == 2 || !(last_eval_obj < before - f_t(0.005) * std::abs(before))) {
+        break;
+      }
     }
     return r == 4 ? 0 : r;
   };
