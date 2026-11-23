@@ -55,16 +55,15 @@ static i_t compact_zero_coefficients(std::vector<f_t>& coefficients,
   return write;
 }
 
+// The part of the climber construction that reads the device problem. Returns the climber's host
+// model, still mutable for complete_fj_cpu_from_problem.
 template <typename i_t, typename f_t>
-void init_fj_cpu_from_problem(fj_cpu_climber_t<i_t, f_t>& fj_cpu,
-                              problem_t<i_t, f_t>& problem,
-                              const raft::handle_t* handle_ptr,
-                              std::vector<f_t> start_assignment,
-                              const std::vector<f_t>& left_weights,
-                              const std::vector<f_t>& right_weights,
-                              f_t objective_weight,
-                              const probing_cache_t<i_t, f_t>* probing_cache,
-                              bool copy_related_variables = true)
+std::shared_ptr<fj_cpu_problem_t<i_t, f_t>> download_fj_cpu_problem(
+  fj_cpu_climber_t<i_t, f_t>& fj_cpu,
+  problem_t<i_t, f_t>& problem,
+  const raft::handle_t* handle_ptr,
+  const probing_cache_t<i_t, f_t>* probing_cache,
+  bool copy_related_variables)
 {
   auto problem_data                      = std::make_shared<fj_cpu_problem_t<i_t, f_t>>();
   fj_cpu.problem                         = problem_data;
@@ -107,15 +106,30 @@ void init_fj_cpu_from_problem(fj_cpu_climber_t<i_t, f_t>& fj_cpu,
   problem_data->probing_cache          = probing_cache;
   problem_data->h_original_ids         = problem.original_ids;
   problem_data->h_reverse_original_ids = problem.reverse_original_ids;
+  return problem_data;
+}
 
+// The host-only rest of the climber construction: needs no device access, so it can run on the
+// climber's own thread once download_fj_cpu_problem has returned.
+template <typename i_t, typename f_t>
+void complete_fj_cpu_from_problem(fj_cpu_climber_t<i_t, f_t>& fj_cpu,
+                                  fj_cpu_problem_t<i_t, f_t>& problem_data,
+                                  i_t n_integer_vars,
+                                  std::vector<f_t> start_assignment,
+                                  const std::vector<f_t>& left_weights,
+                                  const std::vector<f_t>& right_weights,
+                                  f_t objective_weight)
+{
+  const i_t n_variables   = problem_data.n_variables;
+  const i_t n_constraints = problem_data.n_constraints;
   fj_cpu.h_initial_left_weights  = left_weights;
   fj_cpu.h_initial_right_weights = right_weights;
   fj_cpu.max_weight              = f_t{1};
   fj_cpu.h_objective_weight      = objective_weight;
-  if (start_assignment.empty()) { start_assignment.resize(problem.n_variables, f_t{0}); }
-  cuopt_assert(start_assignment.size() == static_cast<size_t>(problem.n_variables),
+  if (start_assignment.empty()) { start_assignment.resize(n_variables, f_t{0}); }
+  cuopt_assert(start_assignment.size() == static_cast<size_t>(n_variables),
                "start assignment must cover every variable");
-  for (i_t variable = 0; variable < problem.n_variables; ++variable) {
+  for (i_t variable = 0; variable < n_variables; ++variable) {
     const auto bounds = fj_cpu.h_var_bounds[variable].get();
     f_t lower         = get_lower(bounds);
     f_t upper         = get_upper(bounds);
@@ -131,21 +145,43 @@ void init_fj_cpu_from_problem(fj_cpu_climber_t<i_t, f_t>& fj_cpu,
   }
   fj_cpu.h_assignment      = start_assignment;
   fj_cpu.h_best_assignment = std::move(start_assignment);
-  fj_cpu.h_lhs.resize(problem.n_constraints);
-  fj_cpu.h_lhs_sumcomp.resize(problem.n_constraints, f_t{0});
-  fj_cpu.h_tabu_nodec_until.resize(problem.n_variables, 0);
-  fj_cpu.h_tabu_noinc_until.resize(problem.n_variables, 0);
-  fj_cpu.h_tabu_lastdec.resize(problem.n_variables, 0);
-  fj_cpu.h_tabu_lastinc.resize(problem.n_variables, 0);
+  fj_cpu.h_lhs.resize(n_constraints);
+  fj_cpu.h_lhs_sumcomp.resize(n_constraints, f_t{0});
+  fj_cpu.h_tabu_nodec_until.resize(n_variables, 0);
+  fj_cpu.h_tabu_noinc_until.resize(n_variables, 0);
+  fj_cpu.h_tabu_lastdec.resize(n_variables, 0);
+  fj_cpu.h_tabu_lastinc.resize(n_variables, 0);
   fj_cpu.iterations = 0;
 
   finalize_fj_cpu_host_initialization(fj_cpu,
-                                      *problem_data,
-                                      problem.n_variables,
-                                      problem.n_constraints,
-                                      problem.n_integer_vars,
-                                      problem.nnz,
-                                      problem.tolerances);
+                                      problem_data,
+                                      n_variables,
+                                      n_constraints,
+                                      n_integer_vars,
+                                      problem_data.nnz,
+                                      problem_data.tolerances);
+}
+
+template <typename i_t, typename f_t>
+void init_fj_cpu_from_problem(fj_cpu_climber_t<i_t, f_t>& fj_cpu,
+                              problem_t<i_t, f_t>& problem,
+                              const raft::handle_t* handle_ptr,
+                              std::vector<f_t> start_assignment,
+                              const std::vector<f_t>& left_weights,
+                              const std::vector<f_t>& right_weights,
+                              f_t objective_weight,
+                              const probing_cache_t<i_t, f_t>* probing_cache,
+                              bool copy_related_variables = true)
+{
+  auto problem_data =
+    download_fj_cpu_problem(fj_cpu, problem, handle_ptr, probing_cache, copy_related_variables);
+  complete_fj_cpu_from_problem(fj_cpu,
+                               *problem_data,
+                               problem.n_integer_vars,
+                               std::move(start_assignment),
+                               left_weights,
+                               right_weights,
+                               objective_weight);
 }
 
 template <typename i_t, typename f_t>
@@ -284,7 +320,8 @@ std::unique_ptr<fj_cpu_climber_t<i_t, f_t>> fj_t<i_t, f_t>::create_cpu_climber(
   fj_settings_t settings,
   bool randomize_params,
   bool preserve_rng,
-  bool copy_related_variables)
+  bool copy_related_variables,
+  bool defer_host_init)
 {
   raft::common::nvtx::range scope("fj_cpu_init");
 
@@ -292,15 +329,35 @@ std::unique_ptr<fj_cpu_climber_t<i_t, f_t>> fj_t<i_t, f_t>::create_cpu_climber(
   auto sol_copy = solution;
   clamp_within_var_bounds(sol_copy.assignment, solution.problem_ptr, solution.handle_ptr);
 
-  init_fj_cpu_from_problem(*fj_cpu,
-                           *solution.problem_ptr,
-                           solution.handle_ptr,
-                           sol_copy.get_host_assignment(),
-                           left_weights,
-                           right_weights,
-                           objective_weight,
-                           probing_cache,
-                           copy_related_variables);
+  if (defer_host_init) {
+    auto problem_data = download_fj_cpu_problem(
+      *fj_cpu, *solution.problem_ptr, solution.handle_ptr, probing_cache, copy_related_variables);
+    fj_cpu->deferred_host_init = [climber        = fj_cpu.get(),
+                                  problem_data   = std::move(problem_data),
+                                  n_integer_vars = solution.problem_ptr->n_integer_vars,
+                                  start          = sol_copy.get_host_assignment(),
+                                  left_weights,
+                                  right_weights,
+                                  objective_weight]() mutable {
+      complete_fj_cpu_from_problem(*climber,
+                                   *problem_data,
+                                   n_integer_vars,
+                                   std::move(start),
+                                   left_weights,
+                                   right_weights,
+                                   objective_weight);
+    };
+  } else {
+    init_fj_cpu_from_problem(*fj_cpu,
+                             *solution.problem_ptr,
+                             solution.handle_ptr,
+                             sol_copy.get_host_assignment(),
+                             left_weights,
+                             right_weights,
+                             objective_weight,
+                             probing_cache,
+                             copy_related_variables);
+  }
   fj_cpu->settings = settings;
   // LNS initialization consumes draws for both parameter randomization and the seed.
   // Use a copy so adding that worker does not shift later feasibility-search draws,
@@ -344,6 +401,7 @@ template std::unique_ptr<fj_cpu_climber_t<int, float>> fj_t<int, float>::create_
   fj_settings_t,
   bool,
   bool,
+  bool,
   bool);
 #endif
 
@@ -371,6 +429,7 @@ template std::unique_ptr<fj_cpu_climber_t<int, double>> fj_t<int, double>::creat
   std::atomic<bool>&,
   const probing_cache_t<int, double>*,
   fj_settings_t,
+  bool,
   bool,
   bool,
   bool);

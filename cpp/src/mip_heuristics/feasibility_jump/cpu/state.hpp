@@ -470,6 +470,16 @@ struct fj_cpu_climber_t : fj_tabu_t<i_t>,
   fj_cpu_climber_t(fj_cpu_climber_t<i_t, f_t>&& other)                      = default;
   fj_cpu_climber_t<i_t, f_t>& operator=(fj_cpu_climber_t<i_t, f_t>&& other) = default;
 
+  // host-side construction left by create_cpu_climber(defer_host_init); run before any use
+  std::function<void()> deferred_host_init{nullptr};
+  void run_deferred_host_init()
+  {
+    if (!deferred_host_init) { return; }
+    auto init          = std::move(deferred_host_init);
+    deferred_host_init = nullptr;
+    init();
+  }
+
   void release_setup_structures()
   {
     this->h_initial_left_weights.clear();

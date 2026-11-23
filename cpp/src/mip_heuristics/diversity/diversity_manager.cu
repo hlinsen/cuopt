@@ -1128,7 +1128,9 @@ slope_links_t<i_t, f_t> detect_slope_links(i_t n_vars,
 template <typename i_t, typename f_t>
 bool diversity_manager_t<i_t, f_t>::has_slope_scaling_links()
 {
+  if (slope_links_found.has_value()) { return *slope_links_found; }
   if (problem_ptr->n_integer_vars == 0 || problem_ptr->n_integer_vars == problem_ptr->n_variables) {
+    slope_links_found = false;
     return false;
   }
   auto* handle_ptr    = problem_ptr->handle_ptr;
@@ -1144,17 +1146,18 @@ bool diversity_manager_t<i_t, f_t>::has_slope_scaling_links()
   for (auto v : h_int) {
     is_int[v] = 1;
   }
-  return !detect_slope_links<i_t, f_t>(problem_ptr->n_variables,
-                                       problem_ptr->n_constraints,
-                                       h_offsets,
-                                       h_cols,
-                                       h_vals,
-                                       h_clb,
-                                       h_cub,
-                                       h_vlb,
-                                       h_vub,
-                                       is_int)
-            .vub.empty();
+  slope_links_found = !detect_slope_links<i_t, f_t>(problem_ptr->n_variables,
+                                                    problem_ptr->n_constraints,
+                                                    h_offsets,
+                                                    h_cols,
+                                                    h_vals,
+                                                    h_clb,
+                                                    h_cub,
+                                                    h_vlb,
+                                                    h_vub,
+                                                    is_int)
+                         .vub.empty();
+  return *slope_links_found;
 }
 
 template <typename i_t, typename f_t>
@@ -4083,8 +4086,14 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   if (context.settings.heuristic_params.fix_propagate != 0) {
     ls.lp_point_fix_propagate = [this]() {
       CUOPT_LOG_INFO("Heuristics setup: LP point reached elapsed=%.2f", timer.elapsed_time());
-      run_lp_guided_fix_propagate();
-      CUOPT_LOG_INFO("Heuristics setup: LP-guided FPC done elapsed=%.2f", timer.elapsed_time());
+      // With slope scaling links, the slope scaling patterns supersede the single LP-guided one,
+      // which would only delay their first round.
+      if (!has_slope_scaling_links()) {
+        run_lp_guided_fix_propagate();
+        CUOPT_LOG_INFO("Heuristics setup: LP-guided FPC done elapsed=%.2f", timer.elapsed_time());
+      } else {
+        CUOPT_LOG_INFO("LP-guided fix-and-propagate skipped: slope scaling links found");
+      }
       population.add_external_solutions_to_population();
       CUOPT_LOG_INFO("Heuristics setup: external solutions added elapsed=%.2f",
                      timer.elapsed_time());
