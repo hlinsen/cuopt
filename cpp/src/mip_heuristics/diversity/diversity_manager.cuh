@@ -92,10 +92,12 @@ class diversity_manager_t {
     double time{0};
     std::vector<f_t> primal, dual;   // phase-A (PID) fixed-LP primal/dual
     std::vector<f_t> lp_assignment;  // full assignment at the phase-A LP point (integers fixed)
+    std::vector<f_t> pushed_assignment;  // full assignment after the pushes (empty: no push)
     std::vector<f_t> repaired_assignment;
     f_t pushed_lp_obj{std::numeric_limits<f_t>::infinity()};
     f_t pushed_l2_primal_res{-1};
     double push_time{0};
+    bool aborted{false};  // no push and repair: the phase-A residual ended above abort_above_res
   };
   pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
                                     f_t tol,
@@ -106,7 +108,8 @@ class diversity_manager_t {
                                     f_t repair_tlimit,
                                     const char* origin,
                                     f_t repair_below  = std::numeric_limits<f_t>::infinity(),
-                                    f_t max_push_time = 11.);
+                                    f_t max_push_time = 11.,
+                                    f_t abort_above_res = std::numeric_limits<f_t>::infinity());
   // strict host-side feasibility check of a full assignment against the model rows and bounds
   // (compensated activities, validator-style relative term, half the absolute tolerance) so
   // that published LP-derived points keep a margin over the external validator
