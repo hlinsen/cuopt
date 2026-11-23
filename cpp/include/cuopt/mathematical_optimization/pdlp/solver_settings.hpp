@@ -387,6 +387,15 @@ class pdlp_solver_settings_t {
    * iterate whose objectives no longer move ends like one at the time limit, only earlier).
    */
   i_t stall_stop_checks{0};
+  /**
+   * @brief Non-batch, single-GPU only: stop with TimeLimit once the primal weight has fallen
+   * below this fraction of its value at the first check (0: off).
+   *
+   * Checked every 1000 iterations. A primal weight that collapses by orders of magnitude leaves
+   * the dual step near zero, so the dual no longer corrects the primal infeasibility; for callers
+   * that repair the primal feasibility of the returned iterate themselves.
+   */
+  f_t primal_weight_collapse_ratio{0};
   presolver_t presolver{presolver_t::Default};
   bool dual_postsolve{true};
   // Concurrent LP/MIP: 1–2 GPUs. Multi-GPU PDLP (method=PDLP): up to the visible device

@@ -284,6 +284,8 @@ class pdlp_solver_t {
   i_t stall_count_{0};
   f_t stall_primal_{std::numeric_limits<f_t>::quiet_NaN()};
   f_t stall_dual_{std::numeric_limits<f_t>::quiet_NaN()};
+  // settings_.primal_weight_collapse_ratio: the primal weight at the first check
+  f_t collapse_start_weight_{std::numeric_limits<f_t>::quiet_NaN()};
 
   // Initial solution
   rmm::device_uvector<f_t> initial_primal_;
