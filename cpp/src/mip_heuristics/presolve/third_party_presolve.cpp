@@ -947,20 +947,9 @@ third_party_presolve_status_t third_party_presolve_t<i_t, f_t>::apply_papilo(
                           original_n_vars,
                           max_badgesize,
                           reduction_allowlist_);
-  // large models, where a Papilo round costs seconds and Papilo takes much of the run
+  // round and per-presolver statistics on large models, where a Papilo round costs seconds
   constexpr i_t papilo_large_nnz = 10000000;
-  const bool papilo_large        = original_nnz >= papilo_large_nnz;
-  if (papilo_large && category == problem_category_t::MIP) {
-    // a round counts as unsuccessful (the next round type, or the end) while its reductions stay
-    // below 0.5% of the active columns, rows and nonzeros instead of Papilo's 0.08%: the long
-    // tails of small medium and exhaustive rounds end sooner
-    constexpr double large_abort_factor               = 5e-3;
-    papilo_presolver.getPresolveOptions().abortfacfast   = large_abort_factor;
-    papilo_presolver.getPresolveOptions().abortfacmedium = large_abort_factor;
-    papilo_presolver.getPresolveOptions().abortfac       = large_abort_factor;
-  }
-  // round and per-presolver statistics
-  const bool papilo_stats = papilo_large;
+  const bool papilo_stats        = original_nnz >= papilo_large_nnz;
   papilo_presolver.setVerbosityLevel(papilo_stats ? papilo::VerbosityLevel::kInfo
                                                   : papilo::VerbosityLevel::kQuiet);
   CUOPT_LOG_DEBUG(
