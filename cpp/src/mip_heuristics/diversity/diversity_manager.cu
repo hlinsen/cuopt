@@ -1173,6 +1173,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // others need thr; later patterns are then moves from the incumbent's design (closing every
   // used link below thr made most of them LP-infeasible or conflicting)
   std::vector<char> anchor_open(n_vars, 0);
+  std::vector<f_t> anchor_u(L, 0);  // link row usage at the last published point
   constexpr f_t keep_frac = 0.5;
   // phase-A l2 primal residual of the last mode-0 first attempt (bound for its retry)
   f_t first_try_res = std::numeric_limits<f_t>::infinity();
@@ -1442,6 +1443,36 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         flow_used > 0 ? flow_closed / flow_used : 0.,
         n_kept,
         n_pair_sum);
+      if (published) {
+        // the pattern against the last published point: its open link rows the pattern closes
+        // (and their share of its flow), and link rows it opens that the published point closes
+        i_t n_pub_rows = 0, n_pub_closed = 0, n_new_rows = 0;
+        double pub_flow = 0, pub_flow_closed = 0;
+        for (size_t k = 0; k < L; ++k) {
+          const i_t p = pair_partner[k];
+          if (p >= 0 && p < (i_t)k) { continue; }
+          const i_t v = vub[k].var, w = p >= 0 ? vub[p].var : -1;
+          const bool pub_open = anchor_open[v] || (w >= 0 && anchor_open[w]);
+          const bool pat_open = fp_host.col_lb[v] > 0.5 || (w >= 0 && fp_host.col_lb[w] > 0.5);
+          if (pub_open) {
+            n_pub_rows++;
+            pub_flow += std::max<f_t>(anchor_u[k], 0);
+            if (!pat_open) {
+              n_pub_closed++;
+              pub_flow_closed += std::max<f_t>(anchor_u[k], 0);
+            }
+          } else if (pat_open) {
+            n_new_rows++;
+          }
+        }
+        CUOPT_LOG_INFO(
+          "Slope scaling pattern vs published: published_open_rows=%d closed=%d "
+          "closed_flow_share=%.3f opened_rows=%d",
+          n_pub_rows,
+          n_pub_closed,
+          pub_flow > 0 ? pub_flow_closed / pub_flow : 0.,
+          n_new_rows);
+      }
       // mixed coupling rows the pattern's binaries overload at the point's flows (before the
       // fixed LP moves the flows): rounding a linked binary up takes more of the row
       i_t n_over = 0;
@@ -1689,6 +1720,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         is_open[k]              = u[k] > open_tol(k);
         prev_open[k]            = is_open[k];
         anchor_open[vub[k].var] = cur_x[vub[k].var] > 0.5;
+        anchor_u[k]             = u[k];
       }
       CUOPT_LOG_INFO("Slope scaling anchored on the published point obj=%g elapsed=%.2f",
                      ev.repaired_obj,
