@@ -708,6 +708,17 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
         papilo_threads,
         papilo_budget.papilo_max_rounds,
         papilo_budget.papilo_max_badgesize);
+      // The early heuristics only fill Papilo's time. Stop them before the reduced problem is set
+      // up on the device, which a running GPU FJ slows down.
+      if (early_cpufj) { early_cpufj->request_stop(); }
+      if (early_gpufj) {
+        early_gpufj->stop();
+        if (early_gpufj->solution_found()) {
+          CUOPT_LOG_DEBUG("Early GPU FJ found incumbent with objective %.6e during presolve",
+                          early_gpufj->get_best_objective());
+        }
+        early_gpufj.reset();
+      }
 
       if (result.status == mip::third_party_presolve_status_t::INFEASIBLE) {
         return mip_solution_t<i_t, f_t>(mip_termination_status_t::Infeasible,

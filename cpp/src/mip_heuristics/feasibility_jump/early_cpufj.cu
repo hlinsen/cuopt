@@ -68,41 +68,19 @@ void early_cpufj_t<i_t, f_t>::start(int n_lanes,
                  incumbent_assignment.size() == (size_t)this->problem_ptr_->get_n_variables(),
                "incumbent assignment size mismatch");
   cuopt::splitmix64_t seed_rng(seed_);
-  const int64_t base_seed = seed_rng.next_i64();
-  climbers_.resize(n_lanes);
-
-  auto report_incumbent = [this](f_t solver_obj, const std::vector<f_t>& assignment, double) {
-    std::lock_guard<std::mutex> guard(incumbent_mutex_);
-    this->try_update_best(solver_obj, assignment);
-  };
-
-  // Lane 0 builds the host problem representation and every other lane copies it. All of it
-  // finishes before the first task is posted, so no lane reads a template another lane is running
-  // on.
+  lane_base_seed_ = seed_rng.next_i64();
+  lane_seeds_.resize(n_lanes);
   for (int k = 0; k < n_lanes; ++k) {
-    fj_settings_t settings;
-    settings.seed = seed_rng.next_i32();
-    if (k == 0) {
-      climbers_[0] = init_fj_cpu_from_optimization_problem(
-        *this->problem_ptr_, tolerances_, preemption_flag_, settings);
-    } else {
-      climbers_[k] = init_fj_cpu_clone(*climbers_[0], preemption_flag_, settings);
-    }
-    climbers_[k]->low_latency   = low_latency;
-    const bool incumbent_seeded = !incumbent_assignment.empty() && (n_lanes == 1 || k % 2 == 1);
-    if (incumbent_seeded) {
-      climbers_[k]->h_assignment = incumbent_assignment;
-      recompute_lhs(*climbers_[k]);
-      climbers_[k]->h_best_assignment = climbers_[k]->h_assignment;
-    }
-    apply_lane_diversification<i_t, f_t>(*climbers_[k], k, base_seed, !incumbent_seeded);
-    climbers_[k]->log_prefix           = "[Early CPUFJ " + std::to_string(k) + "] ";
-    climbers_[k]->improvement_callback = report_incumbent;
+    lane_seeds_[k] = seed_rng.next_i32();
   }
-
-  auto shared = std::make_shared<fj_cpu_shared_incumbent_t<i_t, f_t>>();
-  for (int k = 0; k < n_lanes; ++k)
-    climbers_[k]->shared_incumbent = shared;
+  lane_low_latency_ = low_latency;
+  lane_incumbent_   = incumbent_assignment;
+  stop_requested_   = false;
+  climbers_.resize(n_lanes);
+  // Only this download reads the caller's problem, which the caller is free to modify (scale,
+  // presolve) once start returns. The host-side build of the lanes runs in the background.
+  pending_model_ = std::make_unique<fj_cpu_host_model_t<i_t, f_t>>(
+    download_fj_cpu_host_model(*this->problem_ptr_));
 
   if (!threaded)
     CUOPT_LOG_INFO("Early CPUFJ budget: %d feasibility workers within %d OpenMP threads",
@@ -110,15 +88,79 @@ void early_cpufj_t<i_t, f_t>::start(int n_lanes,
                    omp_get_num_threads());
   CUOPT_LOG_DEBUG("Launching %d early CPUFJ %s", n_lanes, threaded ? "thread" : "tasks");
   if (threaded) {
-    auto* climber = climbers_[0].get();
-    worker_       = std::thread([climber] { cpufj_solve(climber); });
+    worker_ = std::thread([this] { build_and_run_lanes(false); });
     return;
   }
-  for (int k = 0; k < n_lanes; ++k) {
-    auto* climber = climbers_[k].get();
-#pragma omp task firstprivate(climber) priority(CUOPT_DEFAULT_TASK_PRIORITY) \
-  depend(out : *climber) default(none)
-    cpufj_solve(climber);
+  auto* self  = this;
+  auto* token = &builder_token_;
+#pragma omp task firstprivate(self) priority(CUOPT_DEFAULT_TASK_PRIORITY) depend(out : *token) \
+  default(none)
+  {
+    self->build_and_run_lanes(true);
+#pragma omp taskwait  // the lanes are children of this task
+  }
+}
+
+// Lane 0 builds the host problem representation and every other lane copies it. A lane starts as
+// soon as it is copied; lane 0 starts last, on this thread, so no copy reads a template that is
+// already searching.
+template <typename i_t, typename f_t>
+void early_cpufj_t<i_t, f_t>::build_and_run_lanes(bool post_lane_tasks)
+{
+  const int n_lanes     = (int)climbers_.size();
+  auto report_incumbent = [this](f_t solver_obj, const std::vector<f_t>& assignment, double) {
+    std::lock_guard<std::mutex> guard(incumbent_mutex_);
+    this->try_update_best(solver_obj, assignment);
+  };
+  auto shared = std::make_shared<fj_cpu_shared_incumbent_t<i_t, f_t>>();
+
+  fj_cpu_climber_t<i_t, f_t>* lane0 = nullptr;
+  for (int k = 0; k < n_lanes && !preemption_flag_.load(); ++k) {
+    fj_settings_t settings;
+    settings.seed = lane_seeds_[k];
+    auto climber  = k == 0 ? init_fj_cpu_from_host_model(
+                              std::move(*pending_model_), tolerances_, preemption_flag_, settings)
+                           : init_fj_cpu_clone(*lane0, preemption_flag_, settings);
+    climber->low_latency        = lane_low_latency_;
+    const bool incumbent_seeded = !lane_incumbent_.empty() && (n_lanes == 1 || k % 2 == 1);
+    if (incumbent_seeded) {
+      climber->h_assignment = lane_incumbent_;
+      recompute_lhs(*climber);
+      climber->h_best_assignment = climber->h_assignment;
+    }
+    apply_lane_diversification<i_t, f_t>(*climber, k, lane_base_seed_, !incumbent_seeded);
+    climber->log_prefix           = "[Early CPUFJ " + std::to_string(k) + "] ";
+    climber->improvement_callback = report_incumbent;
+    climber->shared_incumbent     = shared;
+    auto* lane                    = climber.get();
+    {
+      std::lock_guard<std::mutex> guard(climbers_mutex_);
+      if (stop_requested_) { lane->halted = true; }
+      climbers_[k] = std::move(climber);
+    }
+    if (k == 0) {
+      lane0 = lane;
+      pending_model_.reset();
+    } else if (post_lane_tasks) {
+#pragma omp task firstprivate(lane) priority(CUOPT_DEFAULT_TASK_PRIORITY) default(none)
+      cpufj_solve(lane);
+    }
+  }
+  if (lane0 != nullptr && !preemption_flag_.load()) { cpufj_solve(lane0); }
+}
+
+template <typename i_t, typename f_t>
+void early_cpufj_t<i_t, f_t>::request_stop()
+{
+  if (climbers_.empty()) { return; }
+
+  preemption_flag_.store(true);
+
+  // Lanes still being built see the request when they are installed.
+  std::lock_guard<std::mutex> guard(climbers_mutex_);
+  stop_requested_ = true;
+  for (auto& climber : climbers_) {
+    if (climber) { climber->halted = true; }
   }
 }
 
@@ -127,24 +169,19 @@ void early_cpufj_t<i_t, f_t>::stop()
 {
   if (climbers_.empty()) { return; }
 
-  preemption_flag_.store(true);
-
-  // Every lane is told to stop before any wait, otherwise the first wait blocks on a lane that has
-  // not been asked to exit yet.
-  for (auto& climber : climbers_) {
-    climber->halted = true;
-  }
+  // Every lane is told to stop before the wait.
+  request_stop();
   if (worker_.joinable()) {
     worker_.join();
   } else {
-    for (size_t k = 0; k < climbers_.size(); ++k) {
-#pragma omp taskwait depend(in : *climbers_[k])  // Wait for each early CPUFJ task to finish
-    }
+    auto* token = &builder_token_;
+#pragma omp taskwait depend(in : *token)  // the builder task waits for its lanes
   }
+  pending_model_.reset();
 
   [[maybe_unused]] i_t total_iterations = 0;
   for (const auto& climber : climbers_) {
-    total_iterations += climber->iterations;
+    if (climber) { total_iterations += climber->iterations; }
   }
 
   CUOPT_LOG_DEBUG("[Early CPUFJ] Stopped after %d iterations over %d climbers, solution_found=%d",

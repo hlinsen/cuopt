@@ -1356,9 +1356,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   constexpr int eval_every       = 1;
   const f_t eval_thresholds[]    = {f_t(0.7), f_t(0.5), f_t(0.3)};
   int n_attempts                 = 0;
-  // the round LPs hold the GPU alone (the cut loop yields), so half the former cap gives them as
-  // many iterations as before and twice the rounds and pattern attempts
-  const double round_cap = std::min<double>(30., 0.075 * budget);
+  const double round_cap         = std::min<double>(60., 0.15 * budget);
   const f_t eval_reserve         = 0.3 * budget;
   std::vector<var_t> h_types(n_vars, var_t::CONTINUOUS);
   int rounds_done = 0;

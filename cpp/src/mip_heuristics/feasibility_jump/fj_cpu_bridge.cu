@@ -6,6 +6,7 @@
 /* clang-format on */
 
 #include "feasibility_jump.cuh"
+#include "fj_cpu.cuh"
 
 #include "cpu/climber.hpp"
 
@@ -148,61 +149,77 @@ void init_fj_cpu_from_problem(fj_cpu_climber_t<i_t, f_t>& fj_cpu,
 }
 
 template <typename i_t, typename f_t>
-std::unique_ptr<fj_cpu_climber_t<i_t, f_t>> init_fj_cpu_from_optimization_problem(
-  const optimization_problem_t<i_t, f_t>& problem,
+fj_cpu_host_model_t<i_t, f_t> download_fj_cpu_host_model(
+  const optimization_problem_t<i_t, f_t>& problem)
+{
+  raft::common::nvtx::range scope("download_fj_cpu_host_model");
+  auto stream = problem.get_handle_ptr()->get_stream();
+
+  const double download_start = tic();
+  fj_cpu_host_model_t<i_t, f_t> model;
+  model.n_variables              = problem.get_n_variables();
+  model.n_constraints            = problem.get_n_constraints();
+  model.nnz                      = problem.get_nnz();
+  model.maximize                 = problem.get_sense();
+  model.objective_scaling_factor = problem.get_objective_scaling_factor();
+  model.objective_offset         = problem.get_objective_offset();
+  const auto& device_coefficients = problem.get_constraint_matrix_values();
+  model.coefficients              = cuopt::host_copy_async(device_coefficients, stream);
+  model.variables = cuopt::host_copy_async(problem.get_constraint_matrix_indices(), stream);
+  model.offsets   = cuopt::host_copy_async(problem.get_constraint_matrix_offsets(), stream);
+  model.objective_coefficients =
+    cuopt::host_copy_async(problem.get_objective_coefficients(), stream);
+  model.variable_lower_bounds =
+    cuopt::host_copy_async(problem.get_variable_lower_bounds(), stream);
+  model.variable_upper_bounds =
+    cuopt::host_copy_async(problem.get_variable_upper_bounds(), stream);
+  model.constraint_lower_bounds =
+    cuopt::host_copy_async(problem.get_constraint_lower_bounds(), stream);
+  model.constraint_upper_bounds =
+    cuopt::host_copy_async(problem.get_constraint_upper_bounds(), stream);
+  model.constraint_bounds = cuopt::host_copy_async(problem.get_constraint_bounds(), stream);
+  model.row_types         = cuopt::host_copy_async(problem.get_row_types(), stream);
+  model.variable_types    = cuopt::host_copy_async(problem.get_variable_types(), stream);
+  model.has_zero_coefficients = thrust::find(problem.get_handle_ptr()->get_thrust_policy(),
+                                             device_coefficients.begin(),
+                                             device_coefficients.end(),
+                                             f_t{0}) != device_coefficients.end();
+  problem.get_handle_ptr()->sync_stream();
+  CUOPT_LOG_DEBUG(
+    "CPUFJ model download from device: %.4fs for %d nnz", toc(download_start), problem.get_nnz());
+  return model;
+}
+
+template <typename i_t, typename f_t>
+std::unique_ptr<fj_cpu_climber_t<i_t, f_t>> init_fj_cpu_from_host_model(
+  fj_cpu_host_model_t<i_t, f_t>&& model,
   const typename mip_solver_settings_t<i_t, f_t>::tolerances_t& tolerances,
   std::atomic<bool>& preemption_flag,
   fj_settings_t settings)
 {
-  raft::common::nvtx::range scope("init_fj_cpu_from_optimization_problem");
-  auto stream = problem.get_handle_ptr()->get_stream();
-
-  const double download_start     = tic();
-  const auto& device_coefficients = problem.get_constraint_matrix_values();
-  auto coefficients               = cuopt::host_copy_async(device_coefficients, stream);
-  auto variables = cuopt::host_copy_async(problem.get_constraint_matrix_indices(), stream);
-  auto offsets   = cuopt::host_copy_async(problem.get_constraint_matrix_offsets(), stream);
-  auto objective_coefficients =
-    cuopt::host_copy_async(problem.get_objective_coefficients(), stream);
-  auto variable_lower_bounds = cuopt::host_copy_async(problem.get_variable_lower_bounds(), stream);
-  auto variable_upper_bounds = cuopt::host_copy_async(problem.get_variable_upper_bounds(), stream);
-  auto constraint_lower_bounds =
-    cuopt::host_copy_async(problem.get_constraint_lower_bounds(), stream);
-  auto constraint_upper_bounds =
-    cuopt::host_copy_async(problem.get_constraint_upper_bounds(), stream);
-  auto constraint_bounds = cuopt::host_copy_async(problem.get_constraint_bounds(), stream);
-  auto row_types         = cuopt::host_copy_async(problem.get_row_types(), stream);
-  auto variable_types    = cuopt::host_copy_async(problem.get_variable_types(), stream);
-  const bool has_zero_coefficients = thrust::find(problem.get_handle_ptr()->get_thrust_policy(),
-                                                  device_coefficients.begin(),
-                                                  device_coefficients.end(),
-                                                  f_t{0}) != device_coefficients.end();
-  problem.get_handle_ptr()->sync_stream();
-  CUOPT_LOG_DEBUG(
-    "CPUFJ model download from device: %.4fs for %d nnz", toc(download_start), problem.get_nnz());
-
-  i_t nnz = problem.get_nnz();
-  if (has_zero_coefficients) {
-    nnz = compact_zero_coefficients<i_t, f_t>(coefficients, variables, offsets);
+  raft::common::nvtx::range scope("init_fj_cpu_from_downloaded_model");
+  i_t nnz = model.nnz;
+  if (model.has_zero_coefficients) {
+    nnz = compact_zero_coefficients<i_t, f_t>(model.coefficients, model.variables, model.offsets);
   }
 
-  return init_fj_cpu_from_host_model<i_t, f_t>(problem.get_n_variables(),
-                                               problem.get_n_constraints(),
+  return init_fj_cpu_from_host_model<i_t, f_t>(model.n_variables,
+                                               model.n_constraints,
                                                nnz,
-                                               problem.get_sense(),
-                                               problem.get_objective_scaling_factor(),
-                                               problem.get_objective_offset(),
-                                               std::move(coefficients),
-                                               std::move(variables),
-                                               std::move(offsets),
-                                               std::move(objective_coefficients),
-                                               std::move(variable_lower_bounds),
-                                               std::move(variable_upper_bounds),
-                                               std::move(constraint_lower_bounds),
-                                               std::move(constraint_upper_bounds),
-                                               std::move(constraint_bounds),
-                                               std::move(row_types),
-                                               std::move(variable_types),
+                                               model.maximize,
+                                               model.objective_scaling_factor,
+                                               model.objective_offset,
+                                               std::move(model.coefficients),
+                                               std::move(model.variables),
+                                               std::move(model.offsets),
+                                               std::move(model.objective_coefficients),
+                                               std::move(model.variable_lower_bounds),
+                                               std::move(model.variable_upper_bounds),
+                                               std::move(model.constraint_lower_bounds),
+                                               std::move(model.constraint_upper_bounds),
+                                               std::move(model.constraint_bounds),
+                                               std::move(model.row_types),
+                                               std::move(model.variable_types),
                                                tolerances,
                                                preemption_flag,
                                                settings);
@@ -302,8 +319,10 @@ std::unique_ptr<fj_cpu_climber_t<i_t, f_t>> fj_t<i_t, f_t>::create_cpu_climber(
 }
 
 #if MIP_INSTANTIATE_FLOAT
-template std::unique_ptr<fj_cpu_climber_t<int, float>> init_fj_cpu_from_optimization_problem(
-  const optimization_problem_t<int, float>&,
+template fj_cpu_host_model_t<int, float> download_fj_cpu_host_model(
+  const optimization_problem_t<int, float>&);
+template std::unique_ptr<fj_cpu_climber_t<int, float>> init_fj_cpu_from_host_model(
+  fj_cpu_host_model_t<int, float>&&,
   const typename mip_solver_settings_t<int, float>::tolerances_t&,
   std::atomic<bool>&,
   fj_settings_t);
@@ -329,8 +348,10 @@ template std::unique_ptr<fj_cpu_climber_t<int, float>> fj_t<int, float>::create_
 #endif
 
 #if MIP_INSTANTIATE_DOUBLE
-template std::unique_ptr<fj_cpu_climber_t<int, double>> init_fj_cpu_from_optimization_problem(
-  const optimization_problem_t<int, double>&,
+template fj_cpu_host_model_t<int, double> download_fj_cpu_host_model(
+  const optimization_problem_t<int, double>&);
+template std::unique_ptr<fj_cpu_climber_t<int, double>> init_fj_cpu_from_host_model(
+  fj_cpu_host_model_t<int, double>&&,
   const typename mip_solver_settings_t<int, double>::tolerances_t&,
   std::atomic<bool>&,
   fj_settings_t);

@@ -34,6 +34,8 @@ class early_cpufj_t : public early_heuristic_t<i_t, f_t, early_cpufj_t<i_t, f_t>
   void start(int n_lanes,
              bool low_latency                             = false,
              const std::vector<f_t>& incumbent_assignment = {});
+  // Asks every lane to exit without waiting for it; stop() then only has to wait.
+  void request_stop();
   void stop();
 
   int lane_count() const { return (int)climbers_.size(); }
@@ -42,10 +44,22 @@ class early_cpufj_t : public early_heuristic_t<i_t, f_t, early_cpufj_t<i_t, f_t>
   friend class early_heuristic_t<i_t, f_t, early_cpufj_t<i_t, f_t>>;
 
   std::vector<f_t> to_user_assignment(const std::vector<f_t>& assignment);
+  void build_and_run_lanes(bool post_lane_tasks);
 
   const optimization_problem_t<i_t, f_t>* problem_ptr_{nullptr};
   typename mip_solver_settings_t<i_t, f_t>::tolerances_t tolerances_;
+  // Sized by start; the lanes are filled in by the builder (under climbers_mutex_) as they are made.
   std::vector<std::unique_ptr<fj_cpu_climber_t<i_t, f_t>>> climbers_;
+  std::mutex climbers_mutex_;
+  bool stop_requested_{false};
+  // Inputs of the builder, set by start before it is launched.
+  std::unique_ptr<fj_cpu_host_model_t<i_t, f_t>> pending_model_;
+  std::vector<int> lane_seeds_;
+  int64_t lane_base_seed_{0};
+  bool lane_low_latency_{false};
+  std::vector<f_t> lane_incumbent_;
+  // Dependence object of the builder task, which completes once all of its lanes have.
+  char builder_token_{0};
   std::thread worker_;
   std::atomic<bool> preemption_flag_{false};
   // Explicit seed for this climber's FJ RNG, resolved once from the solve's base seed (see
