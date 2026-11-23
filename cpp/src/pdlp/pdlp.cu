@@ -1255,6 +1255,11 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
   // of first checking termination before the limit
   if (internal_solver_iterations_ <= 1) {
     print_termination_criteria(timer);
+    // the start of the primal weight collapse stop: the weight the solve starts with
+    if (settings_.primal_weight_collapse_ratio > 0 && !batch_mode_ && !is_distributed_master() &&
+        !std::isfinite(collapse_start_weight_)) {
+      collapse_start_weight_ = get_primal_weight_h(0);
+    }
     return check_limits(timer);
   }
 
