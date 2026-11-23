@@ -136,6 +136,7 @@ papilo::Problem<f_t> build_papilo_problem(io::mps_data_model_t<i_t, f_t> const& 
 
   std::vector<papilo::RowFlags> h_row_flags(constr_lb.size());
   std::vector<std::tuple<i_t, i_t, f_t>> h_entries;
+  h_entries.reserve(nnz);
   for (size_t i = 0; i < constr_lb.size(); ++i) {
     const i_t row_start   = offsets[i];
     const i_t row_end     = offsets[i + 1];
@@ -180,8 +181,9 @@ papilo::Problem<f_t> build_papilo_problem(io::mps_data_model_t<i_t, f_t> const& 
     // MIP reductions like clique merging and substituition require more fillin
     const double spare_ratio      = category == problem_category_t::MIP ? 4.0 : 2.0;
     const int min_inter_row_space = category == problem_category_t::MIP ? 30 : 4;
-    auto csr_storage              = papilo::SparseStorage<f_t>(
-      h_entries, n_rows, n_cols, sorted_entries, spare_ratio, min_inter_row_space);
+    // the entries are taken by value: moved, not copied
+    auto csr_storage = papilo::SparseStorage<f_t>(
+      std::move(h_entries), n_rows, n_cols, sorted_entries, spare_ratio, min_inter_row_space);
     CUOPT_LOG_INFO("Presolve timing: Papilo row storage %.2fs", since_t0());
     problem.setConstraintMatrix(csr_storage, constr_lb, constr_ub, h_row_flags);
     CUOPT_LOG_INFO("Presolve timing: Papilo constraint matrix %.2fs", since_t0());
