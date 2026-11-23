@@ -56,13 +56,18 @@ void early_cpufj_t<i_t, f_t>::start(int n_lanes,
   // Tasks are not preempted, so a lane posted beyond the team size would sit in the queue for the
   // whole of presolve without running an iteration. The lane count is also capped independently of
   // the team size (see CUOPT_MIP_EARLY_CPUFJ_MAX_LANES).
+  const int64_t problem_nnz = std::max<int64_t>(1, this->problem_ptr_->get_nnz());
+  const int size_lanes =
+    (int)std::clamp<int64_t>(CUOPT_MIP_EARLY_CPUFJ_LANE_NNZ_BUDGET / problem_nnz,
+                             2,
+                             CUOPT_MIP_EARLY_CPUFJ_MAX_LANES);
   n_lanes =
     threaded
       ? 1
       : std::clamp(
           n_lanes,
           1,
-          std::min(CUOPT_MIP_EARLY_CPUFJ_MAX_LANES,
+          std::min(size_lanes,
                    std::max(1, omp_get_num_threads() - CUOPT_MIP_EARLY_CPUFJ_RESERVED_THREADS)));
   cuopt_assert(incumbent_assignment.empty() ||
                  incumbent_assignment.size() == (size_t)this->problem_ptr_->get_n_variables(),

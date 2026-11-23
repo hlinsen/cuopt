@@ -39,6 +39,11 @@
  * portfolio gains little while Papilo slows down roughly linearly with the lane count. */
 #define CUOPT_MIP_EARLY_CPUFJ_MAX_LANES 16
 
+/* @brief Nonzeros the early CPUFJ lanes may hold together. Every lane walks its own state of the
+ * whole problem, so on very large models (beyond 16 lanes x 6M nonzeros) fewer lanes run: there
+ * they slow Papilo through memory bandwidth and caches more than they search. */
+#define CUOPT_MIP_EARLY_CPUFJ_LANE_NNZ_BUDGET 100000000
+
 /* @brief Maximum Papilo arena concurrency, including the calling solver thread. */
 #define CUOPT_MIP_PAPILO_THREAD_LIMIT 4
 
