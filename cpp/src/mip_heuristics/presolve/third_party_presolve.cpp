@@ -185,7 +185,9 @@ papilo::Problem<f_t> build_papilo_problem(io::mps_data_model_t<i_t, f_t> const& 
     auto csr_storage = papilo::SparseStorage<f_t>(
       std::move(h_entries), n_rows, n_cols, sorted_entries, spare_ratio, min_inter_row_space);
     CUOPT_LOG_INFO("Presolve timing: Papilo row storage %.2fs", since_t0());
-    problem.setConstraintMatrix(csr_storage, constr_lb, constr_ub, h_row_flags);
+    // all taken by value: moved, the row storage alone is several GB with its spare space
+    problem.setConstraintMatrix(
+      std::move(csr_storage), std::move(constr_lb), std::move(constr_ub), std::move(h_row_flags));
     CUOPT_LOG_INFO("Presolve timing: Papilo constraint matrix %.2fs", since_t0());
 
     papilo::ConstraintMatrix<f_t>& matrix = problem.getConstraintMatrix();
