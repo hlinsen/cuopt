@@ -103,6 +103,8 @@ class diversity_manager_t {
     // dual iterate (lp_bound, full user objective), 2 on primal/dual agreement above lp_cutoff
     int cutoff{0};
     double lp_bound{-std::numeric_limits<double>::infinity()};
+    double lp_time{0};      // setup and phase-A LP
+    double repair_time{0};  // strict checks of the pushed point and the repair
   };
   pattern_eval_t eval_fixed_pattern(const std::vector<f_t>& assign,
                                     f_t tol,
