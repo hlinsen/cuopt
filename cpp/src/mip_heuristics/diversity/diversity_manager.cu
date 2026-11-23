@@ -1221,6 +1221,36 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       n_ones,
       (int)dup,
       timer.elapsed_time());
+    if (mode == 0) {
+      // link rows carrying flow at the point that the pattern closes: by the threshold (for a
+      // pair row: with the two binaries' values summing to the threshold or more) or by
+      // fix-and-propagate (a binary the pattern opened)
+      i_t n_used = 0, n_closed_thr = 0, n_closed_pair_sum = 0, n_closed_fp = 0;
+      double flow_used = 0, flow_closed = 0;
+      for (size_t k = 0; k < L; ++k) {
+        const i_t p = pair_partner[k];
+        if ((p >= 0 && p < (i_t)k) || !(u[k] > open_tol(k))) { continue; }
+        n_used++;
+        flow_used += u[k];
+        const i_t v = vub[k].var, w = p >= 0 ? vub[p].var : -1;
+        if (fp_host.col_lb[v] > 0.5 || (w >= 0 && fp_host.col_lb[w] > 0.5)) { continue; }
+        flow_closed += u[k];
+        if (pref[v] > 0.5 || (w >= 0 && pref[w] > 0.5)) {
+          n_closed_fp++;
+        } else {
+          n_closed_thr++;
+          n_closed_pair_sum += w >= 0 && std::max<f_t>(cur_x[v], 0) + std::max<f_t>(cur_x[w], 0) >= thr;
+        }
+      }
+      CUOPT_LOG_INFO(
+        "Slope scaling pattern closes used link rows: used=%d closed_by_threshold=%d "
+        "(pair_sum_above=%d) closed_by_propagation=%d closed_flow_share=%.3f",
+        n_used,
+        n_closed_thr,
+        n_closed_pair_sum,
+        n_closed_fp,
+        flow_used > 0 ? flow_closed / flow_used : 0.);
+    }
     if (dup) { return 1; }
     if (n_conflicts > 0) { return 2; }
     seen.push_back(pat);
@@ -1466,13 +1496,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     return r == 4 ? 0 : r;
   };
 
-  // ---- slope-scaling rounds; a pattern is evaluated after every round from round 3 on
-  // (thresholds cycling), and whenever the open set is stable; a stable duplicate pattern ends it
+  // ---- slope-scaling rounds; a pattern is evaluated after every round from round 3 on, and
+  // whenever the open set is stable; a stable duplicate pattern (at every threshold) ends it
   constexpr int max_rounds       = 60;
   constexpr int first_eval_round = 3;
   constexpr int eval_every       = 1;
   const f_t eval_thresholds[]    = {f_t(0.7), f_t(0.5), f_t(0.3)};
-  int n_attempts                 = 0;
   const double round_cap         = std::min<double>(60., 0.15 * budget);
   const f_t eval_reserve         = 0.3 * budget;
   std::vector<var_t> h_types(n_vars, var_t::CONTINUOUS);
@@ -1565,7 +1594,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     prev_open         = is_open;
     const bool due    = round >= first_eval_round && (round - first_eval_round) % eval_every == 0;
     if (due || (stable && round >= 2)) {
-      const int r = run_eval(eval_thresholds[n_attempts++ % 3]);
+      // the highest threshold first; the lower ones (more links opened, which the binary rows
+      // turn into fix-and-propagate conflicts far more often) only when it repeats a pattern
+      int r = 1;
+      for (int t = 0; t < 3 && r == 1; ++t) {
+        r = run_eval(eval_thresholds[t]);
+      }
       if (stable && r == 1) { break; }
       if (r == 3) { break; }
     }
