@@ -192,6 +192,9 @@ class branch_and_bound_t {
   {
     pdlp_cut_yield_.store(value ? 1 : 0, std::memory_order_release);
   }
+  // Counted form for holders that may overlap: the cut loop yields while any hold is active.
+  void hold_pdlp_cut_gpu() { pdlp_cut_yield_.fetch_add(1, std::memory_order_acq_rel); }
+  void release_pdlp_cut_gpu() { pdlp_cut_yield_.fetch_sub(1, std::memory_order_acq_rel); }
   simplex::lp_status_t solve_root_relaxation(
     simplex::simplex_solver_settings_t<i_t, f_t> const& lp_settings,
     simplex::lp_solution_t<i_t, f_t>& root_relax_soln,

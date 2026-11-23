@@ -38,12 +38,13 @@
 #include <cstdlib>
 #include <functional>
 #include <future>
-#include <optional>
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 constexpr bool fj_only_run = false;
@@ -680,8 +681,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     const f_t scale       = problem_ptr->presolve_data.objective_scaling_factor;
     const bool stop_above = scale > 0 && (std::isfinite(repair_below) || std::isfinite(lp_cutoff));
     if (stop_above) {
-      auto h_obj  = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
-      auto h_ints = cuopt::host_copy(problem_ptr->integer_indices, stream);
+      auto h_obj     = cuopt::host_copy(problem_ptr->objective_coefficients, stream);
+      auto h_ints    = cuopt::host_copy(problem_ptr->integer_indices, stream);
       double int_obj = 0;
       for (auto j : h_ints) {
         int_obj += (double)h_obj[j] * (double)assign[j];
@@ -695,14 +696,14 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     // growing along its Farkas ray: that LP runs on to the divergence verdict, whose dual is ray-
     // dominated enough for the certificate (at the bound's first crossing it often is not)
     if (stop_above && std::isfinite(repair_below)) {
-      const double ray_like = 10. * std::max(1., std::abs((double)repair_below));
+      const double ray_like            = 10. * std::max(1., std::abs((double)repair_below));
       lp_settings.dual_bound_frequency = 1000;
-      lp_settings.dual_bound_callback  = [&local_halt, &res, full_shift, repair_below, ray_like](
-                                          f_t user_bound) {
-        const double b = (double)user_bound + full_shift;
-        if (b > res.lp_bound) { res.lp_bound = b; }
-        if (b > (double)repair_below && b <= ray_like) { local_halt.store(1); }
-      };
+      lp_settings.dual_bound_callback =
+        [&local_halt, &res, full_shift, repair_below, ray_like](f_t user_bound) {
+          const double b = (double)user_bound + full_shift;
+          if (b > res.lp_bound) { res.lp_bound = b; }
+          if (b > (double)repair_below && b <= ray_like) { local_halt.store(1); }
+        };
     }
     // ... or, warm started, once its primal and dual objectives agree on an optimum clearly above
     // lp_cutoff (a heuristic rule: the dual objective only bounds the optimum for a feasible dual)
@@ -818,8 +819,8 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       lp_settings.tolerances.relative_primal_tolerance = 0;
       lp_settings.first_primal_feasible                = true;
       lp_settings.time_limit                           = ps.cap;
-      lp_settings.method     = method_t::PDLP;
-      lp_settings.presolver  = presolver_t::None;
+      lp_settings.method                               = method_t::PDLP;
+      lp_settings.presolver                            = presolver_t::None;
       std::atomic<int> local_halt{0};
       lp_settings.concurrent_halt = &local_halt;
       lp_settings.inside_mip      = false;
@@ -857,7 +858,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       res.pushed_lp_obj     = sol.get_user_objective();
       res.pushed_assignment = sol.get_host_assignment();
     }
-    res.push_time         = timer.elapsed_time() - t_push;
+    res.push_time          = timer.elapsed_time() - t_push;
     const double t_repair0 = timer.elapsed_time();
     bool feas              = sol.get_feasible();
     if (feas) {
@@ -1063,11 +1064,11 @@ slope_links_t<i_t, f_t> detect_slope_links(i_t n_vars,
                                            const std::vector<char>& is_int)
 {
   slope_links_t<i_t, f_t> det;
-  auto& links             = det.links;
-  auto& n_links           = det.n_links;
-  auto& n_single_int_rows = det.n_single_int_rows;
+  auto& links              = det.links;
+  auto& n_links            = det.n_links;
+  auto& n_single_int_rows  = det.n_single_int_rows;
   auto& n_single_int_other = det.n_single_int_other;
-  auto& n_pair_rows       = det.n_pair_rows;
+  auto& n_pair_rows        = det.n_pair_rows;
   n_links.assign(n_vars, 0);
   for (i_t r = 0; r < n_cstrs; ++r) {
     i_t n_i = 0, n_c = 0, pos = -1, pos2 = -1;
@@ -1203,13 +1204,13 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // ---- detection
   auto det = detect_slope_links<i_t, f_t>(
     n_vars, n_cstrs, h_offsets, h_cols, h_vals, h_clb, h_cub, h_vlb, h_vub, is_int);
-  const auto& links              = det.links;
-  const auto& n_links            = det.n_links;
-  const auto& vub                = det.vub;
-  const i_t n_single_int_rows    = det.n_single_int_rows;
-  const i_t n_single_int_other   = det.n_single_int_other;
-  const i_t n_pair_rows          = det.n_pair_rows;
-  i_t n_pair_links = 0;
+  const auto& links            = det.links;
+  const auto& n_links          = det.n_links;
+  const auto& vub              = det.vub;
+  const i_t n_single_int_rows  = det.n_single_int_rows;
+  const i_t n_single_int_other = det.n_single_int_other;
+  const i_t n_pair_rows        = det.n_pair_rows;
+  i_t n_pair_links             = 0;
   for (auto& l : vub) {
     n_pair_links += l.pair;
   }
@@ -1274,13 +1275,24 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                  n_pair_links,
                  (int)vub.size() - n_pair_links);
   if (vub.empty()) { return false; }
-  // the rounds and pattern LPs take the GPU from the B&B pre-basis PDLP cut loop (which only
-  // raises the bound) until slope scaling ends
-  auto* bnb = context.branch_and_bound_ptr;
-  if (bnb != nullptr) { bnb->set_pdlp_cut_yield(true); }
-  cuopt::scope_guard release_gpu([bnb]() {
-    if (bnb != nullptr) { bnb->set_pdlp_cut_yield(false); }
-  });
+  // the round LPs and the pattern evaluations take the GPU from the B&B pre-basis PDLP cut loop
+  // (which raises the bound) while they run; between them (pattern construction, host-side
+  // fix-and-propagate) the cut loop goes on from its warm start
+  auto* bnb   = context.branch_and_bound_ptr;
+  using bnb_t = std::remove_pointer_t<decltype(bnb)>;
+  struct gpu_hold_t {
+    bnb_t* b;
+    explicit gpu_hold_t(bnb_t* p) : b(p)
+    {
+      if (b != nullptr) { b->hold_pdlp_cut_gpu(); }
+    }
+    ~gpu_hold_t()
+    {
+      if (b != nullptr) { b->release_pdlp_cut_gpu(); }
+    }
+    gpu_hold_t(const gpu_hold_t&)            = delete;
+    gpu_hold_t& operator=(const gpu_hold_t&) = delete;
+  };
 
   // ---- slope-scaling rounds
   auto cur_x     = cuopt::host_copy(lp_optimal_solution, stream);
@@ -1416,7 +1428,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   std::vector<double> eval_times;  // durations of the pattern evaluations, for the end rule
   // binaries opened by a flip repair, for the retry of the same point only
   std::vector<char> forced_open(n_vars, 0);
-  i_t n_forced      = 0;
+  i_t n_forced = 0;
   // integers moved by the certificate repair of an infeasible fixed LP (value, NaN = none), fixed
   // first in the retries of the same point
   const f_t no_val = std::numeric_limits<f_t>::quiet_NaN();
@@ -1541,7 +1553,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   };
   std::vector<move_t> mv_cols;
   bool safe_warm = false;  // the pattern's fixed LP starts from the moved point (a safe step)
-  i_t mv_block   = -1;  // the row (fp_host numbering) that blocked the last move refused
+  i_t mv_block   = -1;     // the row (fp_host numbering) that blocked the last move refused
   // moves integer v by d at the moved point unless that takes the point out of one of v's rows
   // (other than skip_row): 0 moved, 1 an integer-only row, 2 a row with continuous columns that
   // no single-row continuous column absorbs. With viol_int, the integer-only rows the move takes
@@ -1557,8 +1569,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       const double a0 = mv_act[r];
       const double na = a0 + (double)fp_host.var_vals[kk] * d;
       const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r];
-      const double tol =
-        1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
+      const double tol = 1e-6 * std::max({1.,
+                                          std::isfinite(lo) ? std::abs(lo) : 0.,
+                                          std::isfinite(hi) ? std::abs(hi) : 0.});
       if (na <= hi + tol && na >= lo - tol) { continue; }
       const double out0 = std::max({0., a0 - hi, lo - a0});
       const double out1 = std::max({0., na - hi, lo - na});
@@ -1615,7 +1628,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     mv_x        = anchor_x;
     n_keep_used = n_keep_rows = n_keep_int_rows = n_close = 0;
     for (auto v : h_int) {
-      const i_t k = link_of[v];
+      const i_t k  = link_of[v];
       link_keep[v] = 0;
       if (k < 0) { continue; }
       if (usage(k, anchor_x) > open_tol(k) && (!vub[k].pair || anchor_x[v] > 0.5)) {
@@ -1726,7 +1739,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (!brows.empty()) {
       const size_t nb = brows.size();
       std::vector<double> bact(nb, 0);
-      auto bviol      = [&](size_t q, double a) {
+      auto bviol = [&](size_t q, double a) {
         const i_t r = brows[q];
         double v    = 0;
         if (std::isfinite(h_cub[r]) && a > h_cub[r] + 1e-9) { v += a - h_cub[r]; }
@@ -1750,8 +1763,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       const i_t max_flips = 4 * n_bviol0 + 100;
       for (size_t head = 0; head < bqueue.size() && n_bflips < max_flips; ++head) {
-        const size_t q = bqueue[head];
-        bqueued[q]     = 0;
+        const size_t q  = bqueue[head];
+        bqueued[q]      = 0;
         const double v0 = bviol(q, bact[q]);
         if (v0 <= 0) { continue; }
         const i_t r       = brows[q];
@@ -1759,9 +1772,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         double best_score = 0, best_dist = 0;
         for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
           const i_t j = h_cols[p];
-          if (forced_open[j] || has_val(cert_val[j]) || (mode == 2 && nb_key[j] >= 3)) {
-            continue;
-          }
+          if (forced_open[j] || has_val(cert_val[j]) || (mode == 2 && nb_key[j] >= 3)) { continue; }
           const double dj = pref[j] > 0.5 ? -1. : 1.;
           if (bviol(q, bact[q] + h_vals[p] * dj) >= v0) { continue; }
           double score = 0;
@@ -1818,8 +1829,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     size_t n_carried0       = 0;  // learned promotions carried into the attempt
     auto fix_with_promotion = [&](bool with_learned) {
       std::vector<i_t> ord0(h_int.begin(), h_int.end());
-      std::stable_sort(
-        ord0.begin(), ord0.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
+      std::stable_sort(ord0.begin(), ord0.end(), [&](i_t a, i_t b) { return key[a] > key[b]; });
       promoted.clear();
       std::fill(is_promoted.begin(), is_promoted.end(), 0);
       std::fill(carried.begin(), carried.end(), 0);
@@ -1949,8 +1959,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       // distance of the pattern from the anchored point, and (mode 2) the flips it kept
       i_t n_up = 0, n_down = 0, n_flips = 0, n_flips_kept = 0;
       for (size_t qq = 0; qq < h_int.size(); ++qq) {
-        const i_t v   = h_int[qq];
-        const f_t x0  = std::floor(px[v] + 0.5);
+        const i_t v  = h_int[qq];
+        const f_t x0 = std::floor(px[v] + 0.5);
         n_up += pat[qq] > x0 + 0.5;
         n_down += pat[qq] < x0 - 0.5;
         if (mode == 2 && nb_key[v] >= 3) {
@@ -2034,7 +2044,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           n_closed_fp++;
         } else {
           n_closed_thr++;
-          n_closed_pair_sum += w >= 0 && std::max<f_t>(cur_x[v], 0) + std::max<f_t>(cur_x[w], 0) >= thr;
+          n_closed_pair_sum +=
+            w >= 0 && std::max<f_t>(cur_x[v], 0) + std::max<f_t>(cur_x[w], 0) >= thr;
         }
       }
       CUOPT_LOG_INFO(
@@ -2080,7 +2091,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       // mixed coupling rows the pattern's binaries overload at the point's flows (before the
       // fixed LP moves the flows): rounding a linked binary up takes more of the row
-      i_t n_over = 0;
+      i_t n_over      = 0;
       double max_over = 0, sum_over = 0, sum_extra = 0;
       for (auto r : mixed_coupling_rows) {
         double act = 0, d = 0, mag = 0;
@@ -2088,7 +2099,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           const i_t c = h_cols[p];
           act += (double)h_vals[p] * (double)cur_x[c];
           mag = std::max(mag, std::abs((double)h_vals[p] * (double)cur_x[c]));
-          if (is_vub_bin[c]) { d += (double)h_vals[p] * ((double)fp_host.col_lb[c] - (double)cur_x[c]); }
+          if (is_vub_bin[c]) {
+            d += (double)h_vals[p] * ((double)fp_host.col_lb[c] - (double)cur_x[c]);
+          }
         }
         const bool le     = std::isfinite(h_cub[r]);
         const double sgn  = le ? 1. : -1.;
@@ -2126,11 +2139,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // objective within ~15 s, the residual left after that is the pushes' work; a safe step's
     // (its moved point feasible, the fixed LP below the incumbent) gets up to 45 s, its first
     // step after a mode-0 publish (~1000 flips) stopped unconverged at 20 s 3 runs out of 4
-    const bool retry       = mode == 0 && point_lps > 0;
-    const f_t rank_cap     = safe_warm   ? f_t(45)
-                             : mode != 0 ? f_t(20)
-                                         : (retry ? f_t(40) : f_t(60));
-    const f_t rank_tlimit  = std::min<f_t>(rank_cap, 0.45 * rem);
+    const bool retry      = mode == 0 && point_lps > 0;
+    const f_t rank_cap    = safe_warm ? f_t(45) : mode != 0 ? f_t(20) : (retry ? f_t(40) : f_t(60));
+    const f_t rank_tlimit = std::min<f_t>(rank_cap, 0.45 * rem);
     const f_t repair_limit = std::min<f_t>(40., 0.35 * rem);
     // no repair for patterns whose fixed LP is not below the incumbent
     const f_t repair_below = population.is_feasible()
@@ -2142,28 +2153,35 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     const f_t repair_near = mode == 0 && std::isfinite(repair_below)
                               ? repair_below + near_frac * std::abs(repair_below)
                               : -std::numeric_limits<f_t>::infinity();
-    auto ev               = eval_fixed_pattern(assign,
-                                 1e-4,
-                                 rank_tlimit,
-                                 &wx,
-                                 &py,
-                                 true,
-                                 repair_limit,
-                                 "slope_scaling",
-                                 repair_below,
-                                 11.,
-                                 retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity(),
-                                 repair_below,
-                                 repair_near);
+    std::optional<pattern_eval_t> ev_held;
+    {
+      gpu_hold_t gpu_hold(bnb);
+      ev_held.emplace(
+        eval_fixed_pattern(assign,
+                           1e-4,
+                           rank_tlimit,
+                           &wx,
+                           &py,
+                           true,
+                           repair_limit,
+                           "slope_scaling",
+                           repair_below,
+                           11.,
+                           retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity(),
+                           repair_below,
+                           repair_near));
+    }
+    auto& ev = *ev_held;
     if (mode == 0 && std::isfinite(repair_below) && ev.usable && !ev.cutoff &&
         !(ev.lp_obj < repair_below)) {
-      CUOPT_LOG_INFO("Slope scaling round LP above the incumbent, uncut: lp=%g (+%.3f%%) optimal=%d "
-                     "repaired=%d time=%.1fs",
-                     ev.lp_obj,
-                     100. * (ev.lp_obj - repair_below) / std::abs(repair_below),
-                     (int)ev.optimal,
-                     (int)(ev.repaired_assignment.size() == (size_t)n_vars),
-                     ev.time);
+      CUOPT_LOG_INFO(
+        "Slope scaling round LP above the incumbent, uncut: lp=%g (+%.3f%%) optimal=%d "
+        "repaired=%d time=%.1fs",
+        ev.lp_obj,
+        100. * (ev.lp_obj - repair_below) / std::abs(repair_below),
+        (int)ev.optimal,
+        (int)(ev.repaired_assignment.size() == (size_t)n_vars),
+        ev.time);
     }
     if (mode == 0 && !ev.published && ev.repaired_assignment.size() == (size_t)n_vars &&
         ev.dual.size() == (size_t)n_cstrs && ev.repaired_obj < repair_near &&
@@ -2180,7 +2198,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (mode == 0) { point_lps++; }
     if (ev.aborted) {
       CUOPT_LOG_INFO(
-        "Slope scaling retry aborted: l2_primal_res=%g above twice the first attempt's %g time=%.2fs",
+        "Slope scaling retry aborted: l2_primal_res=%g above twice the first attempt's %g "
+        "time=%.2fs",
         ev.l2_primal_res,
         first_try_res,
         ev.time);
@@ -2198,9 +2217,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     // violated rows are taken at the pushed point when there is one (the residual of a pattern
     // the fixed LP cannot serve stays on the rows it cannot serve).
     i_t n_new_forced = 0;
-    if (mode == 0 && n_forced == 0 && n_cert == 0 && !ev.published && ev.usable &&
-        !ev.infeasible && !ev.cutoff && ev.lp_obj < repair_below &&
-        ev.lp_assignment.size() == (size_t)n_vars) {
+    if (mode == 0 && n_forced == 0 && n_cert == 0 && !ev.published && ev.usable && !ev.infeasible &&
+        !ev.cutoff && ev.lp_obj < repair_below && ev.lp_assignment.size() == (size_t)n_vars) {
       const auto& x =
         ev.pushed_assignment.size() == (size_t)n_vars ? ev.pushed_assignment : ev.lp_assignment;
       std::vector<std::pair<double, i_t>> viol_rows;
@@ -2243,7 +2261,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       };
       // diagnostics: the closed link rows next to the largest violations, the closed link rows
       // the slope-scaling point uses, and the closed link rows with the largest fixed-LP duals
-      auto row_once = [&](i_t k) { return pair_partner[k] < 0 || k < pair_partner[k]; };
+      auto row_once    = [&](i_t k) { return pair_partner[k] < 0 || k < pair_partner[k]; };
       auto closed_used = [&](i_t k) { return !row_open(k) && u[k] > open_tol(k); };
       auto closed_pref = [&](i_t k) {
         const i_t p = pair_partner[k];
@@ -2310,10 +2328,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           }
         }
         const size_t top = std::min<size_t>(20, by_dual.size());
-        std::partial_sort(by_dual.begin(),
-                          by_dual.begin() + top,
-                          by_dual.end(),
-                          [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::partial_sort(
+          by_dual.begin(), by_dual.begin() + top, by_dual.end(), [](const auto& a, const auto& b) {
+            return a.first > b.first;
+          });
         i_t top_cand = 0, top_used = 0;
         for (size_t t = 0; t < top; ++t) {
           top_cand += is_cand[by_dual[t].second];
@@ -2379,10 +2397,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       std::string rows;
       {
         const size_t top = std::min<size_t>(4, by_y.size());
-        std::partial_sort(by_y.begin(),
-                          by_y.begin() + top,
-                          by_y.end(),
-                          [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::partial_sort(
+          by_y.begin(), by_y.begin() + top, by_y.end(), [](const auto& a, const auto& b) {
+            return a.first > b.first;
+          });
         for (size_t t = 0; t < top; ++t) {
           char buf[64];
           snprintf(buf, sizeof(buf), " %d:%.3g", (int)by_y[t].second, by_y[t].first / ymax);
@@ -2435,8 +2453,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       std::vector<std::pair<i_t, f_t>> taken;
       if (ev.infeasible || proof) {
         ev.infeasible = true;
-        taken         = ray_moves(
-          z_int, [&](i_t j) { return (double)assign[j]; }, D, n_new_cert, cancelled);
+        taken =
+          ray_moves(z_int, [&](i_t j) { return (double)assign[j]; }, D, n_new_cert, cancelled);
       }
       i_t n_opening = 0;
       std::string top;
@@ -2552,7 +2570,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   std::vector<i_t> last_safe;
   i_t n_tabu   = 0;
   f_t tabu_obj = std::numeric_limits<f_t>::infinity();  // the anchored point the tabu is for
-  std::vector<f_t> rc_of(n_vars, 0);  // reduced costs of the binaries at the anchored point
+  std::vector<f_t> rc_of(n_vars, 0);   // reduced costs of the binaries at the anchored point
   std::vector<char> moved(n_vars, 0);  // binaries the step moves
   auto safe_step = [&]() -> int {
     last_safe.clear();
@@ -2610,8 +2628,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     std::vector<std::pair<f_t, i_t>> partners;
     auto row_in = [&](i_t r) {
       const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r], a = mv_act[r];
-      const double tol =
-        1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
+      const double tol = 1e-6 * std::max({1.,
+                                          std::isfinite(lo) ? std::abs(lo) : 0.,
+                                          std::isfinite(hi) ? std::abs(hi) : 0.});
       return a <= hi + tol && a >= lo - tol;
     };
     auto undo_comp = [&]() {
@@ -2635,8 +2654,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         if (row_in(r)) { continue; }
         partners.clear();
         const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r];
-        const double tol =
-          1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
+        const double tol = 1e-6 * std::max({1.,
+                                            std::isfinite(lo) ? std::abs(lo) : 0.,
+                                            std::isfinite(hi) ? std::abs(hi) : 0.});
         for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1]; ++p) {
           const i_t w = fp_host.row_cols[p];
           if (moved[w] || safe_tabu[w] || h_vlb[w] != 0 || h_vub[w] != 1) { continue; }
@@ -2763,8 +2783,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       std::string tops;
       for (size_t t = 0; t < nt; ++t) {
         const i_t r = top[t].first;
-        tops += " row" + std::to_string(fp_host.row_orig[r]) + "(terms=" +
-                std::to_string(fp_host.row_offsets[r + 1] - fp_host.row_offsets[r]) +
+        tops += " row" + std::to_string(fp_host.row_orig[r]) +
+                "(terms=" + std::to_string(fp_host.row_offsets[r + 1] - fp_host.row_offsets[r]) +
                 " lb=" + std::to_string((double)fp_host.row_lb[r]) +
                 " ub=" + std::to_string((double)fp_host.row_ub[r]) +
                 " act=" + std::to_string(mv_act[r]) + ")x" + std::to_string(top[t].second);
@@ -2784,9 +2804,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         tops.c_str());
       std::vector<std::pair<i_t, i_t>> mtop(mix_rows.begin(), mix_rows.end());
       const size_t nm = std::min<size_t>(3, mtop.size());
-      std::partial_sort(mtop.begin(), mtop.begin() + nm, mtop.end(), [](const auto& a, const auto& b) {
-        return a.second > b.second || (a.second == b.second && a.first < b.first);
-      });
+      std::partial_sort(
+        mtop.begin(), mtop.begin() + nm, mtop.end(), [](const auto& a, const auto& b) {
+          return a.second > b.second || (a.second == b.second && a.first < b.first);
+        });
       std::string mtops;
       for (size_t t = 0; t < nm; ++t) {
         const i_t r = mtop[t].first;
@@ -2840,7 +2861,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   constexpr f_t min_safe_gain = f_t(3e-3);
   int n_safe_steps            = 0;
   double safe_time = 0, round_time = 0;  // time in safe steps / in rounds and their evaluations
-  auto safe_chain  = [&](bool until_time) -> int {
+  auto safe_chain = [&](bool until_time) -> int {
     const double t_start = timer.elapsed_time();
     int rs               = 0;
     while (true) {
@@ -2873,7 +2894,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   const f_t eval_thresholds[]    = {f_t(0.7), f_t(0.5), f_t(0.3)};
   // the round LPs hold the GPU alone (the cut loop yields), so half the former cap gives them as
   // many iterations as before and twice the rounds and pattern attempts
-  const double round_cap         = std::min<double>(30., 0.075 * budget);
+  const double round_cap = std::min<double>(30., 0.075 * budget);
   // a round starts while it, the evaluation of its pattern and the publication of the result fit
   // in the time left: the last round's time, the longest of the last three evaluations (0.3 budget
   // before the first one, and at most that) and a publish margin
@@ -2894,9 +2915,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   auto round_data = [&](const std::vector<f_t>& sc) {
     std::pair<std::vector<f_t>, std::vector<f_t>> d{h_vals, h_vub};
     for (size_t k = 0; k < L; ++k) {
-      const auto& l       = vub[k];
-      d.first[l.pos]      = h_vals[l.pos] * (sc[k] / l.cap);
-      d.second[l.var]     = l.cap / sc[k];
+      const auto& l   = vub[k];
+      d.first[l.pos]  = h_vals[l.pos] * (sc[k] / l.cap);
+      d.second[l.var] = l.cap / sc[k];
     }
     return d;
   };
@@ -2925,8 +2946,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   std::future<std::shared_ptr<round_presolve_t>> spec;
   std::vector<std::future<std::shared_ptr<round_presolve_t>>> spec_old;  // superseded, running
   int n_spec_launched = 0, n_spec_used = 0;
-  double spec_hidden  = 0;  // presolve seconds the used ones took off the round LPs
-  auto next_scales    = [&]() {
+  double spec_hidden = 0;  // presolve seconds the used ones took off the round LPs
+  auto next_scales   = [&]() {
     std::vector<f_t> sc = scale;
     for (size_t k = 0; k < L; ++k) {
       if (u[k] > open_tol(k)) { sc[k] = std::clamp<f_t>(u[k], floor_rel * vub[k].cap, vub[k].cap); }
@@ -2938,21 +2959,20 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (!(remaining() - eval_reserve() > last_round_time)) { return; }
     auto sc = next_scales();
     if (spec.valid() && sc == spec_scale) { return; }
-    spec_old.erase(std::remove_if(spec_old.begin(),
-                                  spec_old.end(),
-                                  [](auto& f) {
-                                    return f.wait_for(std::chrono::seconds(0)) ==
-                                           std::future_status::ready;
-                                  }),
-                   spec_old.end());
+    spec_old.erase(
+      std::remove_if(
+        spec_old.begin(),
+        spec_old.end(),
+        [](auto& f) { return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }),
+      spec_old.end());
     if (spec.valid()) { spec_old.push_back(std::move(spec)); }
     spec_scale    = std::move(sc);
     auto [nv, nu] = round_data(spec_scale);
     auto next     = round_problem(nv, nu);
     sort_csr(next);
-    auto mps         = op_problem_to_mps_data_model<i_t, f_t>(next);
-    const double ptl = std::max(
-      1., std::min(0.1 * std::min<double>(round_cap, remaining() - eval_reserve()), 60.));
+    auto mps = op_problem_to_mps_data_model<i_t, f_t>(next);
+    const double ptl =
+      std::max(1., std::min(0.1 * std::min<double>(round_cap, remaining() - eval_reserve()), 60.));
     n_spec_launched++;
     spec = std::async(std::launch::async, [mps = std::move(mps), ptl]() {
       std::shared_ptr<round_presolve_t> out;
@@ -2984,9 +3004,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     }
     const double t_round       = timer.elapsed_time();
     const double t_round_start = t_round;
-    scale = next_scales();
-    auto [mod_vals, mod_vub] = round_data(scale);
-    std::vector<f_t> init_x  = cur_x;
+    scale                      = next_scales();
+    auto [mod_vals, mod_vub]   = round_data(scale);
+    std::vector<f_t> init_x    = cur_x;
     for (size_t k = 0; k < L; ++k) {
       const auto& l = vub[k];
       init_x[l.var] = std::clamp<f_t>(std::max<f_t>(u[k], 0) / scale[k], 0, mod_vub[l.var]);
@@ -2998,8 +3018,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (spec.valid()) {
       const double t_wait = timer.elapsed_time();
       auto got            = spec.get();
-      const bool ok       = got != nullptr &&
-                      got->res.status == third_party_presolve_status_t::REDUCED &&
+      const bool ok = got != nullptr && got->res.status == third_party_presolve_status_t::REDUCED &&
                       spec_scale == scale;
       const double wait = timer.elapsed_time() - t_wait;
       if (ok) {
@@ -3035,8 +3054,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (rp) {
       // the presolved round LP: the start is crushed into its space, its solution postsolved; it
       // gets the time limit less the presolve time the synchronous path would have spent
-      auto reduced = mps_data_model_to_optimization_problem<i_t, f_t>(handle_ptr,
-                                                                      rp->res.reduced_problem);
+      auto reduced =
+        mps_data_model_to_optimization_problem<i_t, f_t>(handle_ptr, rp->res.reduced_problem);
       reduced.set_problem_category(problem_category_t::LP);
       std::vector<f_t> x_pre, y_pre;
       rp->pre->crush_primal_dual_solution_pslp(reduced, init_x, cur_y, x_pre, y_pre);
@@ -3049,7 +3068,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       lp_settings.time_limit = std::max<double>(1., lp_settings.time_limit - rp->seconds);
       handle_ptr->sync_stream();
-      lp_res.emplace(solve_lp(reduced, lp_settings));
+      {
+        gpu_hold_t gpu_hold(bnb);
+        lp_res.emplace(solve_lp(reduced, lp_settings));
+      }
       if (lp_res->get_primal_solution().size() == (size_t)reduced.get_n_variables() &&
           lp_res->get_dual_solution().size() == (size_t)reduced.get_n_constraints()) {
         new_x   = cuopt::host_copy(lp_res->get_primal_solution(), stream);
@@ -3059,7 +3081,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
     } else {
       auto snapshot = round_problem(mod_vals, mod_vub);
-      lp_res.emplace(solve_lp(snapshot, lp_settings));
+      {
+        gpu_hold_t gpu_hold(bnb);
+        lp_res.emplace(solve_lp(snapshot, lp_settings));
+      }
       if (lp_res->get_primal_solution().size() == (size_t)n_vars &&
           lp_res->get_dual_solution().size() == (size_t)n_cstrs) {
         new_x = cuopt::host_copy(lp_res->get_primal_solution(), stream);
@@ -3882,10 +3907,10 @@ solution_t<i_t, f_t> diversity_manager_t<i_t, f_t>::run_solver()
   // with slope scaling ahead the root LP point is only its starting point (its first round
   // re-solves the LP from it) and PDLP sits on a residual plateau long before 60 s on large models
   constexpr f_t slope_scaling_root_lp_time = 30.;
-  const f_t lp_time_limit =
-    std::min({hp.root_lp_max_time,
-              time_limit * hp.root_lp_time_ratio,
-              slope_scaling_ahead ? slope_scaling_root_lp_time : std::numeric_limits<f_t>::infinity()});
+  const f_t lp_time_limit                  = std::min(
+    {hp.root_lp_max_time,
+                      time_limit * hp.root_lp_time_ratio,
+     slope_scaling_ahead ? slope_scaling_root_lp_time : std::numeric_limits<f_t>::infinity()});
   // after every change to the problem, we should resize all the relevant vars
   // we need to encapsulate that to prevent repetitions
   recombine_stats.reset();
