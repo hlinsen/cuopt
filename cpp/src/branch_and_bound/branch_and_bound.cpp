@@ -3688,9 +3688,8 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
                      toc(exploration_stats_.start_time) < settings_.time_limit) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
               }
-              settings_.log.printf("PDLP pre-basis pass %d waited %.2f s for the GPU\n",
-                                   pass,
-                                   toc(wait_start));
+              settings_.log.printf(
+                "PDLP pre-basis pass %d waited %.2f s for the GPU\n", pass, toc(wait_start));
               if (relaxation_cut_halt.load(std::memory_order_acquire) != 0 ||
                   *get_root_concurrent_halt() != 0 || received_halt_signal()) {
                 break;
@@ -3762,8 +3761,9 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
             std::atomic<bool> pass_done{false};
             std::thread pass_halt_watcher([&]() {
               while (!pass_done.load(std::memory_order_acquire)) {
-                if (relaxation_cut_halt.load(std::memory_order_acquire) != 0 ||
-                    pdlp_cut_yield_.load(std::memory_order_acquire) != 0) {
+                // a started pass runs to its end (sharing the GPU with a primal heuristic's LPs):
+                // only the cut loop's own halt stops it; a heuristic's hold delays the next pass
+                if (relaxation_cut_halt.load(std::memory_order_acquire) != 0) {
                   pass_halt.store(1, std::memory_order_release);
                   break;
                 }
@@ -3778,10 +3778,10 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
             pdlp_handle.get_stream().sync();
             pass_done.store(true, std::memory_order_release);
             pass_halt_watcher.join();
-            pdlp_solve_elapsed = toc(pdlp_solve_start);
+            pdlp_solve_elapsed     = toc(pdlp_solve_start);
             const bool yielded_gpu = pass_halt.load(std::memory_order_acquire) != 0 &&
                                      relaxation_cut_halt.load(std::memory_order_acquire) == 0;
-            pdlp_termination   = pdlp_solution.get_termination_status();
+            pdlp_termination = pdlp_solution.get_termination_status();
             pdlp_iterations =
               pdlp_solution.get_additional_termination_information().number_of_steps_taken;
             const bool usable_termination =
