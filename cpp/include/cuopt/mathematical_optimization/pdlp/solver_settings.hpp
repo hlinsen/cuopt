@@ -353,16 +353,6 @@ class pdlp_solver_settings_t {
    * together with `first_primal_feasible` is a validation error.
    */
   bool all_primal_feasible{false};
-  /**
-   * @brief Non-batch only: stop with PrimalInfeasible once the iterates look like a primal
-   * infeasibility ray (0: off).
-   *
-   * Checked every 1000 iterations: the dual objective is more than 100 * max(1, |primal
-   * objective|) away from the primal objective while the l2 primal residual does not halve. When
-   * this holds at this many consecutive checks the current iterate is returned with status
-   * PrimalInfeasible. A heuristic (no certificate), for callers that only need an early verdict.
-   */
-  i_t divergence_stop_checks{0};
   presolver_t presolver{presolver_t::Default};
   bool dual_postsolve{true};
   // Concurrent LP/MIP: 1–2 GPUs. Multi-GPU PDLP (method=PDLP): up to the visible device

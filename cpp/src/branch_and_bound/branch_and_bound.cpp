@@ -51,7 +51,6 @@
 #include <limits>
 #include <list>
 #include <string>
-#include <thread>
 #include <utilities/scope_guard.hpp>
 #include <vector>
 
@@ -3679,23 +3678,6 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
 
           if (pass > 0) {
             if (root_cut_pdlp_handle_ == nullptr) break;
-            // a primal heuristic holds the GPU: the pass waits for it
-            if (pdlp_cut_yield_.load(std::memory_order_acquire) != 0) {
-              const f_t wait_start = tic();
-              while (pdlp_cut_yield_.load(std::memory_order_acquire) != 0 &&
-                     relaxation_cut_halt.load(std::memory_order_acquire) == 0 &&
-                     *get_root_concurrent_halt() == 0 && !received_halt_signal() &&
-                     toc(exploration_stats_.start_time) < settings_.time_limit) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
-              }
-              settings_.log.printf("PDLP pre-basis pass %d waited %.2f s for the GPU\n",
-                                   pass,
-                                   toc(wait_start));
-              if (relaxation_cut_halt.load(std::memory_order_acquire) != 0 ||
-                  *get_root_concurrent_halt() != 0 || received_halt_signal()) {
-                break;
-              }
-            }
             std::vector<f_t> pdlp_warm_start_primal;
             auto pdlp_model = simplex_problem_to_mps_data_model(
               pdlp_lp, pdlp_new_slacks, pdlp_x, pdlp_warm_start_primal);
@@ -3728,9 +3710,7 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
             pdlp_settings.pdlp_solver_mode     = pdlp_solver_mode_t::Stable3;
             pdlp_settings.detect_infeasibility = false;
             pdlp_settings.inside_mip           = true;
-            // the pass halts on the loop's halt and when a primal heuristic claims the GPU
-            std::atomic<int> pass_halt{0};
-            pdlp_settings.concurrent_halt = &pass_halt;
+            pdlp_settings.concurrent_halt      = &relaxation_cut_halt;
             // Valid lower bound from the dual iterate of the cut-augmented LP. pdlp_model has no
             // objective offset or scaling, so the reported value is in the solver space of the LP.
             pdlp_settings.dual_bound_frequency = 1000;
@@ -3759,28 +3739,9 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
                                                     static_cast<i_t>(pdlp_warm_start_dual.size()),
                                                     pdlp_handle.get_stream());
             const f_t pdlp_solve_start = tic();
-            std::atomic<bool> pass_done{false};
-            std::thread pass_halt_watcher([&]() {
-              while (!pass_done.load(std::memory_order_acquire)) {
-                if (relaxation_cut_halt.load(std::memory_order_acquire) != 0 ||
-                    pdlp_cut_yield_.load(std::memory_order_acquire) != 0) {
-                  pass_halt.store(1, std::memory_order_release);
-                  break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-              }
-            });
-            scope_guard stop_watcher([&]() {
-              pass_done.store(true, std::memory_order_release);
-              if (pass_halt_watcher.joinable()) { pass_halt_watcher.join(); }
-            });
-            auto pdlp_solution = solve_lp(&pdlp_handle, pdlp_model, pdlp_settings);
+            auto pdlp_solution         = solve_lp(&pdlp_handle, pdlp_model, pdlp_settings);
             pdlp_handle.get_stream().sync();
-            pass_done.store(true, std::memory_order_release);
-            pass_halt_watcher.join();
             pdlp_solve_elapsed = toc(pdlp_solve_start);
-            const bool yielded_gpu = pass_halt.load(std::memory_order_acquire) != 0 &&
-                                     relaxation_cut_halt.load(std::memory_order_acquire) == 0;
             pdlp_termination   = pdlp_solution.get_termination_status();
             pdlp_iterations =
               pdlp_solution.get_additional_termination_information().number_of_steps_taken;
@@ -3843,8 +3804,6 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
               pdlp_dual_objective,
               pdlp_dual_residual,
               pdlp_solution.get_termination_status_string());
-            // halted for a primal heuristic: the next pass resumes from this point
-            if (yielded_gpu) { continue; }
           }
 
           for (auto it = pdlp_pass_heuristics.begin(); it != pdlp_pass_heuristics.end();) {

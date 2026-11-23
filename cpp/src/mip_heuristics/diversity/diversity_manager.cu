@@ -680,12 +680,6 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     auto cur_p              = cuopt::device_copy(res.primal, stream);
     auto cur_d              = cuopt::device_copy(res.dual, stream);
     bool pushed             = false;
-    // a push that leaves the primal residual where the PID point had it (instead of cutting it by
-    // orders of magnitude) means the fixed LP is infeasible: no further push, no repair
-    auto push_stalled = [&]() {
-      return pushed && res.pushed_l2_primal_res > 1. &&
-             res.pushed_l2_primal_res > 0.5 * res.l2_primal_res;
-    };
     for (const auto& ps : pushes) {
       if (timer.check_time_limit() || check_b_b_preemption() || timer.remaining_time() < 30.) {
         break;
@@ -722,7 +716,6 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       raft::copy(cur_p.data(), lp_result.get_primal_solution().data(), cur_p.size(), stream);
       raft::copy(cur_d.data(), lp_result.get_dual_solution().data(), cur_d.size(), stream);
       pushed = true;
-      if (push_stalled()) { break; }
     }
     if (pushed) {
       raft::copy(fixed_assignment.data(), cur_p.data(), cur_p.size(), stream);
@@ -739,7 +732,7 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
       feas           = strict_point_ok(sol.get_host_assignment(), max_excess) &&
              original_point_ok(sol.get_host_assignment());
     }
-    if (!feas && !push_stalled()) {
+    if (!feas) {
       timer_t rtimer(repair_tlimit);
       thrust::fill(handle_ptr->get_thrust_policy(),
                    fixed_problem.objective_coefficients.begin(),
@@ -1047,13 +1040,6 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                  n_pair_links,
                  (int)vub.size() - n_pair_links);
   if (vub.empty()) { return false; }
-  // the rounds and pattern LPs take the GPU from the B&B pre-basis PDLP cut loop (which only
-  // raises the bound) until slope scaling ends
-  auto* bnb = context.branch_and_bound_ptr;
-  if (bnb != nullptr) { bnb->set_pdlp_cut_yield(true); }
-  cuopt::scope_guard release_gpu([bnb]() {
-    if (bnb != nullptr) { bnb->set_pdlp_cut_yield(false); }
-  });
 
   // ---- slope-scaling rounds
   auto cur_x     = cuopt::host_copy(lp_optimal_solution, stream);
@@ -2655,10 +2641,9 @@ bool diversity_manager_t<i_t, f_t>::run_presolve(f_t time_limit, timer_t global_
                                                        probing_budget.probing_work_limit,
                                                        (size_t)probing_budget.probing_step_size);
     problem_ptr->handle_ptr->sync_stream();
-    CUOPT_LOG_INFO(
-      "PRESOLVE_PROBING_WALL wall=%.3f presolve_elapsed=%.3f",
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - probing_t0).count(),
-      presolve_timer.elapsed_time());
+    CUOPT_LOG_DEBUG(
+      "PRESOLVE_PROBING_WALL wall=%.3f",
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - probing_t0).count());
     if (problem_is_infeasible) { return false; }
   }
 

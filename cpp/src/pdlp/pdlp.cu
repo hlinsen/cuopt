@@ -1516,44 +1516,6 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
                               termination_average);
   if (total_pdlp_iterations_ % 1000 == 0) { print_termination_criteria(timer); }
 
-  // Early primal-infeasibility verdict (opt-in): a diverging dual objective with a primal residual
-  // that does not decrease is the PDHG signature of an infeasible primal
-  if (settings_.divergence_stop_checks > 0 && internal_solver_iterations_ > 0 &&
-      total_pdlp_iterations_ % 1000 == 0) {
-    const auto& info = current_termination_strategy_.get_convergence_information();
-    const f_t p      = info.get_primal_objective().element(0, stream_view_);
-    const f_t d      = info.get_dual_objective().element(0, stream_view_);
-    const f_t res    = info.get_l2_primal_residual().element(0, stream_view_);
-    const bool diverging =
-      std::isfinite(p) && std::isfinite(res) && res > 0 &&
-      (!std::isfinite(d) || std::abs(d - p) > f_t(100) * std::max<f_t>(1, std::abs(p)));
-    if (!diverging) {
-      divergence_count_ = 0;
-    } else if (divergence_count_ == 0 || res < f_t(0.5) * divergence_res_) {
-      divergence_count_ = 1;
-      divergence_res_   = res;
-    } else {
-      divergence_count_++;
-    }
-    if (divergence_count_ >= settings_.divergence_stop_checks) {
-      print_final_termination_criteria(timer,
-                                       current_termination_strategy_.get_convergence_information(),
-                                       pdlp_termination_status_t::PrimalInfeasible);
-      return current_termination_strategy_.fill_return_problem_solution(
-        internal_solver_iterations_,
-        pdhg_solver_,
-        (settings_.hyper_params.use_adaptive_step_size_strategy)
-          ? pdhg_solver_.get_primal_solution()
-          : pdhg_solver_.get_potential_next_primal_solution(),
-        (settings_.hyper_params.use_adaptive_step_size_strategy)
-          ? pdhg_solver_.get_dual_solution()
-          : pdhg_solver_.get_potential_next_dual_solution(),
-        get_filled_warmed_start_data(),
-        std::vector<pdlp_termination_status_t>(climber_strategies_.size(),
-                                               pdlp_termination_status_t::PrimalInfeasible));
-    }
-  }
-
   // No reason to terminate
   return check_limits(timer);
 }

@@ -939,11 +939,7 @@ third_party_presolve_status_t third_party_presolve_t<i_t, f_t>::apply_papilo(
                           original_n_vars,
                           max_badgesize,
                           reduction_allowlist_);
-  // round and per-presolver statistics on large models, where Papilo takes much of the run
-  constexpr i_t papilo_stats_min_nnz = 10000000;
-  papilo_presolver.setVerbosityLevel(original_nnz >= papilo_stats_min_nnz
-                                       ? papilo::VerbosityLevel::kInfo
-                                       : papilo::VerbosityLevel::kQuiet);
+  papilo_presolver.setVerbosityLevel(papilo::VerbosityLevel::kQuiet);
   CUOPT_LOG_DEBUG(
     "PRESOLVE_PAPILO_BUDGET rounds=%d badge_cap=%d tlim=%g", max_rounds, max_badgesize, time_limit);
 
@@ -957,7 +953,7 @@ third_party_presolve_status_t third_party_presolve_t<i_t, f_t>::apply_papilo(
   if (max_badgesize > 0) { effective_badge = std::min(effective_badge, max_badgesize); }
   // hit_tlim distinguishes "presolve converged" from "presolve was cut off mid-round", which
   // changes how the reduced problem below should be read.
-  CUOPT_LOG_INFO(
+  CUOPT_LOG_DEBUG(
     "PRESOLVE_PAPILO wall=%.3f tlim=%g hit_tlim=%d rounds_cap=%d badge_cap=%d badge_effective=%d",
     papilo_wall,
     time_limit,
