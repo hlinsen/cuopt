@@ -1588,6 +1588,38 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
     }
   }
 
+  // Stall stop (opt-in): objectives that no longer move end the solve like the time limit would
+  if (settings_.stall_stop_checks > 0 && internal_solver_iterations_ > 0 &&
+      total_pdlp_iterations_ % 10000 == 0) {
+    const auto& info  = current_termination_strategy_.get_convergence_information();
+    const f_t p       = info.get_primal_objective().element(0, stream_view_);
+    const f_t d       = info.get_dual_objective().element(0, stream_view_);
+    const f_t eps     = f_t(1e-5);
+    const bool stalled = std::isfinite(p) && std::isfinite(d) && std::isfinite(stall_primal_) &&
+                         std::abs(p - stall_primal_) <= eps * std::max<f_t>(1, std::abs(p)) &&
+                         std::abs(d - stall_dual_) <= eps * std::max<f_t>(1, std::abs(d));
+    stall_count_  = stalled ? stall_count_ + 1 : 0;
+    stall_primal_ = p;
+    stall_dual_   = d;
+    if (stall_count_ >= settings_.stall_stop_checks) {
+      print_final_termination_criteria(timer,
+                                       current_termination_strategy_.get_convergence_information(),
+                                       pdlp_termination_status_t::TimeLimit);
+      return current_termination_strategy_.fill_return_problem_solution(
+        internal_solver_iterations_,
+        pdhg_solver_,
+        (settings_.hyper_params.use_adaptive_step_size_strategy)
+          ? pdhg_solver_.get_primal_solution()
+          : pdhg_solver_.get_potential_next_primal_solution(),
+        (settings_.hyper_params.use_adaptive_step_size_strategy)
+          ? pdhg_solver_.get_dual_solution()
+          : pdhg_solver_.get_potential_next_dual_solution(),
+        get_filled_warmed_start_data(),
+        std::vector<pdlp_termination_status_t>(climber_strategies_.size(),
+                                               pdlp_termination_status_t::TimeLimit));
+    }
+  }
+
   // No reason to terminate
   return check_limits(timer);
 }

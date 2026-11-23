@@ -280,6 +280,10 @@ class pdlp_solver_t {
   f_t divergence_res_{0};
   // settings_.objective_cutoff: consecutive checks with both objectives above the cutoff
   i_t cutoff_count_{0};
+  // settings_.stall_stop_checks: consecutive stalled checks, and the objectives at the last check
+  i_t stall_count_{0};
+  f_t stall_primal_{std::numeric_limits<f_t>::quiet_NaN()};
+  f_t stall_dual_{std::numeric_limits<f_t>::quiet_NaN()};
 
   // Initial solution
   rmm::device_uvector<f_t> initial_primal_;

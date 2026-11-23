@@ -374,6 +374,16 @@ class pdlp_solver_settings_t {
    * an LP whose optimum does not beat a known objective (e.g. a MIP incumbent).
    */
   f_t objective_cutoff{std::numeric_limits<f_t>::infinity()};
+  /**
+   * @brief Non-batch only: stop with TimeLimit once the objectives stall (0: off).
+   *
+   * Checked every 10000 iterations: the primal and the dual objective both moved by at most 1e-5
+   * (relative) since the previous check. When this holds at this many consecutive checks the
+   * current iterate is returned with status TimeLimit, as if the time limit had been reached. For
+   * callers that only need the objective of the LP and repair its feasibility themselves (an
+   * iterate whose objectives no longer move ends like one at the time limit, only earlier).
+   */
+  i_t stall_stop_checks{0};
   presolver_t presolver{presolver_t::Default};
   bool dual_postsolve{true};
   // Concurrent LP/MIP: 1–2 GPUs. Multi-GPU PDLP (method=PDLP): up to the visible device
