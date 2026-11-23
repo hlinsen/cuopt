@@ -191,6 +191,7 @@ mip_solution_t<i_t, f_t> run_mip_solver(
       return solution.get_solution(true, stats, false);
     }
     // problem contains unpreprocessed data
+    CUOPT_LOG_INFO("Presolve timing: run_mip start elapsed=%.2f", timer.elapsed_time());
     mip::problem_t<i_t, f_t> scaled_problem(problem);
     cuopt_func_call(auto saved_problem = scaled_problem);
     CUOPT_LOG_INFO("Objective offset %f scaling_factor %f",
@@ -205,7 +206,10 @@ mip_solution_t<i_t, f_t> run_mip_solver(
     scaled_problem.preprocess_problem();
     scaled_problem.related_vars_time_limit = settings.heuristic_params.related_vars_time_limit;
     const i_t n_vars_before                = scaled_problem.n_variables;
+    CUOPT_LOG_INFO("Presolve timing: run_mip copied and preprocessed elapsed=%.2f",
+                   timer.elapsed_time());
     mip::trivial_presolve(scaled_problem, /*remap_cache_ids=*/true);
+    CUOPT_LOG_INFO("Presolve timing: run_mip trivial presolve elapsed=%.2f", timer.elapsed_time());
 
 #ifdef DETECT_SYMMETRY_BEFORE_PRESOLVE
     // Trivial presolve may remove unused variables and renumber the remaining ones.
@@ -236,6 +240,7 @@ mip_solution_t<i_t, f_t> run_mip_solver(
     // after cuOpt's presolve (probing cache, bounds propagation, trivial presolve) completes.
 
     mip::mip_solver_t<i_t, f_t> solver(scaled_problem, settings, timer);
+    CUOPT_LOG_INFO("Presolve timing: run_mip solver constructed elapsed=%.2f", timer.elapsed_time());
     solver.context.task_exception = &task_exception;
     // initial_upper_bound is in user-space (representation-invariant).
     // It will be converted to the target solver-space at each consumption point.
@@ -345,6 +350,8 @@ mip_solution_t<i_t, f_t> run_mip_solver(
                          papilo_incumbent);
       solver.context.early_cpufj_ptr = early_cpufj.get();
       CUOPT_LOG_DEBUG("Started early CPUFJ on papilo-presolved problem during cuOpt presolve");
+      CUOPT_LOG_INFO("Presolve timing: run_mip early CPUFJ started elapsed=%.2f",
+                     timer.elapsed_time());
 
       if (early_structural) {
         if (std::isfinite(initial_upper_bound)) {
@@ -721,6 +728,8 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
       CUOPT_LOG_INFO("Presolve timing: reduced op problem built elapsed=%.2f", timer.elapsed_time());
 
       problem = mip::problem_t<i_t, f_t>(presolve_result_opt->reduced_problem);
+      CUOPT_LOG_INFO("Presolve timing: reduced device problem_t elapsed=%.2f",
+                     timer.elapsed_time());
       problem.set_papilo_presolve_data(presolver.get(),
                                        presolve_result_opt->reduced_to_original_map,
                                        presolve_result_opt->original_to_reduced_map,
@@ -759,6 +768,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
       }
       early_gpufj.reset();  // Free GPU memory
     }
+    CUOPT_LOG_INFO("Presolve timing: early GPUFJ stopped elapsed=%.2f", timer.elapsed_time());
 
     if (early_cpufj && run_presolve && presolve_result_opt.has_value()) {
       early_cpufj->stop();
@@ -769,6 +779,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(
       }
       early_cpufj.reset();
     }
+    CUOPT_LOG_INFO("Presolve timing: early CPUFJ stopped elapsed=%.2f", timer.elapsed_time());
 
     if (early_structural) {
       early_structural->stop();
