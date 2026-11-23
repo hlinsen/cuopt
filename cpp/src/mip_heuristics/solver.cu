@@ -28,6 +28,8 @@
 #include <mip_heuristics/structural/early_structural.cuh>
 #include <presolve/conflict_graph/clique_table.cuh>
 #include <raft/core/cusparse_macros.hpp>
+#include <raft/core/handle.hpp>
+#include <rmm/cuda_stream.hpp>
 
 #include <cmath>
 #include <future>
@@ -449,6 +451,11 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                 std::placeholders::_3);
   }
 
+  // Dedicated stream/handle for the B&B PDLP root loop. Declared before B&B so it outlives it, and
+  // destroyed only after the taskgroup below has joined every task that may use it.
+  rmm::cuda_stream pdlp_root_stream;
+  raft::handle_t pdlp_root_handle(pdlp_root_stream);
+
   // Create the branch and bound object
   auto branch_and_bound =
     std::make_unique<mip::branch_and_bound_t<i_t, f_t>>(branch_and_bound_problem,
@@ -456,7 +463,8 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                                                         timer_.get_tic_start(),
                                                         probing_implied_bound,
                                                         context.problem_ptr->clique_table,
-                                                        context.symmetry.get());
+                                                        context.symmetry.get(),
+                                                        &pdlp_root_handle);
 
   // Convert the best external upper bound from user-space to B&B's internal objective space.
   // context.problem_ptr is the post-trivial-presolve problem, whose get_solver_obj_from_user_obj

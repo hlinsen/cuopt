@@ -859,7 +859,33 @@ class cut_generation_t {
                      variable_bounds_t<i_t, f_t>& variable_bounds,
                      f_t start_time);
 
+  // Basis-free separation (e.g. from a PDLP point): every family except Gomory / tableau CG.
+  bool generate_cuts(const simplex::lp_problem_t<i_t, f_t>& lp,
+                     const simplex::simplex_solver_settings_t<i_t, f_t>& settings,
+                     csr_matrix_t<i_t, f_t>& Arow,
+                     const std::vector<i_t>& new_slacks,
+                     const std::vector<simplex::variable_type_t>& var_types,
+                     const std::vector<f_t>& xstar,
+                     const std::vector<f_t>& ystar,
+                     const std::vector<f_t>& zstar,
+                     variable_bounds_t<i_t, f_t>& variable_bounds,
+                     f_t start_time);
+
  private:
+  bool generate_cuts_impl(const simplex::lp_problem_t<i_t, f_t>& lp,
+                          const simplex::simplex_solver_settings_t<i_t, f_t>& settings,
+                          csr_matrix_t<i_t, f_t>& Arow,
+                          const std::vector<i_t>& new_slacks,
+                          const std::vector<simplex::variable_type_t>& var_types,
+                          simplex::basis_update_mpf_t<i_t, f_t>* basis_update,
+                          const std::vector<f_t>& xstar,
+                          const std::vector<f_t>& ystar,
+                          const std::vector<f_t>& zstar,
+                          const std::vector<i_t>* basic_list,
+                          const std::vector<i_t>* nonbasic_list,
+                          variable_bounds_t<i_t, f_t>& variable_bounds,
+                          f_t start_time);
+
   // Generate all mixed integer gomory cuts
   void generate_gomory_cuts(const simplex::lp_problem_t<i_t, f_t>& lp,
                             const simplex::simplex_solver_settings_t<i_t, f_t>& settings,

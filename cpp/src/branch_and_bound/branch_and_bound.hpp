@@ -11,6 +11,7 @@
 #include <branch_and_bound/deterministic_workers.hpp>
 #include <branch_and_bound/mip_node.hpp>
 #include <branch_and_bound/node_queue.hpp>
+#include <branch_and_bound/pdlp_root_loop.hpp>
 #include <branch_and_bound/pseudo_costs.hpp>
 #include <branch_and_bound/reduced_cost_bounds.hpp>
 #include <branch_and_bound/worker.hpp>
@@ -48,6 +49,10 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+
+namespace raft {
+class handle_t;
+}
 
 namespace cuopt::mathematical_optimization::mip {
 
@@ -104,7 +109,8 @@ class branch_and_bound_t {
                      f_t start_time,
                      const probing_implied_bound_t<i_t, f_t>& probing_implied_bound,
                      std::shared_ptr<mip::clique_table_t<i_t, f_t>> clique_table = nullptr,
-                     mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr);
+                     mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr,
+                     const raft::handle_t* pdlp_root_handle                      = nullptr);
 
   // Set an initial guess based on the user_problem. This should be called before solve.
   void set_initial_guess(const std::vector<f_t>& user_guess) { guess_ = user_guess; }
@@ -287,6 +293,41 @@ class branch_and_bound_t {
   submip_stats_t rens_stats_;
   submip_stats_t mutation_stats_;
 
+  // PDLP root loop (see pdlp_root_loop.hpp). Only the top-level B&B gets a handle.
+  struct pdlp_root_loop_state_t;
+  const raft::handle_t* pdlp_root_handle_{nullptr};
+  pdlp_root_loop_params_t pdlp_root_params_;
+  std::atomic<int> pdlp_root_halt_{0};         // stops PDLP solves and separation
+  std::atomic<int> pdlp_root_submip_halt_{0};  // stops the RENS sub-MIPs
+  bool pdlp_root_task_started_{false};
+  i_t pdlp_root_task_status_{0};  // OpenMP dependence token for the loop task
+  i_t pdlp_root_submip_slot_base_{0};
+  submip_stats_t pdlp_rens_stats_;  // kept apart from rens_stats_ (drives adaptive RENS fix rates)
+  omp_mutex_t pdlp_root_cuts_mutex_;
+  std::vector<std::pair<cut_type_t, inequality_t<i_t, f_t>>> pdlp_root_staged_cuts_;
+  // True from the start of solve() until the tree search starts: lets root-phase sub-MIPs run
+  // before is_running_ is set.
+  omp_atomic_t<bool> in_root_phase_{false};
+
+  void launch_pdlp_root_loop(const std::vector<f_t>& x,
+                             const std::vector<f_t>& y,
+                             const std::vector<f_t>& z,
+                             const char* source);
+  void run_pdlp_root_loop(std::shared_ptr<pdlp_root_loop_state_t> state);
+  bool pdlp_root_resolve(pdlp_root_loop_state_t& state, i_t pass);
+  i_t pdlp_root_separate(pdlp_root_loop_state_t& state, i_t pass);
+  i_t stage_pdlp_root_cuts(const pdlp_root_loop_state_t& state,
+                           csr_matrix_t<i_t, f_t>& cuts,
+                           const std::vector<f_t>& cut_rhs,
+                           const std::vector<cut_type_t>& cut_types);
+  void pdlp_root_launch_rens(pdlp_root_loop_state_t& state, i_t pass);
+  void solve_pdlp_rens(diving_worker_t<i_t, f_t>* worker,
+                       simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
+                       i_t pass);
+  i_t merge_pdlp_root_cuts(cut_pool_t<i_t, f_t>& cut_pool);
+  void halt_pdlp_root_submips();
+  void stop_pdlp_root_loop();
+
   // Global status of the solver.
   omp_atomic_t<mip_status_t> solver_status_;
   omp_atomic_t<bool> is_running_{false};
@@ -407,7 +448,8 @@ class branch_and_bound_t {
                     submip_stats_t& submip_stats,
                     f_t fixrate,
                     i_t simplex_iter_used,
-                    simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
+                    simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
+                    i_t thread_budget = 1);
 
   void mutation(diving_worker_t<i_t, f_t>* worker,
                 simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);

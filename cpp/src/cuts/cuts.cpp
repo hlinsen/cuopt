@@ -349,8 +349,67 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(const lp_problem_t<i_t, f_t>& lp,
                                                variable_bounds_t<i_t, f_t>& variable_bounds,
                                                f_t start_time)
 {
-  // Generate Gomory and CG Cuts
-  if (settings.mixed_integer_gomory_cuts != 0 || settings.strong_chvatal_gomory_cuts != 0) {
+  return generate_cuts_impl(lp,
+                            settings,
+                            Arow,
+                            new_slacks,
+                            var_types,
+                            &basis_update,
+                            xstar,
+                            ystar,
+                            zstar,
+                            &basic_list,
+                            &nonbasic_list,
+                            variable_bounds,
+                            start_time);
+}
+
+template <typename i_t, typename f_t>
+bool cut_generation_t<i_t, f_t>::generate_cuts(const lp_problem_t<i_t, f_t>& lp,
+                                               const simplex_solver_settings_t<i_t, f_t>& settings,
+                                               csr_matrix_t<i_t, f_t>& Arow,
+                                               const std::vector<i_t>& new_slacks,
+                                               const std::vector<variable_type_t>& var_types,
+                                               const std::vector<f_t>& xstar,
+                                               const std::vector<f_t>& ystar,
+                                               const std::vector<f_t>& zstar,
+                                               variable_bounds_t<i_t, f_t>& variable_bounds,
+                                               f_t start_time)
+{
+  return generate_cuts_impl(lp,
+                            settings,
+                            Arow,
+                            new_slacks,
+                            var_types,
+                            nullptr,
+                            xstar,
+                            ystar,
+                            zstar,
+                            nullptr,
+                            nullptr,
+                            variable_bounds,
+                            start_time);
+}
+
+template <typename i_t, typename f_t>
+bool cut_generation_t<i_t, f_t>::generate_cuts_impl(
+  const lp_problem_t<i_t, f_t>& lp,
+  const simplex_solver_settings_t<i_t, f_t>& settings,
+  csr_matrix_t<i_t, f_t>& Arow,
+  const std::vector<i_t>& new_slacks,
+  const std::vector<variable_type_t>& var_types,
+  basis_update_mpf_t<i_t, f_t>* basis_update,
+  const std::vector<f_t>& xstar,
+  const std::vector<f_t>& ystar,
+  const std::vector<f_t>& zstar,
+  const std::vector<i_t>* basic_list,
+  const std::vector<i_t>* nonbasic_list,
+  variable_bounds_t<i_t, f_t>& variable_bounds,
+  f_t start_time)
+{
+  // Generate Gomory and CG Cuts (tableau rows need a basis)
+  if (basis_update != nullptr &&
+      (settings.mixed_integer_gomory_cuts != 0 || settings.strong_chvatal_gomory_cuts != 0)) {
     if (toc(start_time) >= settings.time_limit) { return true; }
     f_t cut_start_time = tic();
     generate_gomory_cuts(lp,
@@ -358,10 +417,10 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(const lp_problem_t<i_t, f_t>& lp,
                          Arow,
                          new_slacks,
                          var_types,
-                         basis_update,
+                         *basis_update,
                          xstar,
-                         basic_list,
-                         nonbasic_list,
+                         *basic_list,
+                         *nonbasic_list,
                          start_time);
     f_t cut_generation_time = toc(cut_start_time);
     if (cut_generation_time > 1.0) {
