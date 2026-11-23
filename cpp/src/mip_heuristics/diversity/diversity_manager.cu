@@ -1212,22 +1212,62 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // point then stays feasible for the pattern's fixed LP.
   std::vector<char> link_keep(n_vars, 0);
   i_t n_keep_used = 0, n_keep_rows = 0, n_keep_int_rows = 0, n_close = 0;
+  // the anchored point as moved by the accepted moves: row activities (fp_host numbering) and the
+  // values of the single-row continuous columns that absorb them
+  std::vector<double> mv_act;
+  std::vector<f_t> mv_x;
+  struct move_t {
+    i_t col, row;
+    double coef, value;
+  };
+  std::vector<move_t> mv_cols;
+  // moves integer v by d at the moved point unless that takes the point out of one of v's rows
+  // (other than skip_row): 0 moved, 1 an integer-only row, 2 a row with continuous columns that
+  // no single-row continuous column absorbs
+  auto try_move = [&](i_t v, double d, i_t skip_row) -> int {
+    mv_cols.clear();
+    for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
+      const i_t r = fp_host.var_rows[kk];
+      if (fp_host.row_orig[r] == skip_row) { continue; }
+      const double na = mv_act[r] + (double)fp_host.var_vals[kk] * d;
+      const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r];
+      const double tol =
+        1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
+      if (na <= hi + tol && na >= lo - tol) { continue; }
+      if (!frow_mixed[r]) { return 1; }
+      const double need = na > hi + tol ? hi - na : lo - na;
+      bool absorbed     = false;
+      for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1] && !absorbed; ++p) {
+        const i_t j = fp_host.row_cols[p];
+        if (is_int[j] || col_nrows[j] != 1 || fp_host.row_vals[p] == 0) { continue; }
+        const double nx = (double)mv_x[j] + need / (double)fp_host.row_vals[p];
+        if (nx >= h_vlb[j] - 1e-9 && nx <= h_vub[j] + 1e-9) {
+          mv_cols.push_back({j, r, (double)fp_host.row_vals[p], nx});
+          absorbed = true;
+        }
+      }
+      if (!absorbed) { return 2; }
+    }
+    for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
+      mv_act[fp_host.var_rows[kk]] += (double)fp_host.var_vals[kk] * d;
+    }
+    for (const auto& m : mv_cols) {
+      mv_act[m.row] += m.coef * (m.value - (double)mv_x[m.col]);
+      mv_x[m.col] = (f_t)m.value;
+    }
+    return 0;
+  };
   auto set_link_keep = [&]() {
-    std::vector<double> act(fp_host.n_rows(), 0);
+    mv_act.assign(fp_host.n_rows(), 0);
     for (i_t r = 0; r < fp_host.n_rows(); ++r) {
       double a = 0;
       for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1]; ++p) {
         a += (double)fp_host.row_vals[p] * (double)anchor_x[fp_host.row_cols[p]];
       }
-      act[r] = a;
+      mv_act[r] = a;
     }
-    std::vector<f_t> xs = anchor_x;  // single-row continuous columns, as moved by the closings
+    mv_x        = anchor_x;
     n_keep_used = n_keep_rows = n_keep_int_rows = n_close = 0;
-    struct move_t {
-      i_t col, row;
-      double coef, value;
-    };
-    std::vector<move_t> moves;  // single-row columns moved by one closing
     for (auto v : h_int) {
       const i_t k = link_of[v];
       link_keep[v] = 0;
@@ -1238,47 +1278,14 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         continue;
       }
       if (!(anchor_x[v] > 0.5)) { continue; }
-      bool safe = true, int_row = false;
-      moves.clear();
-      for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1] && safe; ++kk) {
-        const i_t r = fp_host.var_rows[kk];
-        if (fp_host.row_orig[r] == vub[k].row) { continue; }
-        const double na = act[r] - (double)fp_host.var_vals[kk] * (double)anchor_x[v];
-        const double lo = fp_host.row_lb[r], hi = fp_host.row_ub[r];
-        const double tol =
-          1e-6 * std::max({1., std::isfinite(lo) ? std::abs(lo) : 0., std::isfinite(hi) ? std::abs(hi) : 0.});
-        if (na <= hi + tol && na >= lo - tol) { continue; }
-        safe = false;
-        if (!frow_mixed[r]) {
-          int_row = true;
-          break;
-        }
-        const double need = na > hi + tol ? hi - na : lo - na;
-        for (i_t p = fp_host.row_offsets[r]; p < fp_host.row_offsets[r + 1]; ++p) {
-          const i_t j = fp_host.row_cols[p];
-          if (is_int[j] || col_nrows[j] != 1 || fp_host.row_vals[p] == 0) { continue; }
-          const double nx = (double)xs[j] + need / (double)fp_host.row_vals[p];
-          if (nx >= h_vlb[j] - 1e-9 && nx <= h_vub[j] + 1e-9) {
-            moves.push_back({j, r, (double)fp_host.row_vals[p], nx});
-            safe = true;
-            break;
-          }
-        }
-      }
-      if (!safe) {
+      const int m = try_move(v, -(double)anchor_x[v], vub[k].row);
+      if (m != 0) {
         link_keep[v] = 1;
-        n_keep_int_rows += int_row;
-        n_keep_rows += !int_row;
+        n_keep_int_rows += m == 1;
+        n_keep_rows += m == 2;
         continue;
       }
       n_close++;
-      for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
-        act[fp_host.var_rows[kk]] -= (double)fp_host.var_vals[kk] * (double)anchor_x[v];
-      }
-      for (const auto& m : moves) {
-        act[m.row] += m.coef * (m.value - (double)xs[m.col]);
-        xs[m.col] = (f_t)m.value;
-      }
     }
   };
   // pattern of the current point, then fix-and-propagate (most used first), fixed LP, push,
@@ -1863,6 +1870,84 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       timer.elapsed_time());
     return n_new_forced > 0 ? 4 : 0;  // 4: flip-repaired, worth evaluating the point again
   };
+  // safe neighbourhood step of the anchored point: its used-link pattern (the flow-free links whose
+  // closing keeps the point within its rows closed, see set_link_keep), plus the binaries whose
+  // flip is estimated to gain by its reduced cost at the anchored point's fixed-LP duals (rows with
+  // continuous columns), largest estimate first, each kept only if the anchored point, moved by
+  // the flips kept so far, stays within every row of the binary (single-row continuous columns
+  // absorbing what they can, e.g. a fixed cost). The anchored point then stays feasible for the
+  // step's fixed LP, whose value is at most the incumbent's; fix-and-propagate has nothing to
+  // settle. Returns eval_pattern's code, or 5 when the step would not move the point.
+  constexpr i_t max_safe_flips = 1024;
+  auto safe_step = [&]() -> int {
+    if (anchor_y.size() != (size_t)n_cstrs || anchor_x.size() != (size_t)n_vars ||
+        !std::isfinite(anchor_obj)) {
+      return 5;
+    }
+    const f_t eps = f_t(1e-7) * std::max<f_t>(1, std::abs(anchor_obj));
+    std::vector<std::pair<f_t, i_t>> cand;
+    set_link_keep();
+    for (auto v : h_int) {
+      const i_t k = link_of[v];
+      nb_pref[v]  = std::clamp<f_t>(std::floor(anchor_x[v] + 0.5), h_vlb[v], h_vub[v]);
+      if (k >= 0) {
+        nb_pref[v] = link_keep[v] ? f_t(1) : f_t(0);
+        nb_key[v]  = link_keep[v] ? 2 : 0;
+      } else {
+        nb_key[v] = nb_pref[v];
+      }
+      if (h_vlb[v] != 0 || h_vub[v] != 1) { continue; }
+      double aty = 0;
+      for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
+        const i_t r = fp_host.var_rows[kk];
+        if (frow_mixed[r]) { aty += (double)fp_host.var_vals[kk] * anchor_y[fp_host.row_orig[r]]; }
+      }
+      const f_t rc   = (f_t)((double)h_obj[v] - aty);
+      const f_t gain = nb_pref[v] > 0.5 ? rc : -rc;
+      if (gain > eps) { cand.push_back({gain, v}); }
+    }
+    std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) {
+      return a.first > b.first || (a.first == b.first && a.second < b.second);
+    });
+    std::vector<i_t> kept;
+    i_t n_rej_int = 0, n_rej_rows = 0, n_open = 0;
+    double gain_kept = 0;
+    for (const auto& [g, v] : cand) {
+      if ((i_t)kept.size() >= max_safe_flips) { break; }
+      const bool up = nb_pref[v] < 0.5;
+      const int m   = try_move(v, up ? 1. : -1., -1);
+      n_rej_int += m == 1;
+      n_rej_rows += m == 2;
+      if (m != 0) { continue; }
+      kept.push_back(v);
+      n_open += up;
+      gain_kept += g;
+    }
+    for (size_t q = 0; q < kept.size(); ++q) {
+      const i_t v = kept[q];
+      nb_pref[v]  = 1 - nb_pref[v];
+      nb_key[v]   = 3 + (f_t)(kept.size() - q) / (f_t)kept.size();
+    }
+    CUOPT_LOG_INFO(
+      "Slope scaling safe step: used=%d closed=%d kept_by_rows=%d kept_by_int_rows=%d "
+      "candidates=%zu flipped=%zu opened=%d closed_by_flip=%d rejected_int_rows=%d "
+      "rejected_rows=%d est_gain_top=%g est_gain_kept=%g elapsed=%.2f",
+      n_keep_used,
+      n_close,
+      n_keep_rows,
+      n_keep_int_rows,
+      cand.size(),
+      kept.size(),
+      n_open,
+      (int)kept.size() - n_open,
+      n_rej_int,
+      n_rej_rows,
+      cand.empty() ? 0. : (double)cand[0].first,
+      gain_kept,
+      timer.elapsed_time());
+    if (kept.empty() && n_close == 0) { return 5; }
+    return eval_pattern(f_t(0), 2);
+  };
   // dual-guided flips around the anchored point, on top of its used-link pattern: the reduced
   // cost of each binary at the duals of the anchored point's fixed LP (rows with continuous
   // columns) estimates the gain of flipping it alone (an upper bound: the fixed-LP value is
@@ -1953,8 +2038,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     return eval_pattern(f_t(0), 2);
   };
   // one evaluation of the slope-scaling point at thr: retried once after a flip repair; a new
-  // incumbent is followed by one evaluation of its used-link pattern (and starts a new flip
-  // schedule)
+  // incumbent is followed by safe steps while they improve (at most max_safe_chain), and starts a
+  // new flip schedule
+  constexpr int max_safe_chain = 2;
   constexpr int max_flip_steps = 64;
   constexpr i_t flip_sizes[]   = {256, 32, 8};
   size_t flip_s                = 0;  // flip-set size of the next flip step
@@ -1969,11 +2055,16 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (r == 3 || !std::isfinite(last_eval_obj)) { return r == 4 ? 0 : r; }
     flip_s = 0;
     std::fill(flip_tabu.begin(), flip_tabu.end(), 0);
-    n_tabu       = 0;
-    const int r1 = eval_pattern(f_t(0), 1);
-    std::fill(forced_open.begin(), forced_open.end(), 0);
-    n_forced = 0;
-    if (r1 == 3) { return 3; }
+    n_tabu = 0;
+    for (int q = 0; q < max_safe_chain; ++q) {
+      const f_t before = anchor_obj;
+      last_eval_obj    = std::numeric_limits<f_t>::infinity();
+      const int r1     = safe_step();
+      std::fill(forced_open.begin(), forced_open.end(), 0);
+      n_forced = 0;
+      if (r1 == 3) { return 3; }
+      if (r1 == 5 || !(anchor_obj < before)) { break; }
+    }
     return r == 4 ? 0 : r;
   };
   // dual-guided flip steps on top of the used-link pattern of the anchored point, while they
