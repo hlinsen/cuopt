@@ -629,9 +629,6 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     lp_settings.concurrent_halt = &local_halt;
     lp_settings.inside_mip      = false;
     lp_settings.num_gpus        = context.settings.num_gpus;
-    // an infeasible fixed LP (a pattern without the capacity some rows need) stops after a few
-    // thousand iterations instead of running into the time limit
-    lp_settings.divergence_stop_checks = 3;
     std::vector<var_t> h_types(fixed_problem.n_variables, var_t::CONTINUOUS);
     snapshot.set_variable_types(h_types.data(), fixed_problem.n_variables);
     if (warm) {
@@ -1350,14 +1347,26 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         pref[v]     = std::clamp<f_t>(std::floor(x + 0.5), h_vlb[v], h_vub[v]);
       }
     }
-    // preference repair on the binary-only rows (mode 0): a row the preferred values violate (a
+    // preference repair on the binary-only rows: a row the preferred values violate (a
     // cover "one of these must open" with all closed, a packing row with two open) is otherwise
     // settled by fix-and-propagate in fixing order, often too late (both values of its last
     // binary conflict). Each violated row flips the binary of the row whose flip lowers the
     // total violation of the binary-only rows most (the one with the LP value nearest its new
-    // value on ties); binaries flipped open are fixed with the pattern's opens.
+    // value on ties); binaries flipped open are fixed with the pattern's opens. In mode 1 the
+    // used-link pattern closes the incumbent's open binaries without flow that these rows need;
+    // the LP-nearest tie-break then reopens the incumbent's own binaries.
+    // mode 1: linked binaries open in the published point (px) that the used-link preference
+    // closes (before the preference repair)
+    i_t n_pub_open = 0, n_pub_pref_closed0 = 0;
+    if (mode == 1) {
+      for (auto v : h_int) {
+        if (link_of[v] < 0 || !(px[v] > 0.5)) { continue; }
+        n_pub_open++;
+        n_pub_pref_closed0 += pref[v] < 0.5;
+      }
+    }
     i_t n_bviol0 = 0, n_bviol1 = 0, n_bflips = 0;
-    if (mode == 0 && !brows.empty()) {
+    if (!brows.empty()) {
       const size_t nb = brows.size();
       std::vector<double> bact(nb, 0);
       auto bviol      = [&](size_t q, double a) {
@@ -1393,7 +1402,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         double best_score = 0, best_dist = 0;
         for (i_t p = h_offsets[r]; p < h_offsets[r + 1]; ++p) {
           const i_t j = h_cols[p];
-          if (forced_open[j]) { continue; }
+          if (forced_open[j] || (mode == 2 && nb_key[j] >= 3)) { continue; }
           const double dj = pref[j] > 0.5 ? -1. : 1.;
           if (bviol(q, bact[q] + h_vals[p] * dj) >= v0) { continue; }
           double score = 0;
@@ -1403,7 +1412,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
           }
           if (score >= -1e-9) { continue; }
           const double dist =
-            std::abs(std::clamp<double>(cur_x[j], 0., 1.) - (pref[j] > 0.5 ? 0. : 1.));
+            std::abs(std::clamp<double>(px[j], 0., 1.) - (pref[j] > 0.5 ? 0. : 1.));
           if (best < 0 || score < best_score - 1e-9 ||
               (score < best_score + 1e-9 && dist < best_dist)) {
             best       = j;
@@ -1414,7 +1423,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         if (best < 0) { continue; }
         const double dj = pref[best] > 0.5 ? -1. : 1.;
         pref[best]      = pref[best] > 0.5 ? f_t(0) : f_t(1);
-        key[best]       = pref[best] > 0.5 ? 1 + std::clamp<f_t>(cur_x[best], 0, 1) : f_t(0);
+        key[best]       = pref[best] > 0.5 ? 1 + std::clamp<f_t>(px[best], 0, 1) : f_t(0);
         n_bflips++;
         for (i_t t = bvar_off[best]; t < bvar_off[best + 1]; ++t) {
           const i_t qq = bvar_row[t];
@@ -1525,14 +1534,37 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       n_ones,
       (int)dup,
       timer.elapsed_time());
-    if (mode == 0) {
+    CUOPT_LOG_INFO(
+      "Slope scaling pattern binary rows: mode=%d rows=%zu violated_by_preference=%d flips=%d "
+      "still_violated=%d",
+      mode,
+      brows.size(),
+      n_bviol0,
+      n_bflips,
+      n_bviol1);
+    if (mode == 1) {
+      // the published design against the used-link pattern: published-open linked binaries
+      // closed by the preference (before / after the preference repair) and by the final
+      // pattern, and published-closed ones the final pattern opens
+      i_t n_pref_closed1 = 0, n_pat_closed = 0, n_pat_opened = 0;
+      for (size_t qq = 0; qq < h_int.size(); ++qq) {
+        const i_t v = h_int[qq];
+        if (link_of[v] < 0) { continue; }
+        const bool po = px[v] > 0.5;
+        n_pref_closed1 += po && pref[v] < 0.5;
+        n_pat_closed += po && pat[qq] < 0.5;
+        n_pat_opened += !po && pat[qq] > 0.5;
+      }
       CUOPT_LOG_INFO(
-        "Slope scaling pattern binary rows: rows=%zu violated_by_preference=%d flips=%d "
-        "still_violated=%d",
-        brows.size(),
-        n_bviol0,
-        n_bflips,
-        n_bviol1);
+        "Slope scaling used-link pattern vs published: published_open=%d pref_closed=%d "
+        "pref_closed_after_repair=%d pattern_closed=%d pattern_opened_other=%d",
+        n_pub_open,
+        n_pub_pref_closed0,
+        n_pref_closed1,
+        n_pat_closed,
+        n_pat_opened);
+    }
+    if (mode == 0) {
       // link rows carrying flow at the point that the pattern closes: by the threshold (for a
       // pair row: with the two binaries' values summing to the threshold or more) or by
       // fix-and-propagate (a binary the pattern opened)
