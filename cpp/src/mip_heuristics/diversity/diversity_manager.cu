@@ -1184,7 +1184,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   auto eval_pattern = [&](f_t thr, int mode) -> int {
     if (stop() || remaining() < 0.1 * budget) { return 3; }
     std::vector<f_t> key(n_vars, 0), pref(n_vars, 0);
-    i_t n_kept = 0;  // linked binaries opened by the hysteresis only
+    i_t n_kept     = 0;  // linked binaries opened by the hysteresis only
+    i_t n_pair_sum = 0;  // pair binaries opened by the pair's value sum
     for (auto v : h_int) {
       const i_t k = link_of[v];
       if (forced_open[v]) {
@@ -1201,10 +1202,24 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         // a pair binary is opened by its own LP value (the LP chooses between the two binaries);
         // a binary open in the last published point stays open down to keep_frac * thr
         const f_t yk = vub[k].pair ? std::max<f_t>(cur_x[v], 0) : std::max<f_t>(u[k], 0) / scale[k];
-        const bool o = is_open[k] && (yk >= thr || (anchor_open[v] && yk >= keep_frac * thr));
-        key[v]       = o ? 1 + yk : 0;
-        pref[v]      = o ? f_t(1) : f_t(0);
+        auto opens   = [&](i_t b, f_t y) {
+          return y >= thr || (anchor_open[b] && y >= keep_frac * thr);
+        };
+        bool o = is_open[k] && opens(v, yk);
         n_kept += o && yk < thr;
+        // a pair row whose flow the LP splits so that neither binary opens by itself, while the
+        // two values sum to thr or more: the binary with the larger value opens
+        const i_t p = pair_partner[k];
+        if (!o && is_open[k] && p >= 0) {
+          const i_t w  = vub[p].var;
+          const f_t yw = std::max<f_t>(cur_x[w], 0);
+          if (!opens(w, yw) && yk + yw >= thr && (yk > yw || (yk == yw && v < w))) {
+            o = true;
+            n_pair_sum++;
+          }
+        }
+        key[v]  = o ? 1 + yk : 0;
+        pref[v] = o ? f_t(1) : f_t(0);
       } else {
         const f_t x = std::clamp(cur_x[v], h_vlb[v], h_vub[v]);
         key[v]      = x;
@@ -1418,13 +1433,15 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       }
       CUOPT_LOG_INFO(
         "Slope scaling pattern closes used link rows: used=%d closed_by_threshold=%d "
-        "(pair_sum_above=%d) closed_by_propagation=%d closed_flow_share=%.3f kept_by_anchor=%d",
+        "(pair_sum_above=%d) closed_by_propagation=%d closed_flow_share=%.3f kept_by_anchor=%d "
+        "pair_sum_opened=%d",
         n_used,
         n_closed_thr,
         n_closed_pair_sum,
         n_closed_fp,
         flow_used > 0 ? flow_closed / flow_used : 0.,
-        n_kept);
+        n_kept,
+        n_pair_sum);
       // mixed coupling rows the pattern's binaries overload at the point's flows (before the
       // fixed LP moves the flows): rounding a linked binary up takes more of the row
       i_t n_over = 0;
