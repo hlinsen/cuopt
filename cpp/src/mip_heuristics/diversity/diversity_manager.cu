@@ -1483,6 +1483,12 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // the anchored (last published) point and its fixed-LP duals: the point of the neighbourhood
   // evaluations (mode 1 and 2), kept while the rounds move cur_x / cur_y
   std::vector<f_t> anchor_x, anchor_y;
+  // near miss: a round pattern whose fixed LP ends just above the incumbent (within near_frac)
+  // is repaired anyway; its point (and fixed-LP duals) is the anchor of one safe chain, whose
+  // first steps gain 1-2% after a round pattern (late round patterns end 0.9-1.4% above)
+  constexpr f_t near_frac = f_t(0.015);
+  f_t near_obj            = std::numeric_limits<f_t>::infinity();
+  std::vector<f_t> near_x, near_y;
   // mode 2 pattern (neighbourhood of the anchored point): preferred value and order key per
   // integer, set by the caller
   std::vector<f_t> nb_pref(n_vars, 0), nb_key(n_vars, 0);
@@ -2117,7 +2123,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                : std::numeric_limits<f_t>::infinity();
     // a safe step's moved point is feasible for its fixed LP
     const std::vector<f_t>& wx = safe_warm && mv_x.size() == (size_t)n_vars ? mv_x : px;
-    auto ev                    = eval_fixed_pattern(assign,
+    // round patterns are repaired (and their LP not cut off) up to a near miss
+    const f_t repair_near = mode == 0 && std::isfinite(repair_below)
+                              ? repair_below + near_frac * std::abs(repair_below)
+                              : repair_below;
+    auto ev               = eval_fixed_pattern(assign,
                                  1e-4,
                                  rank_tlimit,
                                  &wx,
@@ -2125,10 +2135,21 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  true,
                                  repair_limit,
                                  "slope_scaling",
-                                 repair_below,
+                                 repair_near,
                                  11.,
                                  retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity(),
-                                 repair_below);
+                                 repair_near);
+    if (mode == 0 && !ev.published && ev.repaired_assignment.size() == (size_t)n_vars &&
+        ev.dual.size() == (size_t)n_cstrs && ev.repaired_obj < repair_near &&
+        ev.repaired_obj < near_obj) {
+      near_x   = ev.repaired_assignment;
+      near_y   = ev.dual;
+      near_obj = ev.repaired_obj;
+      CUOPT_LOG_INFO("Slope scaling near miss: repaired=%g incumbent=%g (+%.3f%%)",
+                     ev.repaired_obj,
+                     repair_below,
+                     100. * (ev.repaired_obj - repair_below) / std::abs(repair_below));
+    }
     if (mode == 0 && !retry) { first_try_res = ev.l2_primal_res; }
     if (mode == 0) { point_lps++; }
     if (ev.aborted) {
@@ -3069,6 +3090,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       // turn into fix-and-propagate conflicts far more often) only when it repeats a pattern
       int r                 = 1;
       const f_t before_eval = anchor_obj;
+      near_obj              = std::numeric_limits<f_t>::infinity();
       for (int t = 0; t < 3 && r == 1; ++t) {
         r = run_eval(eval_thresholds[t]);
       }
@@ -3078,7 +3100,28 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       // a published round pattern is followed by safe steps while they gain, then the next round.
       // Without a publish the rounds go on undisturbed: a safe step's publish restarts them from
       // its point, and the round patterns of the leader runs hit after a few undisturbed rounds
-      if (anchor_obj < before_eval && safe_chain(false) == 3) { break; }
+      if (anchor_obj < before_eval) {
+        if (safe_chain(false) == 3) { break; }
+      } else if (std::isfinite(near_obj) && std::isfinite(anchor_obj)) {
+        // a near miss: safe steps from its point; the incumbent's anchor comes back unless one
+        // of them published
+        const f_t inc_obj = anchor_obj;
+        anchor_x.swap(near_x);
+        anchor_y.swap(near_y);
+        std::swap(anchor_obj, near_obj);
+        const int rs = safe_chain(false);
+        if (!(anchor_obj < inc_obj)) {
+          anchor_x.swap(near_x);
+          anchor_y.swap(near_y);
+          anchor_obj = inc_obj;
+        }
+        CUOPT_LOG_INFO("Slope scaling near-miss chain: %s obj=%g elapsed=%.2f",
+                       anchor_obj < inc_obj ? "improved" : "no gain",
+                       anchor_obj,
+                       timer.elapsed_time());
+        near_obj = std::numeric_limits<f_t>::infinity();
+        if (rs == 3) { break; }
+      }
     } else {
       round_time += timer.elapsed_time() - t_round;
     }
