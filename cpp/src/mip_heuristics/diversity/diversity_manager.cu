@@ -1471,6 +1471,14 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // the anchored (last published) point and its fixed-LP duals: the point of the neighbourhood
   // evaluations (mode 1 and 2), kept while the rounds move cur_x / cur_y
   std::vector<f_t> anchor_x, anchor_y;
+  // near miss: a round pattern whose fixed LP ends just above the incumbent (within near_frac)
+  // is repaired anyway; its point (and fixed-LP duals) is the anchor of one safe chain, whose
+  // first step gains 1-5% and can take it below the incumbent
+  constexpr f_t near_frac = f_t(0.0075);
+  f_t near_obj            = std::numeric_limits<f_t>::infinity();
+  std::vector<f_t> near_x, near_y;
+  // the last evaluated round pattern (integers in h_int order), the guide of a guided safe step
+  std::vector<f_t> last_round_pat;
   // mode 2 pattern (neighbourhood of the anchored point): preferred value and order key per
   // integer, set by the caller
   std::vector<f_t> nb_pref(n_vars, 0), nb_key(n_vars, 0);
@@ -2079,6 +2087,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     if (dup) { return 1; }
     if (n_conflicts > 0) { return 2; }
     seen.push_back(pat);
+    if (mode == 0) { last_round_pat = pat; }
     std::vector<f_t> assign = px;
     for (i_t j = 0; j < n_vars; ++j) {
       assign[j] = std::clamp(assign[j], h_vlb[j], h_vub[j]);
@@ -2105,7 +2114,11 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                : std::numeric_limits<f_t>::infinity();
     // a safe step's moved point is feasible for its fixed LP
     const std::vector<f_t>& wx = safe_warm && mv_x.size() == (size_t)n_vars ? mv_x : px;
-    auto ev                    = eval_fixed_pattern(assign,
+    // round patterns are repaired (and their LP not cut off) up to a near miss
+    const f_t repair_near = mode == 0 && std::isfinite(repair_below)
+                              ? repair_below + near_frac * std::abs(repair_below)
+                              : repair_below;
+    auto ev               = eval_fixed_pattern(assign,
                                  1e-4,
                                  rank_tlimit,
                                  &wx,
@@ -2113,10 +2126,21 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
                                  true,
                                  repair_limit,
                                  "slope_scaling",
-                                 repair_below,
+                                 repair_near,
                                  11.,
                                  retry ? 2 * first_try_res : std::numeric_limits<f_t>::infinity(),
-                                 repair_below);
+                                 repair_near);
+    if (mode == 0 && !ev.published && ev.repaired_assignment.size() == (size_t)n_vars &&
+        ev.dual.size() == (size_t)n_cstrs && ev.repaired_obj < repair_near &&
+        ev.repaired_obj < near_obj) {
+      near_x   = ev.repaired_assignment;
+      near_y   = ev.dual;
+      near_obj = ev.repaired_obj;
+      CUOPT_LOG_INFO("Slope scaling near miss: repaired=%g incumbent=%g (+%.3f%%)",
+                     ev.repaired_obj,
+                     repair_below,
+                     100. * (ev.repaired_obj - repair_below) / std::abs(repair_below));
+    }
     if (mode == 0 && !retry) { first_try_res = ev.l2_primal_res; }
     if (mode == 0) { point_lps++; }
     if (ev.aborted) {
@@ -2494,7 +2518,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   f_t tabu_obj = std::numeric_limits<f_t>::infinity();  // the anchored point the tabu is for
   std::vector<f_t> rc_of(n_vars, 0);  // reduced costs of the binaries at the anchored point
   std::vector<char> moved(n_vars, 0);  // binaries the step moves
-  auto safe_step = [&]() -> int {
+  auto safe_step = [&](bool guided) -> int {
     last_safe.clear();
     if (anchor_y.size() != (size_t)n_cstrs || anchor_x.size() != (size_t)n_vars ||
         !std::isfinite(anchor_obj)) {
@@ -2507,6 +2531,14 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     }
     const f_t eps = f_t(1e-7) * std::max<f_t>(1, std::abs(anchor_obj));
     std::vector<std::pair<f_t, i_t>> cand;
+    std::vector<f_t> guide_val;
+    if (guided) {
+      if (last_round_pat.size() != h_int.size()) { return 5; }
+      guide_val.assign(n_vars, f_t(-1));
+      for (size_t qq = 0; qq < h_int.size(); ++qq) {
+        guide_val[h_int[qq]] = last_round_pat[qq];
+      }
+    }
     set_link_keep();
     for (auto v : h_int) {
       const i_t k = link_of[v];
@@ -2518,6 +2550,8 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
         nb_key[v] = nb_pref[v];
       }
       if (h_vlb[v] != 0 || h_vub[v] != 1 || safe_tabu[v]) { continue; }
+      // guided: only the binaries the last round pattern sets the other way
+      if (guided && !(guide_val[v] >= 0 && std::abs(guide_val[v] - nb_pref[v]) > 0.5)) { continue; }
       double aty = 0;
       for (i_t kk = fp_host.var_offsets[v]; kk < fp_host.var_offsets[v + 1]; ++kk) {
         const i_t r = fp_host.var_rows[kk];
@@ -2675,9 +2709,10 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       nb_key[v]   = 3 + (f_t)(n_kept - q) / (f_t)n_kept;
     }
     CUOPT_LOG_INFO(
-      "Slope scaling safe step: used=%d closed=%d kept_by_rows=%d kept_by_int_rows=%d "
+      "Slope scaling safe step%s: used=%d closed=%d kept_by_rows=%d kept_by_int_rows=%d "
       "candidates=%zu tabu=%d flipped=%zu (compound=%d partners=%d) opened=%d closed_by_flip=%d "
       "rejected_int_rows=%d rejected_rows=%d est_gain_top=%g est_gain_kept=%g elapsed=%.2f",
+      guided ? " (guided by the last round pattern)" : "",
       n_keep_used,
       n_close,
       n_keep_rows,
@@ -2786,7 +2821,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     while (true) {
       const f_t before = anchor_obj;
       last_eval_obj    = std::numeric_limits<f_t>::infinity();
-      rs               = safe_step();
+      rs               = safe_step(false);
       for (int retry = 0; rs == 4 && retry < 3; ++retry) {
         rs = eval_pattern(f_t(0), 2);  // certificate retries of the safe step's pattern
       }
@@ -2802,6 +2837,28 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       if (!until_time || last_safe.empty()) { break; }
     }
     safe_time += timer.elapsed_time() - t_start;
+    return rs;
+  };
+  // late phase (less than late_frac of slope scaling's time left, two round patterns missed in a
+  // row): a guided safe step from the incumbent toward the last (missed) round pattern, its
+  // candidates the binaries that pattern sets the other way, then safe steps while they gain
+  constexpr double late_frac = 0.4;
+  int n_guided = 0, n_guided_pub = 0;
+  double guided_time = 0;
+  auto guided_try    = [&]() -> int {
+    const double t_start = timer.elapsed_time();
+    const f_t before     = anchor_obj;
+    last_eval_obj        = std::numeric_limits<f_t>::infinity();
+    int rs               = safe_step(true);
+    for (int retry = 0; rs == 4 && retry < 3; ++retry) {
+      rs = eval_pattern(f_t(0), 2);
+    }
+    clear_moves();
+    if (rs != 5) { n_guided++; }
+    n_guided_pub += anchor_obj < before;
+    guided_time += timer.elapsed_time() - t_start;
+    if (rs == 3) { return 3; }
+    if (anchor_obj < before - min_safe_gain * std::abs(before)) { return safe_chain(false); }
     return rs;
   };
 
@@ -2828,7 +2885,9 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
     return std::min<f_t>(0.3 * budget, (f_t)longest + publish_margin);
   };
   std::vector<var_t> h_types(n_vars, var_t::CONTINUOUS);
-  int rounds_done = 0;
+  int rounds_done    = 0;
+  int n_miss         = 0;  // round evaluations in a row without a publish
+  const double span0 = t0 + ext_budget - timer.elapsed_time();  // the rounds' longest window
   for (int round = 1; round <= max_rounds; ++round) {
     if (stop()) { break; }
     if (remaining() < last_round_time + eval_reserve()) {
@@ -2933,6 +2992,7 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       // turn into fix-and-propagate conflicts far more often) only when it repeats a pattern
       int r                 = 1;
       const f_t before_eval = anchor_obj;
+      near_obj              = std::numeric_limits<f_t>::infinity();
       for (int t = 0; t < 3 && r == 1; ++t) {
         r = run_eval(eval_thresholds[t]);
       }
@@ -2942,7 +3002,32 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
       // a published round pattern is followed by safe steps while they gain, then the next round.
       // Without a publish the rounds go on undisturbed: a safe step's publish restarts them from
       // its point, and the round patterns of the leader runs hit after a few undisturbed rounds
-      if (anchor_obj < before_eval && safe_chain(false) == 3) { break; }
+      n_miss = anchor_obj < before_eval ? 0 : n_miss + 1;
+      if (anchor_obj < before_eval) {
+        if (safe_chain(false) == 3) { break; }
+      } else if (std::isfinite(near_obj) && std::isfinite(anchor_obj)) {
+        // a near miss: safe steps from its point; the incumbent's anchor comes back unless one
+        // of them published
+        const f_t inc_obj = anchor_obj;
+        anchor_x.swap(near_x);
+        anchor_y.swap(near_y);
+        std::swap(anchor_obj, near_obj);
+        const int rs = safe_chain(false);
+        if (!(anchor_obj < inc_obj)) {
+          anchor_x.swap(near_x);
+          anchor_y.swap(near_y);
+          anchor_obj = inc_obj;
+        }
+        CUOPT_LOG_INFO("Slope scaling near-miss chain: %s obj=%g elapsed=%.2f",
+                       anchor_obj < inc_obj ? "improved" : "no gain",
+                       anchor_obj,
+                       timer.elapsed_time());
+        near_obj = std::numeric_limits<f_t>::infinity();
+        if (rs == 3) { break; }
+      } else if (n_miss >= 2 && t0 + ext_budget - timer.elapsed_time() < late_frac * span0 &&
+                 std::isfinite(anchor_obj)) {
+        if (guided_try() == 3) { break; }
+      }
     } else {
       round_time += timer.elapsed_time() - t_round;
     }
@@ -2952,15 +3037,18 @@ bool diversity_manager_t<i_t, f_t>::run_slope_scaling()
   // anchored point while slope scaling has time
   if (std::isfinite(anchor_obj)) { safe_chain(true); }
   CUOPT_LOG_INFO(
-    "Slope scaling end: rounds=%d evaluated=%d published=%d safe_steps=%d time=%.2fs "
-    "(rounds %.1fs, safe steps %.1fs) elapsed=%.2f",
+    "Slope scaling end: rounds=%d evaluated=%d published=%d safe_steps=%d guided=%d "
+    "(published %d) time=%.2fs (rounds %.1fs, safe steps %.1fs, guided %.1fs) elapsed=%.2f",
     rounds_done,
     n_evals,
     (int)published,
     n_safe_steps,
+    n_guided,
+    n_guided_pub,
     timer.elapsed_time() - t0,
     round_time,
     safe_time,
+    guided_time,
     timer.elapsed_time());
   return published;
 }
