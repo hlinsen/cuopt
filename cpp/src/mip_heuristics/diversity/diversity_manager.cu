@@ -670,6 +670,10 @@ diversity_manager_t<i_t, f_t>::eval_fixed_pattern(const std::vector<f_t>& assign
     // ~10-200 for 100k+ iterations, up to the time limit) ends like at the time limit: the pushes
     // drive its residual down at the same objective
     lp_settings.stall_stop_checks = 3;
+    // ... and earlier, once its primal weight has collapsed (the cause of that stall): over the
+    // logged fixed LPs, none whose weight fell below 1e-3 of its start converged, and the pushes
+    // (fixed weight) repair their primal residual in a few thousand iterations
+    if (warm) { lp_settings.primal_weight_collapse_ratio = 1e-3; }
     // the fixed problem's user objective lacks the cost of the fixed integers (fixing moves their
     // columns into the row bounds only); full_shift turns it into the full user objective
     const f_t scale       = problem_ptr->presolve_data.objective_scaling_factor;

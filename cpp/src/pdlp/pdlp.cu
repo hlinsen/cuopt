@@ -1589,6 +1589,37 @@ std::optional<optimization_problem_solution_t<i_t, f_t>> pdlp_solver_t<i_t, f_t>
     }
   }
 
+  // Primal weight collapse stop (opt-in): a primal weight fallen far below its start ends the
+  // solve like the time limit would
+  if (settings_.primal_weight_collapse_ratio > 0 && !batch_mode_ && !is_distributed_master() &&
+      total_pdlp_iterations_ % 1000 == 0) {
+    const f_t w = get_primal_weight_h(0);
+    if (!std::isfinite(collapse_start_weight_)) {
+      collapse_start_weight_ = w;
+    } else if (internal_solver_iterations_ > 0 &&
+               w < settings_.primal_weight_collapse_ratio * collapse_start_weight_) {
+      CUOPT_LOG_INFO("PDLP primal weight collapse stop: iter=%d primal_weight=%g start=%g",
+                     (int)total_pdlp_iterations_,
+                     (double)w,
+                     (double)collapse_start_weight_);
+      print_final_termination_criteria(timer,
+                                       current_termination_strategy_.get_convergence_information(),
+                                       pdlp_termination_status_t::TimeLimit);
+      return current_termination_strategy_.fill_return_problem_solution(
+        internal_solver_iterations_,
+        pdhg_solver_,
+        (settings_.hyper_params.use_adaptive_step_size_strategy)
+          ? pdhg_solver_.get_primal_solution()
+          : pdhg_solver_.get_potential_next_primal_solution(),
+        (settings_.hyper_params.use_adaptive_step_size_strategy)
+          ? pdhg_solver_.get_dual_solution()
+          : pdhg_solver_.get_potential_next_dual_solution(),
+        get_filled_warmed_start_data(),
+        std::vector<pdlp_termination_status_t>(climber_strategies_.size(),
+                                               pdlp_termination_status_t::TimeLimit));
+    }
+  }
+
   // Stall stop (opt-in): objectives that no longer move end the solve like the time limit would
   if (settings_.stall_stop_checks > 0 && internal_solver_iterations_ > 0 &&
       total_pdlp_iterations_ % 10000 == 0) {
