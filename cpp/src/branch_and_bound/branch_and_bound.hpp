@@ -336,7 +336,7 @@ class branch_and_bound_t {
                            const std::vector<f_t>& cut_rhs,
                            const std::vector<cut_type_t>& cut_types);
   void pdlp_root_launch_submips(pdlp_root_loop_state_t& state, i_t pass);
-  void adapt_pdlp_fixrate(int kind_id, bool infeasible, bool stalled);
+  void adapt_pdlp_fixrate(int kind_id, bool infeasible, bool stalled, bool collapsed);
   void solve_pdlp_submip(diving_worker_t<i_t, f_t>* worker,
                          simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
                          i_t pass,

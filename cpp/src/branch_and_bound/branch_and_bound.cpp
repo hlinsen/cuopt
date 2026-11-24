@@ -4270,7 +4270,7 @@ void branch_and_bound_t<i_t, f_t>::solve_pdlp_submip(
   fixrate = calculate_fixrate(integer_list, lower, upper, settings_.fixed_tol);
   if (!feasible) {
     shared_stats.save_infeasible(fixrate);
-    adapt_pdlp_fixrate(kind_id, true, false);
+    adapt_pdlp_fixrate(kind_id, true, false, false);
     settings_.log.printf("PDLP %s pass %d: neighbourhood infeasible, fix rate %.1f%%, t=%.2f\n",
                          name,
                          pass,
@@ -4307,7 +4307,9 @@ void branch_and_bound_t<i_t, f_t>::solve_pdlp_submip(
   const bool stalled_at_root =
     improving == 0 && outcome.nodes == 0 &&
     (outcome.status == mip_status_t::TIME_LIMIT || outcome.status == mip_status_t::ITERATION_LIMIT);
-  adapt_pdlp_fixrate(kind_id, infeasible_submip, stalled_at_root);
+  // Propagation fixed everything: the neighbourhood is a single point.
+  const bool collapsed = local_stats.total_empty.load(std::memory_order::relaxed) > 0;
+  adapt_pdlp_fixrate(kind_id, infeasible_submip, stalled_at_root, collapsed);
   for (i_t k = 0; k < improving; ++k) {
     shared_stats.save_success(fixrate);
   }
@@ -4331,7 +4333,10 @@ void branch_and_bound_t<i_t, f_t>::solve_pdlp_submip(
 }
 
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::adapt_pdlp_fixrate(int kind_id, bool infeasible, bool stalled)
+void branch_and_bound_t<i_t, f_t>::adapt_pdlp_fixrate(int kind_id,
+                                                      bool infeasible,
+                                                      bool stalled,
+                                                      bool collapsed)
 {
   const auto kind = static_cast<pdlp_submip_kind_t>(kind_id);
   if (!pdlp_root_params_.adapt_fixrate || kind == pdlp_submip_kind_t::CLASSIC_RENS ||
@@ -4340,8 +4345,8 @@ void branch_and_bound_t<i_t, f_t>::adapt_pdlp_fixrate(int kind_id, bool infeasib
   }
   auto& shift = pdlp_fixrate_shift_[kind == pdlp_submip_kind_t::RINS ? 1 : 0];
   f_t value   = shift;
-  if (infeasible) {
-    // too many variables fixed to an inexact point: free 10% more
+  if (infeasible || collapsed) {
+    // too many variables fixed (inexact point, or nothing left to decide): free 10% more
     value = value > 0 ? f_t(0) : value - f_t(0.1);
   } else if (stalled) {
     // the sub-MIP is too large to get past its root: halve the free part
