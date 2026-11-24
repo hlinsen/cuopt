@@ -2423,9 +2423,12 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
                                                 f_t fixrate,
                                                 i_t simplex_iter_used,
                                                 simplex_solver_settings_t<i_t, f_t> submip_settings,
-                                                i_t thread_budget)
+                                                i_t thread_budget,
+                                                submip_outcome_t* outcome)
 {
   double start_time = tic();
+  submip_outcome_t unused_outcome;
+  if (outcome == nullptr) { outcome = &unused_outcome; }
 
   bool is_root_heuristic = submip_settings.inside_root_node;
   i_t submip_level       = settings_.mip_hyper_params.submip_level + 1;
@@ -2465,10 +2468,18 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
 
   submip_settings.mip_hyper_params.bnb_simplex_iteration_limit =
     iter_offset + simplex_iter * iter_ratio - simplex_iter_used;
-  if (submip_settings.mip_hyper_params.bnb_simplex_iteration_limit <= 0) { return; }
+  if (submip_settings.mip_hyper_params.bnb_simplex_iteration_limit <= 0) {
+    outcome->note = "no iteration budget";
+    return;
+  }
 
-  submip_settings.time_limit = settings_.time_limit - toc(exploration_stats_.start_time);
-  if (submip_settings.time_limit <= 0) { return; }
+  const f_t submip_deadline = toc(exploration_stats_.start_time) + outcome->time_limit;
+  submip_settings.time_limit =
+    std::min<f_t>(settings_.time_limit, submip_deadline) - toc(exploration_stats_.start_time);
+  if (submip_settings.time_limit <= 0) {
+    outcome->note = "no time left";
+    return;
+  }
 
   submip_settings.relative_mip_gap_tol =
     std::min(settings_.mip_hyper_params.submip_target_mip_gap, rel_gap);
@@ -2503,6 +2514,7 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
       presolver_status == third_party_presolve_status_t::UNBOUNDED) {
     DEBUG_SUBMIP("{}Presolve detected infeasibility", log_prefix);
     submip_stats.save_infeasible(fixrate);
+    outcome->note = "presolve infeasible";
     return;
   }
 
@@ -2513,16 +2525,21 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
                  submip_problem.num_rows,
                  submip_problem.num_cols);
     submip_stats.save_empty();
+    outcome->note = "presolved to empty";
     return;
   }
+  outcome->rows = submip_problem.num_rows;
+  outcome->cols = submip_problem.num_cols;
 
   if (toc(exploration_stats_.start_time) > settings_.time_limit) {
     solver_status_ = mip_status_t::TIME_LIMIT;
+    outcome->note  = "no time left";
     return;
   }
 
   if (submip_settings.concurrent_halt &&
       submip_settings.concurrent_halt->load(std::memory_order_acquire)) {
+    outcome->note = "halted before solve";
     return;
   }
 
@@ -2548,9 +2565,13 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
                submip_problem.A.nnz());
 
   probing_implied_bound_t<i_t, f_t> empty_probing(submip_problem.num_cols);
-  submip_settings.time_limit = settings_.time_limit - toc(exploration_stats_.start_time);
+  submip_settings.time_limit =
+    std::min<f_t>(settings_.time_limit, submip_deadline) - toc(exploration_stats_.start_time);
   if (submip_settings.time_limit <= 0.0) {
-    solver_status_ = mip_status_t::TIME_LIMIT;
+    if (toc(exploration_stats_.start_time) >= settings_.time_limit) {
+      solver_status_ = mip_status_t::TIME_LIMIT;
+    }
+    outcome->note = "no time left";
     return;
   }
 
@@ -2651,6 +2672,9 @@ void branch_and_bound_t<i_t, f_t>::solve_submip(diving_worker_t<i_t, f_t>* worke
 
   mip_status_t submip_status = submip_bnb.solve(submip_solution);
   f_t submip_time            = toc(start_time);
+  outcome->status            = submip_status;
+  outcome->nodes             = submip_solution.nodes_explored;
+  outcome->iterations        = submip_solution.simplex_iterations;
 
   DEBUG_SUBMIP(
     "{}Sub-MIP: status={}, iterations={} (total={}), presolve_time={:.2f}, total_time={:.2f} \n",
@@ -3755,8 +3779,9 @@ void branch_and_bound_t<i_t, f_t>::launch_pdlp_root_loop(const std::vector<f_t>&
   state->z           = z;
   state->start_time  = tic();
 
-  settings_.log.printf("PDLP root loop: starting from the %s point (%s)\n",
+  settings_.log.printf("PDLP root loop: starting from the %s point, t=%.2f (%s)\n",
                        source,
+                       toc(exploration_stats_.start_time),
                        pdlp_root_params_.to_string().c_str());
   pdlp_root_task_started_ = true;
   i_t* token              = &pdlp_root_task_status_;
@@ -3780,7 +3805,7 @@ void branch_and_bound_t<i_t, f_t>::run_pdlp_root_loop(std::shared_ptr<pdlp_root_
   for (i_t pass = 0; !halted(); ++pass) {
     if (pass > 0 && !pdlp_root_resolve(*state, pass)) { break; }
     state->passes = pass + 1;
-    if (p.submip) { pdlp_root_launch_rens(*state, pass); }
+    if (p.submip) { pdlp_root_launch_submips(*state, pass); }
     // Cuts from the last pass only matter if they go to the B&B pool.
     if (pass >= p.max_passes && !p.global_pool) { break; }
     if (halted() || pdlp_root_separate(*state, pass) == 0) { break; }
@@ -3788,13 +3813,14 @@ void branch_and_bound_t<i_t, f_t>::run_pdlp_root_loop(std::shared_ptr<pdlp_root_
   }
 
   settings_.log.printf(
-    "PDLP root loop: %d points, %d cuts kept, %d staged for the B&B pool, %d RENS launched, "
-    "%.2f s\n",
+    "PDLP root loop: %d points, %d cuts kept, %d staged for the B&B pool, %d sub-MIPs launched, "
+    "%.2f s, t=%.2f\n",
     state->passes,
     state->cuts_kept,
     state->cuts_staged,
     state->rens_launched,
-    toc(state->start_time));
+    toc(state->start_time),
+    toc(exploration_stats_.start_time));
 
   // The RENS tasks are children of this task.
 #pragma omp taskwait
@@ -3928,15 +3954,24 @@ i_t branch_and_bound_t<i_t, f_t>::pdlp_root_separate(pdlp_root_loop_state_t& sta
                                                 variable_bounds,
                                                 sep_start);
   // Infeasibility found on a speculative point is left to the authoritative cut loop.
-  if (!feasible || pool.pool_size() == 0) { return 0; }
-
   const i_t generated = pool.pool_size();
-  pool.score_cuts(state.x);
+  i_t kept            = 0;
   csr_matrix_t<i_t, f_t> cuts(0, state.lp.num_cols, 0);
   std::vector<f_t> cut_rhs;
   std::vector<cut_type_t> cut_types;
-  const i_t kept = pool.get_best_cuts(cuts, cut_rhs, cut_types);
-  if (kept == 0) { return 0; }
+  if (feasible && generated > 0) {
+    pool.score_cuts(state.x);
+    kept = pool.get_best_cuts(cuts, cut_rhs, cut_types);
+  }
+  if (kept == 0) {
+    settings_.log.printf(
+      "PDLP root loop pass %d: no cuts kept (%d generated%s), separation %.2f s\n",
+      pass,
+      generated,
+      feasible ? "" : ", separator reported infeasible",
+      toc(sep_start));
+    return 0;
+  }
 
   const i_t staged = p.global_pool ? stage_pdlp_root_cuts(state, cuts, cut_rhs, cut_types) : 0;
 
@@ -3977,14 +4012,54 @@ i_t branch_and_bound_t<i_t, f_t>::stage_pdlp_root_cuts(const pdlp_root_loop_stat
   return staged;
 }
 
-template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::pdlp_root_launch_rens(pdlp_root_loop_state_t& state, i_t pass)
+namespace {
+
+enum class pdlp_submip_kind_t { CLASSIC_RENS, RENS, RINS, MUTATION };
+
+const char* pdlp_submip_kind_name(pdlp_submip_kind_t kind)
 {
-  const auto& p = pdlp_root_params_;
-  if (settings_.mip_hyper_params.submip_rens == 0 ||
-      pdlp_root_submip_halt_.load(std::memory_order_acquire) != 0) {
-    return;
+  switch (kind) {
+    case pdlp_submip_kind_t::CLASSIC_RENS: return "RENS-classic";
+    case pdlp_submip_kind_t::RENS: return "RENS";
+    case pdlp_submip_kind_t::RINS: return "RINS";
+    default: return "MUTATION";
   }
+}
+
+// Fix the `num_to_fix` unfixed integer variables whose value in `point` is closest to the rounded
+// `target` value. With target == point this rounds the most integral variables; with target ==
+// incumbent it extends a RINS neighbourhood to near-agreements.
+template <typename i_t, typename f_t>
+void fix_closest_variables(const std::vector<f_t>& point,
+                           const std::vector<f_t>& target,
+                           const std::vector<i_t>& integer_list,
+                           i_t num_to_fix,
+                           f_t fixed_tol,
+                           std::vector<f_t>& lower,
+                           std::vector<f_t>& upper,
+                           std::vector<bool>& bounds_changed)
+{
+  std::vector<std::pair<f_t, i_t>> candidates;
+  for (i_t j : integer_list) {
+    if (upper[j] - lower[j] <= fixed_tol) { continue; }
+    candidates.emplace_back(std::abs(point[j] - std::round(target[j])), j);
+  }
+  std::sort(candidates.begin(), candidates.end());
+  num_to_fix = std::min<i_t>(num_to_fix, candidates.size());
+  for (i_t k = 0; k < num_to_fix; ++k) {
+    const i_t j = candidates[k].second;
+    fix_variable(j, lower, upper, bounds_changed, std::round(target[j]));
+  }
+}
+
+}  // namespace
+
+template <typename i_t, typename f_t>
+void branch_and_bound_t<i_t, f_t>::pdlp_root_launch_submips(pdlp_root_loop_state_t& state, i_t pass)
+{
+  const auto& p     = pdlp_root_params_;
+  const auto& hyper = settings_.mip_hyper_params;
+  if (pdlp_root_submip_halt_.load(std::memory_order_acquire) != 0) { return; }
 
   // Release finished groups. A running sub-MIP keeps its slot: a newer point does not evict it.
   auto& groups = state.rens_groups;
@@ -3992,85 +4067,287 @@ void branch_and_bound_t<i_t, f_t>::pdlp_root_launch_rens(pdlp_root_loop_state_t&
     std::remove_if(
       groups.begin(), groups.end(), [](const auto& g) { return g.second->active_workers_ == 0; }),
     groups.end());
-  std::vector<bool> slot_busy(p.max_submips, false);
-  for (const auto& g : groups) {
-    slot_busy[g.first] = true;
-  }
-  const i_t slot = std::find(slot_busy.begin(), slot_busy.end(), false) - slot_busy.begin();
-  if (slot >= p.max_submips) {
-    settings_.log.printf("PDLP root loop pass %d: all %d RENS slots busy\n", pass, p.max_submips);
-    return;
+
+  // PDLP values within the snap tolerance of an integer count as integral.
+  const f_t snap_tol     = p.snap_tol >= 0 ? p.snap_tol : settings_.integer_tol;
+  std::vector<f_t> point = state.x;
+  for (i_t j = 0; j < static_cast<i_t>(state.var_types.size()); ++j) {
+    if (state.var_types[j] == variable_type_t::CONTINUOUS) { continue; }
+    const f_t value   = std::clamp(point[j], state.lp.lower[j], state.lp.upper[j]);
+    const f_t rounded = std::round(value);
+    point[j]          = std::abs(value - rounded) <= snap_tol
+                          ? std::clamp(rounded, state.lp.lower[j], state.lp.upper[j])
+                          : value;
   }
 
-  const std::vector<f_t> unit_edge_norms(state.lp.num_cols, f_t(1));
-  auto group = std::make_shared<cut_pass_heuristics_t<i_t, f_t>>(
-    state.Arow, state.var_types, state.x, unit_edge_norms, state.new_slacks, settings_);
-  const std::vector<variable_status_t> no_basis;
-  diving_worker_t<i_t, f_t>* worker =
-    group->create_submip_worker(pdlp_root_submip_slot_base_ + slot,
-                                state.lp,
-                                settings_,
-                                compute_objective(state.lp, state.x),
-                                no_basis,
-                                state.x,
-                                search_strategy_t::RENS,
-                                state.seed_rng);
-  groups.emplace_back(slot, group);
-  ++state.rens_launched;
+  // Current incumbent in the coordinates of the private LP (structural part + recomputed slacks).
+  std::vector<f_t> incumbent;
+  if (p.submip_mode != 0 || p.mutation) {
+    const size_t n = state.lp.num_cols - state.new_slacks.size();
+    std::vector<f_t> structural;
+    mutex_upper_.lock();
+    if (incumbent_.has_incumbent && incumbent_.x.size() >= n) {
+      structural.assign(incumbent_.x.begin(), incumbent_.x.begin() + n);
+    }
+    mutex_upper_.unlock();
+    if (!structural.empty()) {
+      expand_structural_point(state.lp, state.new_slacks, structural, incumbent);
+    }
+  }
 
-  simplex_solver_settings_t<i_t, f_t> submip_settings = settings_;
-  submip_settings.concurrent_halt                     = &pdlp_root_submip_halt_;
-  submip_settings.inside_root_node                    = true;
-  ++group->active_workers_;
+  std::vector<pdlp_submip_kind_t> kinds;
+  const bool can_rins = !incumbent.empty() && hyper.submip_rins != 0;
+  if (p.submip_mode == 0) {
+    if (hyper.submip_rens != 0) { kinds.push_back(pdlp_submip_kind_t::CLASSIC_RENS); }
+  } else if (p.submip_mode == 1) {
+    if (can_rins) {
+      kinds.push_back(pdlp_submip_kind_t::RINS);
+    } else if (hyper.submip_rens != 0) {
+      kinds.push_back(pdlp_submip_kind_t::RENS);
+    }
+  } else {
+    if (hyper.submip_rens != 0) { kinds.push_back(pdlp_submip_kind_t::RENS); }
+    if (p.submip_mode == 3 && can_rins) { kinds.push_back(pdlp_submip_kind_t::RINS); }
+  }
+  if (p.mutation && !incumbent.empty() && hyper.submip_mutation != 0) {
+    kinds.push_back(pdlp_submip_kind_t::MUTATION);
+  }
+
+  for (pdlp_submip_kind_t kind : kinds) {
+    std::vector<bool> slot_busy(p.max_submips, false);
+    for (const auto& g : groups) {
+      slot_busy[g.first] = true;
+    }
+    const i_t slot = std::find(slot_busy.begin(), slot_busy.end(), false) - slot_busy.begin();
+    if (slot >= p.max_submips) {
+      settings_.log.printf("PDLP %s pass %d: not launched, all %d sub-MIP slots busy\n",
+                           pdlp_submip_kind_name(kind),
+                           pass,
+                           p.max_submips);
+      continue;
+    }
+
+    const std::vector<f_t> unit_edge_norms(state.lp.num_cols, f_t(1));
+    auto group = std::make_shared<cut_pass_heuristics_t<i_t, f_t>>(
+      state.Arow, state.var_types, point, unit_edge_norms, state.new_slacks, settings_);
+    const std::vector<variable_status_t> no_basis;
+    const i_t worker_id               = pdlp_root_submip_slot_base_ + slot;
+    const f_t point_objective         = compute_objective(state.lp, point);
+    diving_worker_t<i_t, f_t>* worker = nullptr;
+    if (kind == pdlp_submip_kind_t::MUTATION) {
+      worker = group->create_mutation_worker(
+        worker_id, state.lp, settings_, point_objective, no_basis, point, state.seed_rng);
+    } else {
+      worker = group->create_submip_worker(
+        worker_id,
+        state.lp,
+        settings_,
+        point_objective,
+        no_basis,
+        point,
+        kind == pdlp_submip_kind_t::RINS ? search_strategy_t::RINS : search_strategy_t::RENS,
+        state.seed_rng);
+    }
+    if (kind == pdlp_submip_kind_t::RINS || kind == pdlp_submip_kind_t::MUTATION) {
+      worker->current_incumbent = incumbent;
+    }
+    groups.emplace_back(slot, group);
+    ++state.rens_launched;
+
+    simplex_solver_settings_t<i_t, f_t> submip_settings = settings_;
+    submip_settings.concurrent_halt                     = &pdlp_root_submip_halt_;
+    submip_settings.inside_root_node                    = true;
+    const int kind_id                                   = static_cast<int>(kind);
+    ++group->active_workers_;
 #pragma omp task priority(CUOPT_DEFAULT_TASK_PRIORITY) affinity(worker) \
-  firstprivate(group, submip_settings, pass, worker) depend(out : *worker)
-  {
-    solve_pdlp_rens(worker, submip_settings, pass);
-    --group->active_workers_;
+  firstprivate(group, submip_settings, pass, worker, kind_id) depend(out : *worker)
+    {
+      solve_pdlp_submip(worker, submip_settings, pass, kind_id);
+      --group->active_workers_;
+    }
   }
 }
 
 template <typename i_t, typename f_t>
-void branch_and_bound_t<i_t, f_t>::solve_pdlp_rens(
-  diving_worker_t<i_t, f_t>* worker, simplex_solver_settings_t<i_t, f_t> submip_settings, i_t pass)
+void branch_and_bound_t<i_t, f_t>::solve_pdlp_submip(
+  diving_worker_t<i_t, f_t>* worker,
+  simplex_solver_settings_t<i_t, f_t> submip_settings,
+  i_t pass,
+  int kind_id)
 {
-  raft::common::nvtx::range scope("BB::pdlp_rens");
+  raft::common::nvtx::range scope("BB::pdlp_submip");
   scope_guard worker_scope([worker]() { worker->set_inactive(); });
-  submip_settings.log.log_prefix = std::format("[PDLP RENS {}] ", pass);
-  ++pdlp_rens_stats_.total_calls;
+  const auto kind                = static_cast<pdlp_submip_kind_t>(kind_id);
+  const char* name               = pdlp_submip_kind_name(kind);
+  const auto& p                  = pdlp_root_params_;
+  const auto& hyper              = settings_.mip_hyper_params;
+  submip_settings.log.log_prefix = std::format("[PDLP {} {}] ", name, pass);
+  submip_stats_t& shared_stats =
+    kind == pdlp_submip_kind_t::MUTATION ? pdlp_mutation_stats_ : pdlp_rens_stats_;
+  ++shared_stats.total_calls;
 
-  std::fill(worker->bounds_changed.begin(), worker->bounds_changed.end(), false);
-  const f_t fixrate = apply_classic_rens_fixings<i_t, f_t>(worker->leaf_solution.x,
-                                                           worker->var_types,
-                                                           settings_.integer_tol,
-                                                           settings_.fixed_tol,
-                                                           worker->leaf_problem.lower,
-                                                           worker->leaf_problem.upper,
-                                                           worker->bounds_changed);
-  if (fixrate < settings_.mip_hyper_params.submip_min_fixrate) {
-    settings_.log.printf(
-      "PDLP RENS pass %d: skipped, fix rate %.1f%% below the minimum\n", pass, 100.0 * fixrate);
+  std::vector<f_t>& lower           = worker->leaf_problem.lower;
+  std::vector<f_t>& upper           = worker->leaf_problem.upper;
+  std::vector<bool>& bounds_changed = worker->bounds_changed;
+  const std::vector<f_t>& point     = worker->leaf_solution.x;
+  std::fill(bounds_changed.begin(), bounds_changed.end(), false);
+
+  std::vector<i_t> integer_list;
+  for (i_t j = 0; j < static_cast<i_t>(worker->var_types.size()); ++j) {
+    if (worker->var_types[j] != variable_type_t::CONTINUOUS &&
+        upper[j] - lower[j] > settings_.fixed_tol) {
+      integer_list.push_back(j);
+    }
+  }
+  if (integer_list.empty()) { return; }
+  const i_t num_integers = integer_list.size();
+
+  f_t target = 0;
+  if (kind != pdlp_submip_kind_t::CLASSIC_RENS) {
+    target = p.fixrate > 0 ? p.fixrate : submip_get_max_fixrate(shared_stats, hyper, worker->rng);
+    if (p.adapt_fixrate && kind != pdlp_submip_kind_t::MUTATION) {
+      const f_t shift = pdlp_fixrate_shift_[kind == pdlp_submip_kind_t::RINS ? 1 : 0];
+      // shift > 0 closes that fraction of the distance to 1; shift < 0 loosens linearly
+      target = shift >= 0 ? target + shift * (f_t(1) - target) : target + shift;
+      target = std::clamp<f_t>(target, hyper.submip_min_fixrate, 0.99);
+    }
+    worker->rng.shuffle(integer_list);
+  }
+  switch (kind) {
+    case pdlp_submip_kind_t::CLASSIC_RENS:
+      apply_classic_rens_fixings<i_t, f_t>(point,
+                                           worker->var_types,
+                                           settings_.integer_tol,
+                                           settings_.fixed_tol,
+                                           lower,
+                                           upper,
+                                           bounds_changed);
+      break;
+    case pdlp_submip_kind_t::RENS:
+      apply_rens_fixings(settings_,
+                         point,
+                         integer_list,
+                         static_cast<i_t>(target * num_integers),
+                         lower,
+                         upper,
+                         bounds_changed);
+      break;
+    case pdlp_submip_kind_t::RINS:
+      apply_rins_fixings(settings_,
+                         point,
+                         integer_list,
+                         worker->current_incumbent,
+                         target,
+                         lower,
+                         upper,
+                         bounds_changed);
+      break;
+    case pdlp_submip_kind_t::MUTATION:
+      apply_mutation(
+        settings_, worker->current_incumbent, integer_list, target, lower, upper, bounds_changed);
+      break;
+  }
+  f_t fixrate = calculate_fixrate(integer_list, lower, upper, settings_.fixed_tol);
+
+  // A PDLP point is not a vertex, so exact agreement can be rare. Extend the neighbourhood to the
+  // target fix rate with the closest variables, as the root does with its rounding pass.
+  const f_t wanted_fixrate = std::max<f_t>(target, hyper.submip_min_fixrate);
+  if ((kind == pdlp_submip_kind_t::RENS || kind == pdlp_submip_kind_t::RINS) &&
+      fixrate < wanted_fixrate) {
+    const i_t missing = static_cast<i_t>(std::ceil((wanted_fixrate - fixrate) * num_integers));
+    fix_closest_variables(point,
+                          kind == pdlp_submip_kind_t::RINS ? worker->current_incumbent : point,
+                          integer_list,
+                          missing,
+                          settings_.fixed_tol,
+                          lower,
+                          upper,
+                          bounds_changed);
+  }
+
+  const bool feasible =
+    worker->node_presolver.bounds_strengthening(settings_, bounds_changed, lower, upper);
+  fixrate = calculate_fixrate(integer_list, lower, upper, settings_.fixed_tol);
+  if (!feasible) {
+    shared_stats.save_infeasible(fixrate);
+    adapt_pdlp_fixrate(kind_id, true, false);
+    settings_.log.printf("PDLP %s pass %d: neighbourhood infeasible, fix rate %.1f%%, t=%.2f\n",
+                         name,
+                         pass,
+                         100.0 * fixrate,
+                         toc(exploration_stats_.start_time));
     return;
   }
-  if (!worker->node_presolver.bounds_strengthening(settings_,
-                                                   worker->bounds_changed,
-                                                   worker->leaf_problem.lower,
-                                                   worker->leaf_problem.upper)) {
-    pdlp_rens_stats_.save_infeasible(fixrate);
-    settings_.log.printf(
-      "PDLP RENS pass %d: neighbourhood infeasible (fix rate %.1f%%)\n", pass, 100.0 * fixrate);
+  if (fixrate < hyper.submip_min_fixrate) {
+    settings_.log.printf("PDLP %s pass %d: skipped, fix rate %.1f%% below the minimum, t=%.2f\n",
+                         name,
+                         pass,
+                         100.0 * fixrate,
+                         toc(exploration_stats_.start_time));
     return;
   }
-  const f_t start = tic();
-  settings_.log.printf(
-    "PDLP RENS pass %d: solving sub-MIP, fix rate %.1f%%\n", pass, 100.0 * fixrate);
+
+  // Before the root basis exists the default budget is only the offset (no simplex iterations yet).
+  const i_t iter_adjust = hyper.submip_iteration_limit_offset - p.submip_iters;
+  submip_stats_t local_stats;
+  submip_outcome_t outcome;
+  if (p.submip_time > 0) { outcome.time_limit = p.submip_time; }
+  const f_t t_start = toc(exploration_stats_.start_time);
+  settings_.log.printf("PDLP %s pass %d: solving sub-MIP, fix rate %.1f%%, t=%.2f\n",
+                       name,
+                       pass,
+                       100.0 * fixrate,
+                       t_start);
   solve_submip(
-    worker, pdlp_rens_stats_, fixrate, 0, submip_settings, pdlp_root_params_.submip_threads);
+    worker, local_stats, fixrate, iter_adjust, submip_settings, p.submip_threads, &outcome);
+
+  const i_t improving          = local_stats.total_success.load(std::memory_order::relaxed);
+  const bool infeasible_submip = outcome.status == mip_status_t::INFEASIBLE ||
+                                 local_stats.total_infeasible.load(std::memory_order::relaxed) > 0;
+  const bool stalled_at_root =
+    improving == 0 && outcome.nodes == 0 &&
+    (outcome.status == mip_status_t::TIME_LIMIT || outcome.status == mip_status_t::ITERATION_LIMIT);
+  adapt_pdlp_fixrate(kind_id, infeasible_submip, stalled_at_root);
+  for (i_t k = 0; k < improving; ++k) {
+    shared_stats.save_success(fixrate);
+  }
+  if (local_stats.total_infeasible.load(std::memory_order::relaxed) > 0) {
+    shared_stats.save_infeasible(fixrate);
+  }
   settings_.log.printf(
-    "PDLP RENS pass %d: done in %.2f s (%d successes so far)\n",
+    "PDLP %s pass %d: done t=%.2f-%.2f, fix rate %.1f%%, %s, %d x %d, %d nodes, %ld iterations, "
+    "%d improving\n",
+    name,
     pass,
-    toc(start),
-    static_cast<i_t>(pdlp_rens_stats_.total_success.load(std::memory_order::relaxed)));
+    t_start,
+    toc(exploration_stats_.start_time),
+    100.0 * fixrate,
+    outcome.note != nullptr ? outcome.note : mip_status_to_string(outcome.status).c_str(),
+    outcome.rows,
+    outcome.cols,
+    outcome.nodes,
+    static_cast<long>(outcome.iterations),
+    improving);
+}
+
+template <typename i_t, typename f_t>
+void branch_and_bound_t<i_t, f_t>::adapt_pdlp_fixrate(int kind_id, bool infeasible, bool stalled)
+{
+  const auto kind = static_cast<pdlp_submip_kind_t>(kind_id);
+  if (!pdlp_root_params_.adapt_fixrate || kind == pdlp_submip_kind_t::CLASSIC_RENS ||
+      kind == pdlp_submip_kind_t::MUTATION) {
+    return;
+  }
+  auto& shift = pdlp_fixrate_shift_[kind == pdlp_submip_kind_t::RINS ? 1 : 0];
+  f_t value   = shift;
+  if (infeasible) {
+    // too many variables fixed to an inexact point: free 10% more
+    value = value > 0 ? f_t(0) : value - f_t(0.1);
+  } else if (stalled) {
+    // the sub-MIP is too large to get past its root: halve the free part
+    value = value < 0 ? f_t(0) : value + (f_t(1) - value) / 2;
+  }
+  shift = std::clamp<f_t>(value, -0.4, 0.9);
 }
 
 template <typename i_t, typename f_t>

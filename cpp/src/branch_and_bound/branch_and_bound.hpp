@@ -101,6 +101,17 @@ struct deterministic_bfs_policy_t;
 template <typename i_t, typename f_t>
 struct deterministic_diving_policy_t;
 
+// What happened to one sub-MIP (for callers that report it).
+struct submip_outcome_t {
+  double time_limit{std::numeric_limits<double>::infinity()};  // input: wall cap for the sub-MIP
+  const char* note{nullptr};  // set when the sub-MIP was not solved
+  mip_status_t status{mip_status_t::UNSET};
+  int rows{0};
+  int cols{0};
+  int nodes{0};
+  int64_t iterations{0};
+};
+
 template <typename i_t, typename f_t>
 class branch_and_bound_t {
  public:
@@ -302,7 +313,11 @@ class branch_and_bound_t {
   bool pdlp_root_task_started_{false};
   i_t pdlp_root_task_status_{0};  // OpenMP dependence token for the loop task
   i_t pdlp_root_submip_slot_base_{0};
-  submip_stats_t pdlp_rens_stats_;  // kept apart from rens_stats_ (drives adaptive RENS fix rates)
+  // Kept apart from the root/tree stats, which drive their adaptive fix rates.
+  submip_stats_t pdlp_rens_stats_;
+  submip_stats_t pdlp_mutation_stats_;
+  // Adaptive fix-rate offsets (CUOPT_PDLP_RC_ADAPT), one per neighbourhood kind: RENS, RINS
+  omp_atomic_t<f_t> pdlp_fixrate_shift_[2]{f_t(0), f_t(0)};
   omp_mutex_t pdlp_root_cuts_mutex_;
   std::vector<std::pair<cut_type_t, inequality_t<i_t, f_t>>> pdlp_root_staged_cuts_;
   // True from the start of solve() until the tree search starts: lets root-phase sub-MIPs run
@@ -320,10 +335,12 @@ class branch_and_bound_t {
                            csr_matrix_t<i_t, f_t>& cuts,
                            const std::vector<f_t>& cut_rhs,
                            const std::vector<cut_type_t>& cut_types);
-  void pdlp_root_launch_rens(pdlp_root_loop_state_t& state, i_t pass);
-  void solve_pdlp_rens(diving_worker_t<i_t, f_t>* worker,
-                       simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
-                       i_t pass);
+  void pdlp_root_launch_submips(pdlp_root_loop_state_t& state, i_t pass);
+  void adapt_pdlp_fixrate(int kind_id, bool infeasible, bool stalled);
+  void solve_pdlp_submip(diving_worker_t<i_t, f_t>* worker,
+                         simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
+                         i_t pass,
+                         int kind_id);
   i_t merge_pdlp_root_cuts(cut_pool_t<i_t, f_t>& cut_pool);
   void halt_pdlp_root_submips();
   void stop_pdlp_root_loop();
@@ -449,7 +466,8 @@ class branch_and_bound_t {
                     f_t fixrate,
                     i_t simplex_iter_used,
                     simplex::simplex_solver_settings_t<i_t, f_t> submip_settings,
-                    i_t thread_budget = 1);
+                    i_t thread_budget         = 1,
+                    submip_outcome_t* outcome = nullptr);
 
   void mutation(diving_worker_t<i_t, f_t>* worker,
                 simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);

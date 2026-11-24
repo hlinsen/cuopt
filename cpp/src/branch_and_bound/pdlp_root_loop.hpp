@@ -45,6 +45,20 @@ struct pdlp_root_loop_params_t {
   int submip_threads{1};           // CUOPT_PDLP_RC_SUBMIP_THREADS
   int max_submips{2};              // CUOPT_PDLP_RC_MAX_SUBMIPS: concurrent RENS sub-MIPs
   bool submip_outlive_root{true};  // CUOPT_PDLP_RC_SUBMIP_OUTLIVE: keep RENS running into the tree
+  // CUOPT_PDLP_RC_SUBMIP_MODE: 0 = classic RENS (fix integral, floor/ceil the rest);
+  // 1 = root policy without LP re-solves: RINS when an incumbent exists, else RENS, both to a
+  // target fix rate; 2 = RENS to a target fix rate; 3 = RENS and, with an incumbent, RINS
+  int submip_mode{0};
+  double submip_time{-1.0};  // CUOPT_PDLP_RC_SUBMIP_TIME: seconds per sub-MIP (<0: no cap)
+  // CUOPT_PDLP_RC_ADAPT: adapt the target fix rate from sub-MIP outcomes (looser after an
+  // infeasible neighbourhood, tighter after a sub-MIP that stalled at its root)
+  bool adapt_fixrate{false};
+  bool mutation{false};  // CUOPT_PDLP_RC_MUTATION: also a mutation sub-MIP when an incumbent exists
+  double snap_tol{
+    -1.0};  // CUOPT_PDLP_RC_SNAP_TOL: |x - round(x)| treated as integral (<0: integer_tol)
+  double fixrate{
+    -1.0};  // CUOPT_PDLP_RC_FIXRATE: target fix rate in mode 1 (<0: adaptive like the root)
+  int submip_iters{10000};  // CUOPT_PDLP_RC_SUBMIP_ITERS: simplex iteration budget of a sub-MIP
 
   static pdlp_root_loop_params_t from_env()
   {
@@ -64,6 +78,13 @@ struct pdlp_root_loop_params_t {
     read_env("CUOPT_PDLP_RC_SUBMIP_THREADS", p.submip_threads);
     read_env("CUOPT_PDLP_RC_MAX_SUBMIPS", p.max_submips);
     read_env("CUOPT_PDLP_RC_SUBMIP_OUTLIVE", p.submip_outlive_root);
+    read_env("CUOPT_PDLP_RC_SUBMIP_MODE", p.submip_mode);
+    read_env("CUOPT_PDLP_RC_MUTATION", p.mutation);
+    read_env("CUOPT_PDLP_RC_SNAP_TOL", p.snap_tol);
+    read_env("CUOPT_PDLP_RC_FIXRATE", p.fixrate);
+    read_env("CUOPT_PDLP_RC_SUBMIP_ITERS", p.submip_iters);
+    read_env("CUOPT_PDLP_RC_SUBMIP_TIME", p.submip_time);
+    read_env("CUOPT_PDLP_RC_ADAPT", p.adapt_fixrate);
     p.max_passes     = std::max(p.max_passes, 0);
     p.submip_threads = std::max(p.submip_threads, 1);
     p.max_submips    = std::max(p.max_submips, 0);
@@ -81,7 +102,12 @@ struct pdlp_root_loop_params_t {
            " always=" + std::to_string(trigger_always) + " submip=" + std::to_string(submip) +
            " submip_threads=" + std::to_string(submip_threads) +
            " max_submips=" + std::to_string(max_submips) +
-           " submip_outlive=" + std::to_string(submip_outlive_root);
+           " submip_outlive=" + std::to_string(submip_outlive_root) +
+           " submip_mode=" + std::to_string(submip_mode) + " mutation=" + std::to_string(mutation) +
+           " snap_tol=" + std::to_string(snap_tol) + " fixrate=" + std::to_string(fixrate) +
+           " submip_iters=" + std::to_string(submip_iters) +
+           " submip_time=" + std::to_string(submip_time) +
+           " adapt=" + std::to_string(adapt_fixrate);
   }
 
  private:
@@ -202,6 +228,28 @@ bool expand_pdlp_solution(const simplex::lp_problem_t<i_t, f_t>& lp,
   const auto finite = [](f_t v) { return std::isfinite(v); };
   return std::all_of(x.begin(), x.end(), finite) && std::all_of(y.begin(), y.end(), finite) &&
          std::all_of(z.begin(), z.end(), finite);
+}
+
+// Extend a structural point to the equality/slack coordinates of `lp` (slacks from the rows).
+template <typename i_t, typename f_t>
+void expand_structural_point(const simplex::lp_problem_t<i_t, f_t>& lp,
+                             const std::vector<i_t>& new_slacks,
+                             const std::vector<f_t>& structural_x,
+                             std::vector<f_t>& x)
+{
+  const i_t n = lp.num_cols - static_cast<i_t>(new_slacks.size());
+  x.assign(lp.num_cols, f_t(0));
+  std::copy(structural_x.begin(), structural_x.begin() + n, x.begin());
+  std::vector<f_t> activity(lp.num_rows, f_t(0));
+  for (i_t j = 0; j < n; ++j) {
+    for (i_t p = lp.A.col_start[j]; p < lp.A.col_start[j + 1]; ++p) {
+      activity[lp.A.i[p]] += lp.A.x[p] * x[j];
+    }
+  }
+  for (i_t j : new_slacks) {
+    const i_t p = lp.A.col_start[j];
+    x[j]        = (lp.rhs[lp.A.i[p]] - activity[lp.A.i[p]]) / lp.A.x[p];
+  }
 }
 
 // Append cuts (cuts * x <= rhs) to a private equality-form LP with one >= 0 slack per cut. Unlike
