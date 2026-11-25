@@ -3611,10 +3611,12 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
     root_crossover_soln_.z = crushed_root_z;
 
     // Start the PDLP root loop from the GPU point while crossover / dual simplex build a basis.
-    launch_pdlp_root_loop(crushed_root_x,
-                          crushed_root_y,
-                          crushed_root_z,
-                          method_to_string(root_relax_solved_by).c_str());
+    if (!pdlp_root_params_.from_basis) {
+      launch_pdlp_root_loop(crushed_root_x,
+                            crushed_root_y,
+                            crushed_root_z,
+                            method_to_string(root_relax_solved_by).c_str());
+    }
 
     // Call crossover on the crushed solution
     auto root_crossover_settings            = settings_;
@@ -3703,7 +3705,8 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
     exploration_stats_.total_simplex_iters = root_relax_soln_.iterations;
   }
 
-  if (pdlp_root_params_.trigger_always && root_status == lp_status_t::OPTIMAL) {
+  if ((pdlp_root_params_.trigger_always || pdlp_root_params_.from_basis) &&
+      root_status == lp_status_t::OPTIMAL) {
     // No-op when the loop already started from a GPU point.
     launch_pdlp_root_loop(root_relax_soln_.x, root_relax_soln_.y, root_relax_soln_.z, "root basis");
   }
@@ -3843,9 +3846,10 @@ bool branch_and_bound_t<i_t, f_t>::pdlp_root_resolve(pdlp_root_loop_state_t& sta
   }
 
   pdlp_solver_settings_t<i_t, f_t> pdlp_settings;
-  pdlp_settings.method                               = method_t::PDLP;
-  pdlp_settings.presolver                            = presolver_t::None;
-  pdlp_settings.pdlp_solver_mode                     = pdlp_solver_mode_t::Stable3;
+  pdlp_settings.method    = method_t::PDLP;
+  pdlp_settings.presolver = presolver_t::None;
+  pdlp_settings.pdlp_solver_mode =
+    p.root_settings ? pdlp_solver_mode_t::Stable2 : pdlp_solver_mode_t::Stable3;
   pdlp_settings.detect_infeasibility                 = false;
   pdlp_settings.inside_mip                           = true;
   pdlp_settings.log_to_console                       = false;
@@ -3853,11 +3857,19 @@ bool branch_and_bound_t<i_t, f_t>::pdlp_root_resolve(pdlp_root_loop_state_t& sta
   pdlp_settings.iteration_limit                      = p.iteration_limit;
   pdlp_settings.time_limit                           = std::min<f_t>(p.pass_time_limit, remaining);
   pdlp_settings.tolerances.absolute_primal_tolerance = p.tolerance;
-  pdlp_settings.tolerances.relative_primal_tolerance = p.tolerance;
   pdlp_settings.tolerances.absolute_dual_tolerance   = p.tolerance;
-  pdlp_settings.tolerances.relative_dual_tolerance   = p.tolerance;
-  pdlp_settings.tolerances.absolute_gap_tolerance    = p.tolerance;
-  pdlp_settings.tolerances.relative_gap_tolerance    = p.tolerance;
+  if (p.root_settings) {
+    // Same termination as the root LP solved by the heuristics thread; gap tolerances stay at
+    // their defaults there too.
+    pdlp_settings.tolerances.relative_primal_tolerance = p.rel_tolerance;
+    pdlp_settings.tolerances.relative_dual_tolerance   = p.rel_tolerance;
+    pdlp_settings.per_constraint_residual              = true;
+  } else {
+    pdlp_settings.tolerances.relative_primal_tolerance = p.tolerance;
+    pdlp_settings.tolerances.relative_dual_tolerance   = p.tolerance;
+    pdlp_settings.tolerances.absolute_gap_tolerance    = p.tolerance;
+    pdlp_settings.tolerances.relative_gap_tolerance    = p.tolerance;
+  }
 
   const raft::handle_t& handle = *pdlp_root_handle_;
   std::vector<f_t> warm_x;
@@ -5639,6 +5651,24 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                rens_stats_.total_infeasible.load(std::memory_order::relaxed),
                rens_stats_.total_empty.load(std::memory_order::relaxed),
                rens_stats_.total_calls.load(std::memory_order::relaxed));
+
+  if (!settings_.inside_submip) {
+    // Counters of the sub-MIP heuristics: improving solutions, infeasible sub-MIPs, sub-MIPs
+    // that presolved to nothing, calls.
+    const auto line = [](const char* name, const submip_stats_t& st) {
+      return std::format("{}: improving={} infeasible={} empty={} calls={}",
+                         name,
+                         st.total_success.load(std::memory_order::relaxed),
+                         st.total_infeasible.load(std::memory_order::relaxed),
+                         st.total_empty.load(std::memory_order::relaxed),
+                         st.total_calls.load(std::memory_order::relaxed));
+    };
+    settings_.log.printf("Sub-MIP stats. %s; %s; %s; %s\n",
+                         line("RINS", rins_stats_).c_str(),
+                         line("RENS", rens_stats_).c_str(),
+                         line("MUTATION", mutation_stats_).c_str(),
+                         line("PDLP loop", pdlp_rens_stats_).c_str());
+  }
 
   set_final_solution(solution, lower_bound);
   return solver_status_;

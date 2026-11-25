@@ -30,11 +30,18 @@ namespace cuopt::mathematical_optimization::mip {
 
 // Experimental knobs, read from the environment so MIPLIB sweeps need no rebuild.
 struct pdlp_root_loop_params_t {
-  bool enabled{true};              // CUOPT_PDLP_RC
-  int max_passes{3};               // CUOPT_PDLP_RC_PASSES: PDLP re-solves after the first point
-  int iteration_limit{5000};       // CUOPT_PDLP_RC_ITERS: per re-solve
-  double pass_time_limit{10.0};    // CUOPT_PDLP_RC_PASS_TIME: seconds per re-solve
-  double tolerance{1e-4};          // CUOPT_PDLP_RC_TOL: PDLP relative/absolute tolerances
+  bool enabled{true};            // CUOPT_PDLP_RC
+  int max_passes{3};             // CUOPT_PDLP_RC_PASSES: PDLP re-solves after the first point
+  int iteration_limit{5000};     // CUOPT_PDLP_RC_ITERS: per re-solve
+  double pass_time_limit{10.0};  // CUOPT_PDLP_RC_PASS_TIME: seconds per re-solve
+  // CUOPT_PDLP_RC_ROOT_SETTINGS: 1 = re-solve like the root LP of the heuristics thread
+  // (Stable2, absolute primal/dual tolerance, tiny relative tolerance, per-constraint residuals);
+  // 0 = Stable3 with one tolerance for everything
+  bool root_settings{true};
+  double tolerance{1e-6};       // CUOPT_PDLP_RC_TOL: absolute primal/dual tolerance
+  double rel_tolerance{1e-12};  // CUOPT_PDLP_RC_REL_TOL: relative tolerance (root settings)
+  // CUOPT_PDLP_RC_FROM_BASIS: ignore the early GPU point and start from the root basis solution
+  bool from_basis{false};
   bool warm_start{true};           // CUOPT_PDLP_RC_WARM: primal + dual of the previous pass
   bool global_pool{false};         // CUOPT_PDLP_RC_POOL: 1 = stage cuts for the B&B cut pool
   double separation_time{10.0};    // CUOPT_PDLP_RC_SEP_TIME: seconds per separation round
@@ -67,7 +74,10 @@ struct pdlp_root_loop_params_t {
     read_env("CUOPT_PDLP_RC_PASSES", p.max_passes);
     read_env("CUOPT_PDLP_RC_ITERS", p.iteration_limit);
     read_env("CUOPT_PDLP_RC_PASS_TIME", p.pass_time_limit);
+    read_env("CUOPT_PDLP_RC_ROOT_SETTINGS", p.root_settings);
     read_env("CUOPT_PDLP_RC_TOL", p.tolerance);
+    read_env("CUOPT_PDLP_RC_REL_TOL", p.rel_tolerance);
+    read_env("CUOPT_PDLP_RC_FROM_BASIS", p.from_basis);
     read_env("CUOPT_PDLP_RC_WARM", p.warm_start);
     read_env("CUOPT_PDLP_RC_POOL", p.global_pool);
     read_env("CUOPT_PDLP_RC_SEP_TIME", p.separation_time);
@@ -94,8 +104,10 @@ struct pdlp_root_loop_params_t {
   std::string to_string() const
   {
     return "passes=" + std::to_string(max_passes) + " iters=" + std::to_string(iteration_limit) +
-           " pass_time=" + std::to_string(pass_time_limit) + " tol=" + std::to_string(tolerance) +
-           " warm=" + std::to_string(warm_start) + " pool=" + (global_pool ? "global" : "private") +
+           " pass_time=" + std::to_string(pass_time_limit) +
+           " root_settings=" + std::to_string(root_settings) + " tol=" + std::to_string(tolerance) +
+           " from_basis=" + std::to_string(from_basis) + " warm=" + std::to_string(warm_start) +
+           " pool=" + (global_pool ? "global" : "private") +
            " sep_time=" + std::to_string(separation_time) +
            " time=" + std::to_string(loop_time_limit) +
            " stop_at_basis=" + std::to_string(stop_at_basis) +
