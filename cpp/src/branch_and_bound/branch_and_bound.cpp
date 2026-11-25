@@ -5573,7 +5573,17 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
                                seed_generator_);
 
       active_submip_solvers_mutex_.lock();
-      active_submip_solvers_.assign(num_submip_workers, nullptr);
+      if (pdlp_root_task_started_) {
+        // PDLP root loop sub-MIPs may still be running: keep their slots (past the tree workers').
+        const size_t pdlp_slots_end = pdlp_root_submip_slot_base_ + pdlp_root_params_.max_submips;
+        active_submip_solvers_.resize(std::max<size_t>(num_submip_workers, pdlp_slots_end),
+                                      nullptr);
+        std::fill_n(active_submip_solvers_.begin(),
+                    std::min<size_t>(num_submip_workers, pdlp_root_submip_slot_base_),
+                    nullptr);
+      } else {
+        active_submip_solvers_.assign(num_submip_workers, nullptr);
+      }
       active_submip_solvers_mutex_.unlock();
 
       bfs_worker_t<i_t, f_t>* initial_worker = bfs_worker_pool_.pop_idle_worker();
